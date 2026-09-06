@@ -497,10 +497,6 @@ public struct DshStateConfig: Codable, Equatable {
     public var uiTheme: String
     public var translateCommands: Bool
     public var cachedUserPath: String?
-    /// Whether the post-ready notification authorization prompt has been
-    /// shown. The system prompt is a SwiftUI window that must never appear
-    /// during startup; it is offered once, after a clean normal launch.
-    public var askedNotificationAuthorization: Bool
 
     public init(
         selectedVersion: String? = nil,
@@ -515,8 +511,7 @@ public struct DshStateConfig: Codable, Equatable {
         networkExposure: DshNetworkExposure = .loopback,
         uiTheme: String = "default",
         translateCommands: Bool = true,
-        cachedUserPath: String? = nil,
-        askedNotificationAuthorization: Bool = false
+        cachedUserPath: String? = nil
     ) {
         self.selectedVersion = selectedVersion
         self.appProfile = appProfile
@@ -531,7 +526,6 @@ public struct DshStateConfig: Codable, Equatable {
         self.uiTheme = uiTheme
         self.translateCommands = translateCommands
         self.cachedUserPath = cachedUserPath
-        self.askedNotificationAuthorization = askedNotificationAuthorization
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -548,7 +542,6 @@ public struct DshStateConfig: Codable, Equatable {
         case uiTheme
         case translateCommands
         case cachedUserPath
-        case askedNotificationAuthorization
     }
 
     public init(from decoder: Decoder) throws {
@@ -584,7 +577,6 @@ public struct DshStateConfig: Codable, Equatable {
         self.uiTheme = try container.decodeIfPresent(String.self, forKey: .uiTheme) ?? "default"
         self.translateCommands = try container.decodeIfPresent(Bool.self, forKey: .translateCommands) ?? true
         self.cachedUserPath = try container.decodeIfPresent(String.self, forKey: .cachedUserPath)
-        self.askedNotificationAuthorization = try container.decodeIfPresent(Bool.self, forKey: .askedNotificationAuthorization) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -602,7 +594,6 @@ public struct DshStateConfig: Codable, Equatable {
         try container.encode(uiTheme, forKey: .uiTheme)
         try container.encode(translateCommands, forKey: .translateCommands)
         try container.encodeIfPresent(cachedUserPath, forKey: .cachedUserPath)
-        try container.encode(askedNotificationAuthorization, forKey: .askedNotificationAuthorization)
     }
 
     public static let `default` = DshStateConfig()

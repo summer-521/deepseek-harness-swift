@@ -10,17 +10,21 @@ public final class NotificationManager: NSObject, UNUserNotificationCenterDelega
         UNUserNotificationCenter.current().delegate = self
     }
 
-    /// Ask for notification authorization once, only when the caller runs
-    /// outside startup (see the post-ready scheduler). The system prompt is
-    /// a SwiftUI window; showing it while startup surfaces are alive
-    /// re-enters the macOS 26 safe-area constraint loop that aborts the
-    /// process, so this must never run before a clean normal launch.
+    /// Ask for notification authorization while the system considers the app
+    /// undecided (`.notDetermined`). That covers the first launch and, once
+    /// again after the user resets notifications in System Settings — a reset
+    /// returns the system status to `.notDetermined`, so the next clean
+    /// launch re-prompts automatically without any manual state edit.
+    /// `.denied` is respected (no re-prompt), and authorized states do nothing.
+    /// The caller (post-ready scheduler) runs this once per clean launch, so
+    /// the system prompt never appears while startup surfaces are alive and
+    /// never re-enters the macOS 26 safe-area constraint loop.
     public func requestAuthorizationIfNeeded() {
-        guard !DshStateManager.shared.current.askedNotificationAuthorization else { return }
-        DshStateManager.shared.update { state in
-            state.askedNotificationAuthorization = true
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            guard settings.authorizationStatus == .notDetermined else { return }
+            center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
         }
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
     /// Display a task completion notification.

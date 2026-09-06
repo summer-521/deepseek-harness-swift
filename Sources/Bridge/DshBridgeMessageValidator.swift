@@ -324,11 +324,33 @@ public final class DshBridgeMessageValidator: @unchecked Sendable {
             guard encodedByteCount(object) <= Self.maximumPayloadBytes else {
                 return .failure(.payloadTooLarge)
             }
+
+            if type == .notify {
+                // The desktop-host bridge plugin reports task completion
+                // verbatim: { title?, cwd?, sessionId, completedAt }. Its
+                // nullable strings and numeric timestamp are part of the
+                // contract; only these fields are accepted.
+                let notifyFields: Set<String> = ["title", "cwd", "sessionId", "completedAt"]
+                for key in object.keys where !notifyFields.contains(key) {
+                    return .failure(.unsupportedPayloadField(key))
+                }
+                for key in ["title", "cwd", "sessionId"] {
+                    guard let value = object[key], !(value is NSNull) else { continue }
+                    guard let string = value as? String else { return .failure(.invalidPayload) }
+                    guard Data(string.utf8).count <= Self.maximumStringBytes else {
+                        return .failure(.payloadValueTooLong(key))
+                    }
+                }
+                if let completedAt = object["completedAt"], !(completedAt is NSNumber) {
+                    return .failure(.invalidPayload)
+                }
+                return .success(())
+            }
+
             let allowed: Set<String>
             switch type {
             case .theme: allowed = ["colorScheme", "externalTheme"]
             case .locale: allowed = ["language"]
-            case .notify: allowed = ["title", "cwd"]
             default: allowed = []
             }
             for key in object.keys where !allowed.contains(key) {
