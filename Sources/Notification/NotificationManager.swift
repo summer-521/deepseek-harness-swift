@@ -10,6 +10,19 @@ public final class NotificationManager: NSObject, UNUserNotificationCenterDelega
         UNUserNotificationCenter.current().delegate = self
     }
 
+    /// Ask for notification authorization once, only when the caller runs
+    /// outside startup (see the post-ready scheduler). The system prompt is
+    /// a SwiftUI window; showing it while startup surfaces are alive
+    /// re-enters the macOS 26 safe-area constraint loop that aborts the
+    /// process, so this must never run before a clean normal launch.
+    public func requestAuthorizationIfNeeded() {
+        guard !DshStateManager.shared.current.askedNotificationAuthorization else { return }
+        DshStateManager.shared.update { state in
+            state.askedNotificationAuthorization = true
+        }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
     /// Display a task completion notification.
     public func showTaskDoneNotification(title: String?, cwd: String?) {
         let sessionLabel = (title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
@@ -36,11 +49,9 @@ public final class NotificationManager: NSObject, UNUserNotificationCenterDelega
             case .authorized, .provisional, .ephemeral:
                 self?.post(content, using: center)
             case .notDetermined:
-                // M1 packages are ad-hoc signed. Asking for notification
-                // permission from an ad-hoc build creates a system SwiftUI
-                // window that aborts in a safe-area constraint loop on
-                // macOS 26. Deliver only when permission already exists;
-                // a later signed release can expose an explicit opt-in UI.
+                // Permission is asked once, after a clean normal launch
+                // (see requestAuthorizationIfNeeded). Never prompt from a
+                // task callback: the startup surfaces may still be alive.
                 return
             case .denied:
                 return

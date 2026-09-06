@@ -111,7 +111,7 @@ test('Swift traffic lights stay aligned after AppKit lays out the main window', 
   assert.match(MAIN_WINDOW_SOURCE, /trafficLightVerticalOffset: CGFloat = -7/)
   assert.match(MAIN_WINDOW_SOURCE, /trafficLightBaseFrames/)
   assert.match(MAIN_WINDOW_SOURCE, /public func windowDidBecomeMain\(_ notification: Notification\)/)
-  assert.match(MAIN_WINDOW_SOURCE, /self\?\.adjustTrafficLights\(in: win\)/)
+  assert.match(MAIN_WINDOW_SOURCE, /self\??\.adjustTrafficLights\(in: win\)/)
 })
 
 test('Swift bridge carries the complete native window drag lifecycle', () => {

@@ -235,6 +235,28 @@ public final class DshRecoveryViewModel: ObservableObject {
         latestFailure.map { $0.code.rawValue }
     }
 
+    /// Whether the plugin-attribution section is relevant. Failures that
+    /// are not plugin-attributed (port conflicts, runtime/network issues)
+    /// hide the whole block instead of showing an "unable to locate"
+    /// card that only adds noise.
+    /// Actionable hint for the most common startup blocker. Shown only
+    /// for port conflicts so other failures keep a quiet card.
+    public var portConflictHint: String? {
+        guard let code = latestFailure?.code, code == .portConflict else {
+            return nil
+        }
+        return "通常是有另一个DSH 实例正在运行；退出其他实例后重试，或在设置中更换端口。"
+    }
+
+    public var showsPluginFailureSection: Bool {
+        guard let code = latestFailure?.code,
+              code == .pluginConfigurationInvalid || code == .pluginPackageMissing,
+              pluginFailureAnalysis != nil else {
+            return false
+        }
+        return true
+    }
+
     /// Text shown only after the user expands the details disclosure. The
     /// input snapshot is sanitized again at this boundary as defense in
     /// depth; the diagnostic store remains the source of bounded history.

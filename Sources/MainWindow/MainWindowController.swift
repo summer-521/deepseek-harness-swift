@@ -123,369 +123,116 @@ private final class DownloadStatusBanner: NSVisualEffectView {
 /// Presented as a centered card: app icon, title, an indeterminate bar (phase
 /// durations are not measurable, so no fake percentages) and a checklist of
 /// the launch phases with done/current/pending states.
-private final class NativeStartupView: NSVisualEffectView {
-    private let iconView = NSImageView()
-    private let titleLabel = NSTextField(labelWithString: "正在启动 DSH")
-    private let progressBar = NSProgressIndicator()
-    private let detailLabel = NSTextField(labelWithString: "")
-    private var phaseRows: [(phase: DshLaunchPhase, icon: NSImageView, label: NSTextField)] = []
+/// Observable startup progress rendered by DshStartupView below. The
+/// controller mutates it from MainActor-only call sites; the view itself
+/// presents no sheets, alerts or authorization windows.
+@MainActor
+private final class DshStartupStatusModel: ObservableObject {
+    @Published var phase: DshLaunchPhase = .preparing
+    @Published var detail: String? = nil
+}
+
+/// SwiftUI startup overlay. It shows exactly what the former AppKit card
+/// showed (title, indeterminate progress, per-phase checklist, detail) and
+/// presents no system windows: notification authorization and Sparkle update
+/// UI stay out of the startup path (see the post-ready scheduler), which is
+/// what keeps this surface clear of the macOS 26 safe-area constraint loop.
+private struct DshStartupView: View {
+    @ObservedObject var status: DshStartupStatusModel
 
     private static var orderedPhases: [DshLaunchPhase] {
-        // `ready` is terminal and never displayed as in-progress; the card is
-        // dismissed instead.
         DshLaunchPhase.allCases.filter { $0 != .ready }
     }
 
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        material = .hudWindow
-        blendingMode = .withinWindow
-        state = .active
-
-        let card = NSVisualEffectView()
-        card.material = .popover
-        card.blendingMode = .withinWindow
-        card.state = .active
-        card.wantsLayer = true
-        card.layer?.cornerRadius = 16
-        card.layer?.shadowColor = NSColor.black.cgColor
-        card.layer?.shadowOpacity = 0.25
-        card.layer?.shadowRadius = 24
-        card.layer?.shadowOffset = NSSize(width: 0, height: -6)
-        card.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(card)
-        NSLayoutConstraint.activate([
-            card.centerXAnchor.constraint(equalTo: centerXAnchor),
-            card.centerYAnchor.constraint(equalTo: centerYAnchor),
-            card.widthAnchor.constraint(equalToConstant: 440),
-        ])
-
-        if let appIcon = NSApplication.shared.applicationIconImage {
-            appIcon.size = NSSize(width: 64, height: 64)
-            iconView.image = appIcon
-        }
-        iconView.imageScaling = .scaleProportionallyUpOrDown
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            iconView.widthAnchor.constraint(equalToConstant: 64),
-            iconView.heightAnchor.constraint(equalToConstant: 64),
-        ])
-
-        titleLabel.font = .systemFont(ofSize: 20, weight: .semibold)
-        titleLabel.alignment = .center
-        let subtitleLabel = NSTextField(labelWithString: "正在准备本地运行环境，请稍候")
-        subtitleLabel.font = .systemFont(ofSize: 13, weight: .regular)
-        subtitleLabel.textColor = .secondaryLabelColor
-        subtitleLabel.alignment = .center
-
-        progressBar.style = .bar
-        progressBar.isIndeterminate = true
-        progressBar.controlSize = .regular
-        progressBar.startAnimation(nil)
-        progressBar.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            progressBar.heightAnchor.constraint(equalToConstant: 6),
-        ])
-        let header = NSStackView(views: [iconView, titleLabel, subtitleLabel])
-        header.orientation = .vertical
-        header.alignment = .centerX
-        header.spacing = 8
-
-        let checklist = NSStackView()
-        checklist.orientation = .vertical
-        checklist.alignment = .leading
-        checklist.spacing = 7
-        for phase in Self.orderedPhases {
-            let dot = NSImageView()
-            dot.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                dot.widthAnchor.constraint(equalToConstant: 16),
-                dot.heightAnchor.constraint(equalToConstant: 16),
-            ])
-            let name = NSTextField(labelWithString: phase.displayName)
-            name.font = .systemFont(ofSize: 13, weight: .regular)
-            name.textColor = .tertiaryLabelColor
-            let row = NSStackView(views: [dot, name])
-            row.orientation = .horizontal
-            row.alignment = .centerY
-            row.spacing = 8
-            checklist.addArrangedSubview(row)
-            phaseRows.append((phase: phase, icon: dot, label: name))
-        }
-
-        detailLabel.font = .systemFont(ofSize: 12, weight: .regular)
-        detailLabel.textColor = .secondaryLabelColor
-        detailLabel.alignment = .center
-        detailLabel.maximumNumberOfLines = 2
-        detailLabel.lineBreakMode = .byTruncatingTail
-        detailLabel.preferredMaxLayoutWidth = 380
-
-        let body = NSStackView(views: [header, progressBar, checklist, detailLabel])
-        body.orientation = .vertical
-        body.alignment = .centerX
-        body.spacing = 14
-        body.translatesAutoresizingMaskIntoConstraints = false
-        body.setCustomSpacing(18, after: header)
-        body.setCustomSpacing(18, after: checklist)
-        card.addSubview(body)
-        NSLayoutConstraint.activate([
-            body.topAnchor.constraint(equalTo: card.topAnchor, constant: 28),
-            body.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -24),
-            body.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 30),
-            body.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -30),
-            progressBar.widthAnchor.constraint(equalTo: body.widthAnchor),
-        ])
-        update(phase: .preparing, detail: nil)
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    func update(phase: DshLaunchPhase, detail: String? = nil) {
-        titleLabel.stringValue = phase == .ready ? "已就绪" : "正在启动 DSH"
-        detailLabel.stringValue = detail ?? "DSH 正在建立受保护的启动会话。"
-        let order = Self.orderedPhases
-        let currentIndex = order.firstIndex(of: phase) ?? order.count
-        for (index, row) in phaseRows.enumerated() {
-            if index < currentIndex {
-                row.icon.image = NSImage(systemSymbolName: "checkmark.circle.fill",
-                                         accessibilityDescription: "已完成")
-                row.icon.contentTintColor = .systemGreen
-                row.label.textColor = .secondaryLabelColor
-                row.label.font = .systemFont(ofSize: 13, weight: .regular)
-            } else if index == currentIndex {
-                row.icon.image = NSImage(systemSymbolName: "circle.circle.fill",
-                                         accessibilityDescription: "进行中")
-                row.icon.contentTintColor = .controlAccentColor
-                row.label.textColor = .labelColor
-                row.label.font = .systemFont(ofSize: 13, weight: .semibold)
-            } else {
-                row.icon.image = NSImage(systemSymbolName: "circle",
-                                         accessibilityDescription: "待执行")
-                row.icon.contentTintColor = .tertiaryLabelColor
-                row.label.textColor = .tertiaryLabelColor
-                row.label.font = .systemFont(ofSize: 13, weight: .regular)
+    var body: some View {
+        ZStack {
+            Color.clear
+            VStack {
+                Spacer()
+                VStack(spacing: 14) {
+                    VStack(spacing: 8) {
+                        if let appIcon = NSApplication.shared.applicationIconImage {
+                            Image(nsImage: appIcon)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 64, height: 64)
+                        }
+                        Text(status.phase == .ready ? "已就绪" : "正在启动 DSH")
+                            .font(.system(size: 20, weight: .semibold))
+                        Text("正在准备本地运行环境，请稍候")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                    }
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                        .frame(height: 6)
+                    VStack(alignment: .leading, spacing: 7) {
+                        ForEach(Array(Self.orderedPhases.enumerated()), id: \.offset) { index, phase in
+                            phaseRow(phase: phase, index: index)
+                        }
+                    }
+                    Text(status.detail ?? "DSH 正在建立受保护的启动会话。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .frame(maxWidth: 380)
+                }
+                .padding(.top, 28)
+                .padding(.bottom, 24)
+                .padding(.horizontal, 30)
+                .frame(width: 440)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .shadow(color: .black.opacity(0.25), radius: 24, y: -6)
+                Spacer()
             }
         }
-    }
-}
-
-/// AppKit recovery overlay used inside the existing full-size-content window.
-/// Keeping this surface out of NSHostingView avoids the macOS 26 SwiftUI
-/// safe-area/window-size feedback loop that can abort the process while a
-/// startup failure is being presented.
-@MainActor
-private final class NativeRecoveryView: NSVisualEffectView {
-    private let viewModel: DshRecoveryViewModel
-    private let phaseLabel = NSTextField(labelWithString: "")
-    private let summaryLabel = NSTextField(wrappingLabelWithString: "")
-    private let codeLabel = NSTextField(labelWithString: "")
-    private let actionLabel = NSTextField(wrappingLabelWithString: "")
-    private let availabilityLabel = NSTextField(wrappingLabelWithString: "")
-    private let retryButton = NSButton(title: "重试", target: nil, action: nil)
-    private let adoptButton = NSButton(title: "验证当前状态并继续", target: nil, action: nil)
-    private let settingsButton = NSButton(title: "打开设置", target: nil, action: nil)
-    private let safeModeButton = NSButton(title: "安全模式", target: nil, action: nil)
-    private let detailsButton = NSButton(title: "查看诊断详情", target: nil, action: nil)
-    private let previewButton = NSButton(title: "预览导出 JSON", target: nil, action: nil)
-    private let copyDiagnosticsButton = NSButton(title: "复制诊断摘要", target: nil, action: nil)
-    private let saveDiagnosticsButton = NSButton(title: "保存 JSON", target: nil, action: nil)
-    private let detailsScroll = NSScrollView()
-    private let detailsText = NSTextView()
-    private var observation: AnyCancellable?
-    private var showingDiagnosticPreview = false
-
-    init(viewModel: DshRecoveryViewModel, frame: NSRect) {
-        self.viewModel = viewModel
-        super.init(frame: frame)
-
-        material = .hudWindow
-        blendingMode = .withinWindow
-        state = .active
-
-        let title = NSTextField(labelWithString: "无法完成启动")
-        title.font = .systemFont(ofSize: 22, weight: .semibold)
-        let subtitle = NSTextField(wrappingLabelWithString: "可以重试，或打开设置检查运行环境。")
-        subtitle.textColor = .secondaryLabelColor
-
-        phaseLabel.font = .systemFont(ofSize: 15, weight: .semibold)
-        summaryLabel.maximumNumberOfLines = 0
-        codeLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        codeLabel.textColor = .secondaryLabelColor
-        actionLabel.textColor = .secondaryLabelColor
-        availabilityLabel.textColor = .secondaryLabelColor
-
-        detailsButton.setButtonType(.toggle)
-        detailsButton.bezelStyle = .inline
-        detailsButton.target = self
-        detailsButton.action = #selector(toggleDetails)
-
-        previewButton.bezelStyle = .inline
-        previewButton.target = self
-        previewButton.action = #selector(previewDiagnostics)
-        copyDiagnosticsButton.bezelStyle = .inline
-        copyDiagnosticsButton.target = self
-        copyDiagnosticsButton.action = #selector(copyDiagnostics)
-        saveDiagnosticsButton.bezelStyle = .inline
-        saveDiagnosticsButton.target = self
-        saveDiagnosticsButton.action = #selector(saveDiagnostics)
-
-        detailsText.isEditable = false
-        detailsText.isSelectable = true
-        detailsText.drawsBackground = false
-        detailsText.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        detailsText.textColor = .secondaryLabelColor
-        detailsText.textContainerInset = NSSize(width: 10, height: 10)
-        detailsScroll.documentView = detailsText
-        detailsScroll.hasVerticalScroller = true
-        detailsScroll.borderType = .bezelBorder
-        detailsScroll.isHidden = true
-
-        retryButton.bezelStyle = .rounded
-        retryButton.keyEquivalent = "\r"
-        settingsButton.bezelStyle = .rounded
-        safeModeButton.bezelStyle = .rounded
-        for button in [retryButton, settingsButton, safeModeButton] {
-            button.target = self
-        }
-        retryButton.action = #selector(retry)
-        adoptButton.bezelStyle = .rounded
-        adoptButton.target = self
-        adoptButton.action = #selector(adoptInterruptedTransaction)
-        settingsButton.action = #selector(openSettings)
-        safeModeButton.action = #selector(startSafeMode)
-
-        let actions = NSStackView(views: [retryButton, settingsButton, safeModeButton])
-        actions.orientation = .horizontal
-        actions.alignment = .centerY
-        actions.spacing = 10
-
-        let stack = NSStackView(views: [
-            title, subtitle, phaseLabel, summaryLabel, codeLabel,
-            actionLabel, detailsButton, previewButton, detailsScroll,
-            NSStackView(views: [copyDiagnosticsButton, saveDiagnosticsButton]),
-            actions, adoptButton, availabilityLabel
-        ])
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 12
-        addSubview(stack)
-
-        NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            stack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 28),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -28),
-            stack.widthAnchor.constraint(lessThanOrEqualToConstant: 760),
-            stack.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.72).withPriority(.defaultHigh),
-            detailsScroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            detailsScroll.heightAnchor.constraint(equalToConstant: 190),
-            summaryLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            subtitle.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            actionLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
-            availabilityLabel.widthAnchor.constraint(equalTo: stack.widthAnchor)
-        ])
-
-        observation = viewModel.objectWillChange.sink { [weak self] _ in
-            DispatchQueue.main.async { self?.refresh() }
-        }
-        refresh()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The overlay has no interactive content. Letting clicks fall
+        // through keeps the window draggable while startup is showing.
+        .allowsHitTesting(false)
     }
 
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    private func refresh() {
-        phaseLabel.stringValue = viewModel.phaseTitle
-        summaryLabel.stringValue = viewModel.failureSummary
-        if let code = viewModel.failureCodeTitle {
-            codeLabel.stringValue = "错误码：\(code)"
-            codeLabel.isHidden = false
+    private func phaseRow(phase: DshLaunchPhase, index: Int) -> some View {
+        let order = Self.orderedPhases
+        let currentIndex = order.firstIndex(of: status.phase) ?? order.count
+        let symbol = if index < currentIndex {
+            "checkmark.circle.fill"
+        } else if index == currentIndex {
+            "circle.circle.fill"
         } else {
-            codeLabel.isHidden = true
+            "circle"
         }
-        actionLabel.stringValue = viewModel.actionMessage ?? (viewModel.isActionInFlight ? "正在执行…" : "")
-        actionLabel.isHidden = actionLabel.stringValue.isEmpty
-        // refreshDiagnosticPreview() publishes objectWillChange. Preserve the
-        // selected presentation when the queued refresh arrives; otherwise
-        // it immediately replaces the JSON preview with ordinary details.
-        detailsText.string = showingDiagnosticPreview
-            ? (viewModel.diagnosticPreview ?? viewModel.redactedDetails)
-            : viewModel.redactedDetails
-        if showingDiagnosticPreview {
-            detailsScroll.isHidden = false
+        let tint: Color = if index < currentIndex {
+            .green
+        } else if index == currentIndex {
+            .accentColor
+        } else {
+            Color(nsColor: .tertiaryLabelColor)
         }
-        previewButton.isEnabled = viewModel.hasDiagnosticSnapshot
-        copyDiagnosticsButton.isEnabled = viewModel.hasDiagnosticSnapshot
-        saveDiagnosticsButton.isEnabled = viewModel.hasDiagnosticSnapshot
-        retryButton.isEnabled = !viewModel.isActionInFlight
-        settingsButton.isEnabled = !viewModel.isActionInFlight
-        safeModeButton.isEnabled = viewModel.isSafeModeAvailable && !viewModel.isActionInFlight
-        adoptButton.isHidden = !viewModel.canAdoptInterruptedTransaction
-        adoptButton.isEnabled = !viewModel.isActionInFlight && !viewModel.pluginRemovalInFlight && !viewModel.adoptInterruptedTransactionInFlight
-        availabilityLabel.stringValue = viewModel.isSafeModeAvailable ? "" : viewModel.safeModeAvailabilityDescription
-        availabilityLabel.isHidden = availabilityLabel.stringValue.isEmpty
-    }
-
-    @objc private func retry() { _ = viewModel.requestRetry() }
-    @objc private func openSettings() { _ = viewModel.requestOpenSettings() }
-    @objc private func startSafeMode() { _ = viewModel.requestSafeMode() }
-
-    @objc private func adoptInterruptedTransaction() {
-        let alert = NSAlert()
-        alert.messageText = "验证当前状态并继续？"
-        alert.informativeText = "将验证当前desktop Profile 是否健康：健康则继续启动，不健康的包变更会自动从安装前快照恢复。快照完整时才可执行；不会静默保留未经验证的状态。"
-        alert.addButton(withTitle: "验证并继续")
-        alert.addButton(withTitle: "取消")
-        guard let window = self.window else { return }
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn else { return }
-            _ = self?.viewModel.requestAdoptInterruptedTransaction()
+        let labelColor: Color = if index < currentIndex {
+            .secondary
+        } else if index == currentIndex {
+            .primary
+        } else {
+            Color(nsColor: .tertiaryLabelColor)
         }
-    }
-
-    @objc private func toggleDetails() {
-        showingDiagnosticPreview = false
-        detailsText.string = viewModel.redactedDetails
-        detailsScroll.isHidden = detailsButton.state != .on
-        detailsButton.title = detailsButton.state == .on ? "隐藏诊断详情" : "查看诊断详情"
-    }
-
-    @objc private func previewDiagnostics() {
-        if showingDiagnosticPreview {
-            showingDiagnosticPreview = false
-            detailsText.string = viewModel.redactedDetails
-            detailsScroll.isHidden = detailsButton.state != .on
-            previewButton.title = "预览导出 JSON"
-            return
+        let weight: Font.Weight = if index == currentIndex { .semibold } else { .regular }
+        return HStack(spacing: 8) {
+            Image(systemName: symbol)
+                .resizable()
+                .frame(width: 16, height: 16)
+                .foregroundStyle(tint)
+            Text(phase.displayName)
+                .font(.system(size: 13, weight: weight))
+                .foregroundStyle(labelColor)
+            Spacer()
         }
-        guard viewModel.refreshDiagnosticPreview(),
-              let preview = viewModel.diagnosticPreview else { return }
-        showingDiagnosticPreview = true
-        detailsText.string = preview
-        detailsScroll.isHidden = false
-        previewButton.title = "隐藏导出预览"
-    }
-
-    @objc private func copyDiagnostics() {
-        _ = viewModel.requestCopyDiagnosticSummary()
-    }
-
-    @objc private func saveDiagnostics() {
-        _ = viewModel.requestSaveDiagnosticExport()
     }
 }
 
-private extension NSLayoutConstraint {
-    func withPriority(_ priority: NSLayoutConstraint.Priority) -> NSLayoutConstraint {
-        self.priority = priority
-        return self
-    }
-}
-
+/// AppKit indicator shown while an isolated recovery service is active.
+@MainActor
 private final class NativeSafeModeBanner: NSVisualEffectView {
     private let label = NSTextField(labelWithString: "")
     private let returnButton = NSButton(title: "返回普通模式", target: nil, action: nil)
@@ -549,6 +296,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     /// is already queued on the runtime operation gate. A second request must
     /// not create another healthy-start commit for the same transaction.
     private var startupTask: Task<Void, Never>?
+    private var postReadyAuthorizationTask: Task<Void, Never>?
     private var onboardingHostingView: NSView?
     private var webUIReadinessGeneration = 0
     private var pendingWebUINavigation: WKNavigation?
@@ -568,9 +316,9 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     private let diagnosticStore = DshDiagnosticStore(
         storageURL: DshStateManager.appSupportDirectory.appendingPathComponent("dsh-diagnostics.json")
     )
-    private var startupStatusView: NativeStartupView?
+    private var startupStatusView: NSHostingView<DshStartupView>?
+    private var startupStatusModel = DshStartupStatusModel()
     private var safeModeBanner: NativeSafeModeBanner?
-    private var recoveryHostingView: NativeRecoveryView?
     private var recoveryViewModel: DshRecoveryViewModel?
     private var recoveryProfileManager: DshRecoveryProfileManager?
     private var recoveryLaunch: DshRecoveryLaunch?
@@ -602,7 +350,6 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     private static let trafficLightHorizontalOffset: CGFloat = 7
     private static let trafficLightVerticalOffset: CGFloat = -7
     private static let maxAutomaticAuthenticationRecoveries = 1
-
     private enum RuntimeHealthError: LocalizedError {
         case nonHTTPResponse(String)
         case unexpectedStatus(label: String, expected: String, actual: Int)
@@ -707,7 +454,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         self.vibrancyView = shell.rootView
         win.contentView = shell.rootView
 
-        let startup = NativeStartupView(frame: .zero)
+        let startup = NSHostingView(rootView: DshStartupView(status: startupStatusModel))
         startup.translatesAutoresizingMaskIntoConstraints = false
         startup.isHidden = true
         shell.rootView.addSubview(startup, positioned: .above, relativeTo: shell.webView)
@@ -749,10 +496,8 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     public func beginStartupPreparation() {
         hideRecoverySurface()
         showStartupSurface()
-        startupStatusView?.update(
-            phase: .preparing,
-            detail: "正在检查并恢复上次启动状态…"
-        )
+        startupStatusModel.phase = .preparing
+        startupStatusModel.detail = "正在检查并恢复上次启动状态…"
         revealWindow()
     }
 
@@ -1167,7 +912,6 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                 }
             } catch {
                 print("[MainWindowController] Service start failed:", DshMainWindowUIMessage.safe(error))
-                self.revealWindow()
                 if error is DshStatePersistenceError {
                     await DshService.shared.stopAndWait()
                     self.serviceSession = nil
@@ -1427,6 +1171,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             }
             setDiagnosticPhase(.ready, launchID: context.launchID, generationID: session.access.id)
             hideStartupSurface()
+            schedulePostReadyNotificationAuthorization(for: context)
             return authenticatedSession
         } catch {
             webShell?.clearBridgeValidationContext()
@@ -1435,6 +1180,27 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             webUIReadinessGeneration &+= 1
             DshService.shared.stop()
             throw error
+        }
+    }
+
+    /// Offer the notification authorization prompt once, well after the
+    /// main window is stable. Gated to clean normal desktop launches:
+    /// recovery/verify starts never schedule it, and a newer launch or a
+    /// recovery surface appearing first cancels the pending offer.
+    private func schedulePostReadyNotificationAuthorization(for context: DshLaunchContext) {
+        postReadyAuthorizationTask?.cancel()
+        postReadyAuthorizationTask = nil
+        guard context.purpose == .normal, context.profile == .desktop else { return }
+        let launchID = context.launchID
+        postReadyAuthorizationTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            guard let self,
+                  !Task.isCancelled,
+                  self.launchContext?.launchID == launchID,
+                  self.startupRecoveryError == nil,
+                  self.recoveryViewModel == nil,
+                  DshStateManager.shared.current.appProfile == .desktop else { return }
+            NotificationManager.shared.requestAuthorizationIfNeeded()
         }
     }
 
@@ -2096,12 +1862,13 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             generationID: generationID
         )
         guard launchContext?.launchID == launchID else { return }
-        startupStatusView?.update(phase: phase, detail: detail.map(DshMainWindowUIMessage.safe))
+        startupStatusModel.phase = phase
+        startupStatusModel.detail = detail.map(DshMainWindowUIMessage.safe)
     }
 
     private func showStartupSurface() {
         startupStatusView?.isHidden = false
-        startupStatusView?.update(phase: .preparing)
+        startupStatusModel.phase = .preparing
     }
 
     private func hideStartupSurface() {
@@ -2294,8 +2061,12 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     }
 
     private func showRecoverySurface(for context: DshLaunchContext) {
-        guard launchContext?.launchID == context.launchID,
-              let vibrancyView else { return }
+        guard launchContext?.launchID == context.launchID else { return }
+
+        // Recovery owns a separate native window. Hide the WebView window
+        // before changing the recovery model so an unready/white WebView can
+        // never flash through while AppKit installs the new SwiftUI root.
+        window?.orderOut(nil)
         let matchingPluginInspection: DshPluginInspectionResult?
         if context.profile == .desktop,
            let inspection = SettingsViewModel.shared.pluginInspectionResult,
@@ -2305,8 +2076,6 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             matchingPluginInspection = nil
         }
         hideStartupSurface()
-        recoveryHostingView?.removeFromSuperview()
-        recoveryHostingView = nil
         recoveryViewModel = nil
         let viewModel = DshRecoveryViewModel(
             launchID: context.launchID,
@@ -2347,15 +2116,8 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         )
         let safeMode = safeModeAvailability(for: context)
         viewModel.setSafeModeAvailability(safeMode.available, reason: safeMode.reason)
-        let hosting = NativeRecoveryView(viewModel: viewModel, frame: vibrancyView.bounds)
-        hosting.autoresizingMask = [.width, .height]
-        hosting.setAccessibilityElement(true)
-        hosting.setAccessibilityRole(.group)
-        hosting.setAccessibilityLabel("DSH 启动恢复：重试、打开设置或安全模式")
-        vibrancyView.addSubview(hosting, positioned: .above, relativeTo: nil)
         recoveryViewModel = viewModel
-        recoveryHostingView = hosting
-        revealWindow()
+        DshRecoveryWindowController.shared.show(viewModel: viewModel)
     }
 
     /// Build export metadata from the captured recovery Profile. No chat,
@@ -2443,14 +2205,13 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             return (false, "找不到受保护的桌面桥接组件。")
         }
         guard context.runtimeDescriptor.version == "0.1.2-alpha.5" else {
-            return (false, "所选 Runtime 尚未验证显式会话根接口。")
+            return (false, "安全模式只支持已验证的 Runtime 版本，当前所选版本尚未验证；可在设置中切换 Runtime 后重试。")
         }
         return (true, "")
     }
 
     private func hideRecoverySurface() {
-        recoveryHostingView?.removeFromSuperview()
-        recoveryHostingView = nil
+        DshRecoveryWindowController.shared.hide()
         recoveryViewModel = nil
     }
 
@@ -3273,11 +3034,17 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
 
     public func revealWindow() {
         DispatchQueue.main.async { [weak self] in
-            guard let win = self?.window else { return }
+            guard let self, let win = self.window else { return }
+            // The recovery page has its own window. A queued startup/UI
+            // callback must not re-expose the unready WebView behind it.
+            if let recoveryViewModel = self.recoveryViewModel {
+                DshRecoveryWindowController.shared.show(viewModel: recoveryViewModel)
+                return
+            }
             if !win.isVisible {
                 win.alphaValue = 0
                 win.makeKeyAndOrderFront(nil)
-                self?.adjustTrafficLights(in: win)
+                self.adjustTrafficLights(in: win)
                 NSApp.activate(ignoringOtherApps: true)
                 NSAnimationContext.runAnimationGroup { ctx in
                     ctx.duration = 0.25
@@ -3300,6 +3067,10 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     }
 
     public func showMainWindow() {
+        if let recoveryViewModel {
+            DshRecoveryWindowController.shared.show(viewModel: recoveryViewModel)
+            return
+        }
         revealWindow()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

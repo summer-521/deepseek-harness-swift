@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
+DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-26.0}"
 if [ -n "${DSH_BUILD_ARCHES:-}" ]; then
 	read -r -a BUILD_ARCHES <<< "${DSH_BUILD_ARCHES}"
 elif [ -n "${DSH_BUILD_ARCH:-}" ]; then

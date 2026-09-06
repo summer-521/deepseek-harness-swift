@@ -237,6 +237,54 @@ struct RecoveryHarness {
         requireRecovery(!viewModel.requestSafeMode(), "duplicate safe mode should be rejected while in flight")
         requireRecovery(viewModel.finishAction(safeModeRequest!), "safe mode completion should clear its request")
 
+        let portSnapshot = DshDiagnosticSnapshot(
+            context: snapshot.context,
+            phase: .dependencyCheck,
+            records: [DshDiagnosticRecord(
+                launchID: launchID,
+                generationID: generationID,
+                timestamp: timestamp.addingTimeInterval(3),
+                phase: .dependencyCheck,
+                code: .portConflict,
+                summary: "DSH port is occupied",
+                retryability: .retryable,
+                source: .native,
+                evidence: []
+            )],
+            log: "",
+            generatedAt: timestamp.addingTimeInterval(3)
+        )
+        requireRecovery(viewModel.apply(portSnapshot, for: launchID), "newer port snapshot should be accepted")
+        requireRecovery(!viewModel.showsPluginFailureSection,
+                        "non-plugin failures must hide the plugin attribution section")
+        requireRecovery((viewModel.portConflictHint ?? "").isEmpty == false,
+                        "port conflicts must show an actionable hint")
+        requireRecovery(viewModel.portConflictHint?.contains("3080") == false,
+                        "port hint must not hardcode numbers")
+
+        let pluginSnapshot = DshDiagnosticSnapshot(
+            context: snapshot.context,
+            phase: .dependencyCheck,
+            records: [DshDiagnosticRecord(
+                launchID: launchID,
+                generationID: generationID,
+                timestamp: timestamp.addingTimeInterval(4),
+                phase: .dependencyCheck,
+                code: .pluginConfigurationInvalid,
+                summary: "plugin transaction interrupted",
+                retryability: .retryable,
+                source: .native,
+                evidence: []
+            )],
+            log: "",
+            generatedAt: timestamp.addingTimeInterval(4)
+        )
+        requireRecovery(viewModel.apply(pluginSnapshot, for: launchID), "newer plugin snapshot should be accepted")
+        requireRecovery(viewModel.showsPluginFailureSection,
+                        "plugin-attributed failures must show the plugin attribution section")
+        requireRecovery(viewModel.portConflictHint == nil,
+                        "plugin failures must not show the port hint")
+
         requireRecovery(viewModel.requestOpenSettings(), "settings action should be accepted when idle")
         requireRecovery(settingsCount == 1, "settings callback should be invoked once")
         requireRecovery(viewModel.finishAction(viewModel.actionRequest!), "settings action should be finishable")

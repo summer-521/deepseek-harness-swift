@@ -57,6 +57,7 @@
 		E00000000000000000000047 /* DshPluginOperationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000071 /* DshPluginOperationCoordinator.swift */; };
 		E00000000000000000000048 /* DshPluginFailureResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000072 /* DshPluginFailureResolver.swift */; };
 		E00000000000000000000049 /* DshDiagnosticExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000073 /* DshDiagnosticExporter.swift */; };
+		E00000000000000000000050 /* RecoveryWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000074 /* RecoveryWindowController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -112,6 +113,7 @@
 		D00000000000000000000071 /* DshPluginOperationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshPluginOperationCoordinator.swift; sourceTree = "<group>"; };
 		D00000000000000000000072 /* DshPluginFailureResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshPluginFailureResolver.swift; sourceTree = "<group>"; };
 		D00000000000000000000073 /* DshDiagnosticExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshDiagnosticExporter.swift; sourceTree = "<group>"; };
+		D00000000000000000000074 /* RecoveryWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryWindowController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -303,6 +305,7 @@
 				D00000000000000000000063 /* DshRecoveryProfileManager.swift */,
 				D00000000000000000000064 /* RecoveryViewModel.swift */,
 				D00000000000000000000065 /* RecoveryView.swift */,
+				D00000000000000000000074 /* RecoveryWindowController.swift */,
 			);
 			path = Recovery;
 			sourceTree = "<group>";
@@ -455,6 +458,7 @@
 				E00000000000000000000047 /* DshPluginOperationCoordinator.swift in Sources */,
 				E00000000000000000000048 /* DshPluginFailureResolver.swift in Sources */,
 				E00000000000000000000049 /* DshDiagnosticExporter.swift in Sources */,
+				E00000000000000000000050 /* RecoveryWindowController.swift in Sources */,
 			);
 		};
 /* End PBXSourcesBuildPhase section */
@@ -464,7 +468,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CLANG_ENABLE_MODULES = YES;
-				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
@@ -473,7 +477,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CLANG_ENABLE_MODULES = YES;
-				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.0;
 			};
@@ -496,7 +500,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				OTHER_SWIFT_FLAGS = "-parse-as-library";
 				PRODUCT_BUNDLE_IDENTIFIER = "io.github.krystal-cao.dsh-swift-shell";
 				PRODUCT_NAME = DSH;
@@ -521,7 +525,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				OTHER_SWIFT_FLAGS = "-parse-as-library";
 				PRODUCT_BUNDLE_IDENTIFIER = "io.github.krystal-cao.dsh-swift-shell";
 				PRODUCT_NAME = DSH;

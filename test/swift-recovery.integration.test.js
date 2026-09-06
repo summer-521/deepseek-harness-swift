@@ -11,6 +11,7 @@ const repositoryDirectory = path.join(testDirectory, "..");
 const recoveryViewModelPath = path.join(repositoryDirectory, "Sources", "Recovery", "RecoveryViewModel.swift");
 const recoveryViewPath = path.join(repositoryDirectory, "Sources", "Recovery", "RecoveryView.swift");
 const mainWindowPath = path.join(repositoryDirectory, "Sources", "MainWindow", "MainWindowController.swift");
+const recoveryWindowPath = path.join(repositoryDirectory, "Sources", "Recovery", "RecoveryWindowController.swift");
 const settingsViewModelPath = path.join(repositoryDirectory, "Sources", "SettingsUI", "SettingsViewModel.swift");
 const sources = [
   path.join(testDirectory, "..", "Sources", "Service", "DshSecretRedactor.swift"),
@@ -47,11 +48,15 @@ test("Recovery UI exposes conservative P03 evidence and fresh execution intent",
   assert.match(settings, /DshPluginOperationCoordinator\.shared\.persistedStatus == \.absent/);
 });
 
-test("native recovery keeps the JSON preview visible across model refresh", () => {
+test("recovery keeps the JSON preview visible across model refresh", () => {
+  const recoveryView = fs.readFileSync(recoveryViewPath, "utf8");
   const mainWindow = fs.readFileSync(mainWindowPath, "utf8");
-  assert.match(mainWindow, /detailsText\.string = showingDiagnosticPreview/);
-  assert.match(mainWindow, /viewModel\.diagnosticPreview \?\? viewModel\.redactedDetails/);
-  assert.match(mainWindow, /if showingDiagnosticPreview \{\s*detailsScroll\.isHidden = false/s);
+  const recoveryWindow = fs.readFileSync(recoveryWindowPath, "utf8");
+  assert.match(recoveryView, /isDiagnosticPreviewExpanded/);
+  assert.match(recoveryView, /viewModel\.diagnosticPreview/);
+  assert.match(recoveryView, /Text\(preview\)/);
+  assert.match(recoveryWindow, /NSHostingController<DshRecoveryView>/);
+  assert.match(mainWindow, /DshRecoveryWindowController\.shared\.show\(viewModel: viewModel\)/);
 });
 
 test("persisted recovery cleanup and corrupt-record diagnostics stay isolated", () => {
