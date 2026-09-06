@@ -11,7 +11,7 @@
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
 	<key>CFBundleDisplayName</key>
-	<string>DeepSeek Harness</string>
+	<string>DSH</string>
 	<key>CFBundleIconName</key>
 	<string>app</string>
 	<key>CFBundlePackageType</key>

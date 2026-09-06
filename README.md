@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://github.com/summer-521/deepseek-harness-desktop/releases/tag/v1.0.0-swift"><img alt="Swift 原生版 v1.0.0" src="https://img.shields.io/badge/Swift%20Native-v1.0.0-171513.svg?style=flat-square" /></a>
   <a href="LICENSE"><img alt="许可证：MIT" src="https://img.shields.io/badge/License-MIT-171513.svg?style=flat-square" /></a>
-  <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-171513.svg?style=flat-square" />
+  <img alt="macOS 26+" src="https://img.shields.io/badge/macOS-26%2B-171513.svg?style=flat-square" />
   <img alt="Apple Silicon 与 Intel" src="https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-171513.svg?style=flat-square" />
 </p>
 
@@ -20,7 +20,7 @@ DSH Swift Native Shell 是 DSH Desktop 的独立 Swift 原生 macOS 实现。它
 本项目是一个独立的 Xcode 工程，不依赖 Electron 仓库，也不需要通过 `npm install` 或 `npm ci` 准备应用构建依赖。
 
 > [!IMPORTANT]
-> 这是非官方社区项目，当前为预发布版本。macOS 构建使用 ad-hoc 签名，尚未接入 Developer ID 和 notarization。首次打开如遇系统拦截，请右键选择“打开”，或前往“系统设置 → 隐私与安全性”放行。
+> 这是非官方社区项目，当前为预发布版本。macOS 构建默认使用本地自签名证书签名（无证书时可用 `DSH_CODESIGN_IDENTITY=-` 回退 ad-hoc），尚未接入 Developer ID 和 notarization。首次打开如遇系统拦截，请右键选择“打开”，或前往“系统设置 → 隐私与安全性”放行。
 
 ## 下载
 
@@ -93,7 +93,7 @@ DSH Swift Native Shell
 
 ### 环境要求
 
-- macOS 13 或更高版本
+- macOS 26 或更高版本
 - 支持 Swift 5.9 的 Xcode
 - 构建时可访问 Swift Package Manager、Node.js 和 npm Registry
 
@@ -124,13 +124,22 @@ SWIFT_DIST_DIR=/path/to/output bash scripts/package-dmg.sh
 
 Xcode 工程是标准构建入口；`Package.swift` 仅作为辅助 Swift Package 清单保留。若要获得完整的资源准备和分架构产物，请使用 `scripts/` 下的脚本。
 
+默认用本地自签名证书（`DSH Local Dev`）对应用包签名，使 macOS 的 TCC 授权（如屏幕录制）在替换新包后仍保持有效；首次构建前可运行 `bash scripts/setup-local-codesign-cert.sh` 生成并导入该证书，或通过 `DSH_CODESIGN_IDENTITY=-` 回退到 ad-hoc 签名。
+
 ## 测试
 
-测试只读取源代码和工程配置，不需要安装 npm 依赖：
+测试包括源码/工程配置检查与动态 Swift harness；需要 Node.js、macOS 和 Xcode 命令行工具，不需要安装 npm 依赖。真实 WebKit 套件需显式启用：
 
 ```bash
 npm test
 ```
+
+## 开发工作流
+
+- 采集提交与工作区证据：`node scripts/workflow-status.mjs`。
+- 提交要求排除文档时，暂存后检查：`node scripts/workflow-status.mjs --check-no-docs-staged`。
+- M2 隔离验收：`bash scripts/m2-acceptance.sh`；`--list` 查看范围与 GUI 开关。
+- 一次完成本地构建、打包、校验及 SHA-256：`bash scripts/release-local.sh arm64`（或 `x86_64`）；加 `--dry-run` 只查看流程。沿用 `SWIFT_DIST_DIR`；成功打包后会由原脚本清理 `.build`。此入口不运行测试、不安装、不发布。
 
 ## 版本与更新
 
@@ -142,13 +151,13 @@ npm test
 
 ## 已知限制
 
-- 当前使用 ad-hoc 签名，未提供 Developer ID 签名和 notarization。
+- 当前使用本地自签名证书签名（`scripts/setup-local-codesign-cert.sh` 创建，`DSH_CODESIGN_IDENTITY` 可切换到其它身份或 `-` 回退 ad-hoc），未提供 Developer ID 签名和 notarization。
 - 通知点击恢复隐藏主窗口等少数系统交互仍有待完善。
 - 应用更新和 DSH npm 运行时更新是两套独立流程。
 - 当前只提供从已安装 Runtime 向 npm `latest`/`next`/`alpha` tag 的单向升级；默认仅通知不自动安装，`next` 和 `alpha` 只能由用户明确选择；更新失败的版本会抑制到 npm tag 变化、应用升级或用户手动重试；旧版本会保留到新 Runtime 连续两次成功启动后自动清理，暂不提供任意版本切换、卸载或降级入口。
 - App 默认使用独立的 `profiles/desktop`，终端 `dsh web` 继续使用 `profiles/web`；通用设置中切换到 `web` 后，两者会共享插件和依赖，升级或插件变更可能影响终端启动。
 - `web` Profile 下禁止 DSH Runtime 版本升级和自动更新；从 `web` 切回 `desktop` 时，应用会先停止服务，再移除 web Profile 中的 `dsh-desktop-host` 与 `@deepseek-ai/dsh-host-webserver`，避免继续污染终端环境。
-- 目前仅提供 macOS 13+、Apple Silicon 与 Intel 构建。
+- 目前仅提供 macOS 26+、Apple Silicon 与 Intel 构建。
 
 ## 许可证
 

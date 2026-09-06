@@ -33,6 +33,11 @@ done
 export MACOSX_DEPLOYMENT_TARGET="${DEPLOYMENT_TARGET}"
 
 APP_NAME="DSH"
+# Local signing identity. A persistent self-signed certificate keeps the TCC
+# code requirement stable across rebuilds, so replacing the app no longer
+# invalidates grants such as Screen Recording. Set DSH_CODESIGN_IDENTITY=- to
+# fall back to ad-hoc signing.
+CODESIGN_IDENTITY="${DSH_CODESIGN_IDENTITY:-DSH Local Dev}"
 SWIFT_VERSION_CONFIG="${PROJECT_DIR}/Version.xcconfig"
 APP_VERSION="$(sed -nE 's/^[[:space:]]*SWIFT_APP_VERSION[[:space:]]*=[[:space:]]*([^[:space:]]+).*/\1/p' "${SWIFT_VERSION_CONFIG}" | head -n 1)"
 APP_BUILD="$(sed -nE 's/^[[:space:]]*SWIFT_APP_BUILD[[:space:]]*=[[:space:]]*([^[:space:]]+).*/\1/p' "${SWIFT_VERSION_CONFIG}" | head -n 1)"
@@ -155,8 +160,8 @@ for BUILD_ARCH in "${BUILD_ARCHES[@]}"; do
 		exit 1
 	fi
 
-	echo "=== ${BUILD_ARCH} 3/3: Ad-hoc Codesigning ==="
-	codesign --force --deep --sign - --timestamp=none "${APP_DIR}"
+	echo "=== ${BUILD_ARCH} 3/3: Codesigning (${CODESIGN_IDENTITY}) ==="
+	codesign --force --deep --sign "${CODESIGN_IDENTITY}" --timestamp=none "${APP_DIR}"
 	touch "${APP_DIR}"
 	BUILT_APPS+=("${APP_DIR}")
 	echo "✅ ${BUILD_ARCH} build completed: ${APP_DIR}"
