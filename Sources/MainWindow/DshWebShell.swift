@@ -324,9 +324,7 @@ public final class DshWebShell {
         self.webView.autoresizingMask = [.width, .height]
         self.webView.setValue(false, forKey: "drawsBackground")
 #if DEBUG
-        if #available(macOS 13.3, *) {
-            self.webView.isInspectable = Self.developerToolsEnabledByDefault
-        }
+        self.webView.isInspectable = Self.developerToolsEnabledByDefault
 #endif
         configureRootView()
     }
@@ -378,13 +376,13 @@ public final class DshWebShell {
     public func enableDeveloperTools() {
 #if DEBUG
         webView.configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
-        if #available(macOS 13.3, *) { webView.isInspectable = true }
+        webView.isInspectable = true
 #endif
     }
 
     public func closeDeveloperTools() {
         webView.configuration.preferences.setValue(false, forKey: "developerExtrasEnabled")
-        if #available(macOS 13.3, *) { webView.isInspectable = false }
+        webView.isInspectable = false
     }
 
     private func configureRootView() {

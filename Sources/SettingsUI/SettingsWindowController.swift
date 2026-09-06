@@ -67,9 +67,7 @@ public final class SettingsWindowController: NSWindowController, NSWindowDelegat
         // layer used to sit above the SwiftUI settings header on macOS 26 and
         // made the top controls feel unresponsive.
         win.isMovableByWindowBackground = false
-        if #available(macOS 11.0, *) {
-            win.toolbarStyle = .unified
-        }
+        win.toolbarStyle = .unified
 
         super.init(window: win)
         win.delegate = self

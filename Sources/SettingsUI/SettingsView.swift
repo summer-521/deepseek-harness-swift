@@ -250,27 +250,16 @@ public struct SettingsView: View {
         )
     }
 
-    @ViewBuilder
     private var settingsSplitView: some View {
-        if #available(macOS 26.0, *) {
-            NavigationSplitView {
-                macOS26Sidebar
-            } detail: {
-                macOS26Detail
-            }
-            .navigationSplitViewStyle(.balanced)
-            .toolbar(removing: .title)
-        } else {
-            NavigationSplitView {
-                legacySidebar
-            } detail: {
-                legacyDetail
-            }
-            .navigationSplitViewStyle(.balanced)
+        NavigationSplitView {
+            macOS26Sidebar
+        } detail: {
+            macOS26Detail
         }
+        .navigationSplitViewStyle(.balanced)
+        .toolbar(removing: .title)
     }
 
-    @available(macOS 26.0, *)
     private var macOS26Sidebar: some View {
         List(SettingsPanel.allCases, selection: selection) { panel in
             Label(panel.navTitle, systemImage: panel.icon)
@@ -279,15 +268,6 @@ public struct SettingsView: View {
         .listStyle(.sidebar)
         .navigationSplitViewColumnWidth(min: 230, ideal: 250, max: 270)
         .toolbar(removing: .sidebarToggle)
-    }
-
-    private var legacySidebar: some View {
-        List(SettingsPanel.allCases, selection: selection) { panel in
-            Label(panel.navTitle, systemImage: panel.icon)
-                .tag(panel)
-        }
-        .listStyle(.sidebar)
-        .navigationSplitViewColumnWidth(min: 230, ideal: 250, max: 270)
     }
 
     private var detailContent: some View {
@@ -313,7 +293,6 @@ public struct SettingsView: View {
         .scrollIndicators(.visible)
     }
 
-    @available(macOS 26.0, *)
     private var macOS26Detail: some View {
         detailContent
             .scrollEdgeEffectStyle(.soft, for: .top)
@@ -321,25 +300,12 @@ public struct SettingsView: View {
             .toolbar { macOS26Toolbar }
     }
 
-    private var legacyDetail: some View {
-        detailContent
-            .toolbar { legacyToolbar }
-    }
-
     @ToolbarContentBuilder
-    @available(macOS 26.0, *)
     private var macOS26Toolbar: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
             toolbarLabel
         }
         .sharedBackgroundVisibility(.hidden)
-    }
-
-    @ToolbarContentBuilder
-    private var legacyToolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            toolbarLabel
-        }
     }
 
     private var toolbarLabel: some View {
@@ -387,16 +353,7 @@ private struct SettingsNavigationButtons: View {
     let goForward: () -> Void
 
     var body: some View {
-        if #available(macOS 26.0, *) {
-            buttons.glassEffect(.regular, in: Capsule())
-        } else {
-            buttons
-                .background(.thinMaterial, in: Capsule())
-                .overlay {
-                    Capsule()
-                        .stroke(Color.primary.opacity(0.1), lineWidth: 1)
-                }
-        }
+        buttons.glassEffect(.regular, in: Capsule())
     }
 
     private var buttons: some View {
