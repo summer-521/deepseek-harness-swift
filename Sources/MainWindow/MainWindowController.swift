@@ -1063,17 +1063,20 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         }
     }
 
-    /// Offer the notification authorization prompt once, well after the
-    /// main window is stable. Gated to clean normal desktop launches:
-    /// recovery/verify starts never schedule it, and a newer launch or a
-    /// recovery surface appearing first cancels the pending offer.
+    /// Offer the notification authorization prompt right after the startup
+    /// card is gone and the main window appears (short grace so the prompt
+    /// does not race the reveal animation). Gated to clean normal desktop
+    /// launches: recovery/verify starts never schedule it, and a newer
+    /// launch or a recovery surface appearing first cancels the pending
+    /// offer. The startup surfaces are already hidden at this point, so the
+    /// macOS 26 safe-area constraint loop is not re-entered.
     private func schedulePostReadyNotificationAuthorization(for context: DshLaunchContext) {
         postReadyAuthorizationTask?.cancel()
         postReadyAuthorizationTask = nil
         guard context.purpose == .normal, context.profile == .desktop else { return }
         let launchID = context.launchID
         postReadyAuthorizationTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            try? await Task.sleep(nanoseconds: 150_000_000)
             guard let self,
                   !Task.isCancelled,
                   self.launchContext?.launchID == launchID,
