@@ -120,116 +120,8 @@ private final class DownloadStatusBanner: NSVisualEffectView {
 /// Native progress surface shown while the managed child and WebKit session
 /// cross their startup gates. It stays independent from the failure surface so
 /// a slow but healthy launch is never presented as an error.
-/// Presented as a centered card: app icon, title, an indeterminate bar (phase
-/// durations are not measurable, so no fake percentages) and a checklist of
-/// the launch phases with done/current/pending states.
-/// Observable startup progress rendered by DshStartupView below. The
-/// controller mutates it from MainActor-only call sites; the view itself
-/// presents no sheets, alerts or authorization windows.
-@MainActor
-private final class DshStartupStatusModel: ObservableObject {
-    @Published var phase: DshLaunchPhase = .preparing
-    @Published var detail: String? = nil
-}
-
-/// SwiftUI startup overlay. It shows exactly what the former AppKit card
-/// showed (title, indeterminate progress, per-phase checklist, detail) and
-/// presents no system windows: notification authorization and Sparkle update
-/// UI stay out of the startup path (see the post-ready scheduler), which is
-/// what keeps this surface clear of the macOS 26 safe-area constraint loop.
-private struct DshStartupView: View {
-    @ObservedObject var status: DshStartupStatusModel
-
-    private static var orderedPhases: [DshLaunchPhase] {
-        DshLaunchPhase.allCases.filter { $0 != .ready }
-    }
-
-    var body: some View {
-        ZStack {
-            Color.clear
-            VStack {
-                Spacer()
-                VStack(spacing: 14) {
-                    VStack(spacing: 8) {
-                        if let appIcon = NSApplication.shared.applicationIconImage {
-                            Image(nsImage: appIcon)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: 64, height: 64)
-                        }
-                        Text(status.phase == .ready ? "已就绪" : "正在启动 DSH")
-                            .font(.system(size: 20, weight: .semibold))
-                        Text("正在准备本地运行环境，请稍候")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
-                    }
-                    ProgressView()
-                        .progressViewStyle(.linear)
-                        .frame(height: 6)
-                    VStack(alignment: .leading, spacing: 7) {
-                        ForEach(Array(Self.orderedPhases.enumerated()), id: \.offset) { index, phase in
-                            phaseRow(phase: phase, index: index)
-                        }
-                    }
-                    Text(status.detail ?? "DSH 正在建立受保护的启动会话。")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                        .frame(maxWidth: 380)
-                }
-                .padding(.top, 28)
-                .padding(.bottom, 24)
-                .padding(.horizontal, 30)
-                .frame(width: 440)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .shadow(color: .black.opacity(0.25), radius: 24, y: -6)
-                Spacer()
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // The overlay has no interactive content. Letting clicks fall
-        // through keeps the window draggable while startup is showing.
-        .allowsHitTesting(false)
-    }
-
-    private func phaseRow(phase: DshLaunchPhase, index: Int) -> some View {
-        let order = Self.orderedPhases
-        let currentIndex = order.firstIndex(of: status.phase) ?? order.count
-        let symbol = if index < currentIndex {
-            "checkmark.circle.fill"
-        } else if index == currentIndex {
-            "circle.circle.fill"
-        } else {
-            "circle"
-        }
-        let tint: Color = if index < currentIndex {
-            .green
-        } else if index == currentIndex {
-            .accentColor
-        } else {
-            Color(nsColor: .tertiaryLabelColor)
-        }
-        let labelColor: Color = if index < currentIndex {
-            .secondary
-        } else if index == currentIndex {
-            .primary
-        } else {
-            Color(nsColor: .tertiaryLabelColor)
-        }
-        let weight: Font.Weight = if index == currentIndex { .semibold } else { .regular }
-        return HStack(spacing: 8) {
-            Image(systemName: symbol)
-                .resizable()
-                .frame(width: 16, height: 16)
-                .foregroundStyle(tint)
-            Text(phase.displayName)
-                .font(.system(size: 13, weight: weight))
-                .foregroundStyle(labelColor)
-            Spacer()
-        }
-    }
-}
+/// Startup progress is rendered by the standalone SwiftUI card in
+/// `Sources/Startup/StartupView.swift` and owned by `DshStartupWindowController`.
 
 /// AppKit indicator shown while an isolated recovery service is active.
 @MainActor
@@ -316,7 +208,6 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     private let diagnosticStore = DshDiagnosticStore(
         storageURL: DshStateManager.appSupportDirectory.appendingPathComponent("dsh-diagnostics.json")
     )
-    private var startupStatusView: NSHostingView<DshStartupView>?
     private var startupStatusModel = DshStartupStatusModel()
     private var safeModeBanner: NativeSafeModeBanner?
     private var recoveryViewModel: DshRecoveryViewModel?
@@ -453,18 +344,6 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         self.upstreamCookieStore = DshUpstreamCookieStore(dataStore: shell.webView.configuration.websiteDataStore)
         self.vibrancyView = shell.rootView
         win.contentView = shell.rootView
-
-        let startup = NSHostingView(rootView: DshStartupView(status: startupStatusModel))
-        startup.translatesAutoresizingMaskIntoConstraints = false
-        startup.isHidden = true
-        shell.rootView.addSubview(startup, positioned: .above, relativeTo: shell.webView)
-        NSLayoutConstraint.activate([
-            startup.leadingAnchor.constraint(equalTo: shell.rootView.leadingAnchor),
-            startup.trailingAnchor.constraint(equalTo: shell.rootView.trailingAnchor),
-            startup.topAnchor.constraint(equalTo: shell.rootView.topAnchor),
-            startup.bottomAnchor.constraint(equalTo: shell.rootView.bottomAnchor)
-        ])
-        self.startupStatusView = startup
     }
 
     /// Bind the bridge only after DSH has created the current access
@@ -498,7 +377,6 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         showStartupSurface()
         startupStatusModel.phase = .preparing
         startupStatusModel.detail = "正在检查并恢复上次启动状态…"
-        revealWindow()
     }
 
     public func launch() {
@@ -531,7 +409,6 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             revealWindow()
         } else {
             showStartupSurface()
-            revealWindow()
             startAndLoadDsh()
         }
     }
@@ -859,7 +736,6 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         hideOnboardingView()
         hideRecoverySurface()
         showStartupSurface()
-        revealWindow()
         startupTask = Task { @MainActor in
             defer { self.startupTask = nil }
             do {
@@ -1171,6 +1047,10 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             }
             setDiagnosticPhase(.ready, launchID: context.launchID, generationID: session.access.id)
             hideStartupSurface()
+            // The standalone startup card is gone; the main window can now
+            // take over. A running restart leaves it already visible, so this
+            // is a no-op there.
+            revealWindow()
             schedulePostReadyNotificationAuthorization(for: context)
             return authenticatedSession
         } catch {
@@ -1867,12 +1747,12 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     }
 
     private func showStartupSurface() {
-        startupStatusView?.isHidden = false
+        DshStartupWindowController.shared.show(status: startupStatusModel)
         startupStatusModel.phase = .preparing
     }
 
     private func hideStartupSurface() {
-        startupStatusView?.isHidden = true
+        DshStartupWindowController.shared.hide()
     }
 
     private func recordStartupFailure(_ error: Error, context: DshLaunchContext) {

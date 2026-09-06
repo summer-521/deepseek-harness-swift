@@ -58,6 +58,8 @@
 		E00000000000000000000048 /* DshPluginFailureResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000072 /* DshPluginFailureResolver.swift */; };
 		E00000000000000000000049 /* DshDiagnosticExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000073 /* DshDiagnosticExporter.swift */; };
 		E00000000000000000000050 /* RecoveryWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000074 /* RecoveryWindowController.swift */; };
+		E00000000000000000000051 /* StartupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000075 /* StartupView.swift */; };
+		E00000000000000000000052 /* StartupWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000076 /* StartupWindowController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -114,6 +116,8 @@
 		D00000000000000000000072 /* DshPluginFailureResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshPluginFailureResolver.swift; sourceTree = "<group>"; };
 		D00000000000000000000073 /* DshDiagnosticExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshDiagnosticExporter.swift; sourceTree = "<group>"; };
 		D00000000000000000000074 /* RecoveryWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryWindowController.swift; sourceTree = "<group>"; };
+		D00000000000000000000075 /* StartupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartupView.swift; sourceTree = "<group>"; };
+		D00000000000000000000076 /* StartupWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartupWindowController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -161,6 +165,7 @@
 				D00000000000000000000066 /* Diagnostics */,
 				D00000000000000000000036 /* Service */,
 				D00000000000000000000067 /* Recovery */,
+				D00000000000000000000077 /* Startup */,
 				D00000000000000000000037 /* Versions */,
 				D00000000000000000000038 /* Plugins */,
 				D00000000000000000000039 /* Notification */,
@@ -308,6 +313,15 @@
 				D00000000000000000000074 /* RecoveryWindowController.swift */,
 			);
 			path = Recovery;
+			sourceTree = "<group>";
+		};
+		D00000000000000000000077 /* Startup */ = {
+			isa = PBXGroup;
+			children = (
+				D00000000000000000000075 /* StartupView.swift */,
+				D00000000000000000000076 /* StartupWindowController.swift */,
+			);
+			path = Startup;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -459,6 +473,8 @@
 				E00000000000000000000048 /* DshPluginFailureResolver.swift in Sources */,
 				E00000000000000000000049 /* DshDiagnosticExporter.swift in Sources */,
 				E00000000000000000000050 /* RecoveryWindowController.swift in Sources */,
+				E00000000000000000000051 /* StartupView.swift in Sources */,
+				E00000000000000000000052 /* StartupWindowController.swift in Sources */,
 			);
 		};
 /* End PBXSourcesBuildPhase section */
