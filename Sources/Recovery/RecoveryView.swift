@@ -1,4 +1,15 @@
+import AppKit
 import SwiftUI
+
+/// Reports the vertical size of the recovery card so the owning window can
+/// resize to fit the current content (for example when a disclosure expands
+/// or collapses).
+private struct DshRecoveryContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
 
 /// A native, coordinator-driven recovery surface. It only renders state from
 /// `DshRecoveryViewModel`; lifecycle and runtime work stay outside the view.
@@ -9,9 +20,16 @@ public struct DshRecoveryView: View {
     @State private var isPluginRemovalConfirmationPresented = false
     @State private var isAdoptConfirmationPresented = false
     @State private var hasRequestedPreview = false
+    /// Reports the content's ideal height so the owning window can resize to
+    /// fit when a disclosure expands or collapses. Runs on the main actor.
+    private let onContentHeightChange: @MainActor (CGFloat) -> Void
 
-    public init(viewModel: DshRecoveryViewModel) {
+    public init(
+        viewModel: DshRecoveryViewModel,
+        onContentHeightChange: @escaping @MainActor (CGFloat) -> Void = { _ in }
+    ) {
         self.viewModel = viewModel
+        self.onContentHeightChange = onContentHeightChange
     }
 
     public var body: some View {
@@ -19,20 +37,24 @@ public struct DshRecoveryView: View {
             Color(nsColor: .windowBackgroundColor)
                 .ignoresSafeArea()
 
-            GeometryReader { geometry in
-                ScrollView(.vertical) {
-                    VStack(spacing: 0) {
-                        Spacer(minLength: 24)
-                        recoveryContent
-                        Spacer(minLength: 24)
-                    }
-                    .frame(minHeight: geometry.size.height)
+            ScrollView(.vertical) {
+                recoveryContent
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 24)
-                }
+                    .background(
+                        GeometryReader { proxy in
+                            Color.clear.preference(
+                                key: DshRecoveryContentHeightKey.self,
+                                value: proxy.size.height
+                            )
+                        }
+                    )
+            }
+            .onPreferenceChange(DshRecoveryContentHeightKey.self) { height in
+                onContentHeightChange(height)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(width: 620)
         .confirmationDialog(
             "确认移除并重试？",
             isPresented: $isPluginRemovalConfirmationPresented,
@@ -60,76 +82,118 @@ public struct DshRecoveryView: View {
     }
 
     private var recoveryContent: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 0) {
             header
+                .padding(.bottom, 22)
+
             statusCard
-            pluginFailureSection
+                .padding(.bottom, 14)
+
+            if viewModel.showsPluginFailureSection {
+                pluginFailureSection
+                    .padding(.bottom, 14)
+            }
+
             details
+                .padding(.bottom, 12)
+
             diagnosticExport
+                .padding(.bottom, 20)
+
+            Divider()
+                .padding(.bottom, 16)
+
             actions
         }
-        .padding(24)
-        .frame(width: 700, alignment: .topLeading)
+        .padding(.horizontal, 28)
+        .padding(.top, 8)
+        .frame(width: 560, alignment: .topLeading)
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("无法完成启动")
-                .font(.title2.weight(.semibold))
-            Text("可以重试，或打开设置检查运行环境。")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+        HStack(alignment: .center, spacing: 14) {
+            if let appIcon = NSApplication.shared.applicationIconImage {
+                Image(nsImage: appIcon)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 46, height: 46)
+                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .shadow(color: .black.opacity(0.14), radius: 2, y: 1)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text("无法完成启动")
+                    .font(.title2.weight(.semibold))
+                Text("可以重试，或打开设置检查运行环境。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var statusCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Image(systemName: "exclamationmark.triangle")
+        HStack(alignment: .top, spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(Color.orange.opacity(0.16))
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.orange)
-                Text(viewModel.phaseTitle)
-                    .font(.headline)
-                Spacer()
-                if viewModel.isActionInFlight {
-                    ProgressView()
-                        .controlSize(.small)
+            }
+            .frame(width: 38, height: 38)
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(viewModel.phaseTitle)
+                        .font(.headline)
+                    if viewModel.isActionInFlight {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                Text(viewModel.failureSummary)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let hint = viewModel.portConflictHint {
+                    Text(hint)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let code = viewModel.failureCodeTitle {
+                    Text(code)
+                        .font(.system(.caption, design: .monospaced).weight(.medium))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color.primary.opacity(0.06)))
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("错误码：\(code)")
+                }
+
+                if let actionMessage = viewModel.actionMessage ?? (viewModel.isActionInFlight ? "正在执行…" : nil) {
+                    Text(actionMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-
-            Text(viewModel.failureSummary)
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if let hint = viewModel.portConflictHint {
-                Text(hint)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if let code = viewModel.failureCodeTitle {
-                Text("错误码：\(code)")
-                    .font(.footnote.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-
-            if let actionMessage = viewModel.actionMessage ?? (viewModel.isActionInFlight ? "正在执行…" : nil) {
-                Text(actionMessage)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Spacer(minLength: 0)
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color.orange.opacity(0.10))
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.orange.opacity(0.28), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.orange.opacity(0.26), lineWidth: 1)
         }
     }
 
@@ -178,8 +242,21 @@ public struct DshRecoveryView: View {
         Group {
             if viewModel.showsPluginFailureSection, let analysis = viewModel.pluginFailureAnalysis {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("插件故障定位")
-                        .font(.headline)
+                    HStack(spacing: 10) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color.blue.opacity(0.14))
+                            Image(systemName: "puzzlepiece.extension.fill")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(.blue)
+                        }
+                        .frame(width: 34, height: 34)
+                        .accessibilityHidden(true)
+                        Text("插件故障定位")
+                            .font(.headline)
+                        Spacer()
+                    }
+
                     Text(analysis.summary)
                         .font(.callout)
                         .fixedSize(horizontal: false, vertical: true)
@@ -232,11 +309,11 @@ public struct DshRecoveryView: View {
                 .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .fill(Color.blue.opacity(0.07))
                 }
                 .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .stroke(Color.blue.opacity(0.22), lineWidth: 1)
                 }
             }
@@ -244,7 +321,7 @@ public struct DshRecoveryView: View {
     }
 
     private var actions: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Button("重试") {
                     _ = viewModel.requestRetry()
@@ -287,7 +364,6 @@ public struct DshRecoveryView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(viewModel.isActionInFlight || viewModel.pluginRemovalInFlight || viewModel.adoptInterruptedTransactionInFlight)
             }
-
         }
     }
 

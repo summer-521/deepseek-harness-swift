@@ -11,8 +11,8 @@ public final class DshRecoveryWindowController: NSWindowController, NSWindowDele
     private var hostingController: NSHostingController<DshRecoveryView>?
     private var hasPositionedWindow = false
 
-    private static let contentSize = NSSize(width: 760, height: 680)
-    private static let minimumSize = NSSize(width: 700, height: 480)
+    private static let contentSize = NSSize(width: 620, height: 460)
+    private static let minimumSize = NSSize(width: 620, height: 360)
 
     private init() {
         let win = NSWindow(
@@ -45,7 +45,12 @@ public final class DshRecoveryWindowController: NSWindowController, NSWindowDele
     /// user-selected position during a single recovery episode.
     public func show(viewModel: DshRecoveryViewModel) {
         guard let win = window else { return }
-        let root = DshRecoveryView(viewModel: viewModel)
+        let root = DshRecoveryView(
+            viewModel: viewModel,
+            onContentHeightChange: { [weak self] height in
+                self?.resizeWindow(toContentHeight: height)
+            }
+        )
         if let hostingController {
             hostingController.rootView = root
         } else {
@@ -57,6 +62,7 @@ public final class DshRecoveryWindowController: NSWindowController, NSWindowDele
             self.hostingController = hostingController
         }
 
+        fitWindowToContent(win)
         if !hasPositionedWindow {
             positionOnVisibleScreen(win, centered: true)
             hasPositionedWindow = true
@@ -65,6 +71,40 @@ public final class DshRecoveryWindowController: NSWindowController, NSWindowDele
         }
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Size the window to the SwiftUI content's ideal height (clamped to the
+    /// visible screen and the configured minimum) so the recovery card does
+    /// not float inside a tall, mostly-empty window.
+    private func fitWindowToContent(_ win: NSWindow) {
+        guard let hostingController else { return }
+        let fitting = hostingController.view.fittingSize
+        let visibleFrame = (win.screen ?? NSScreen.main)?.visibleFrame
+        let availableHeight = visibleFrame.map { $0.height } ?? Self.contentSize.height
+        let contentHeight = min(max(fitting.height, Self.minimumSize.height), availableHeight)
+        win.setContentSize(NSSize(width: Self.contentSize.width, height: contentHeight))
+    }
+
+    /// Grow or shrink the window to follow the recovery card when a disclosure
+    /// expands or collapses, keeping the window's center stable and clamping
+    /// the frame to the visible screen. The resize is applied immediately so
+    /// the window tracks the content without a laggy animation.
+    private func resizeWindow(toContentHeight height: CGFloat) {
+        guard let win = window else { return }
+        let visibleFrame = (win.screen ?? NSScreen.main)?.visibleFrame
+        let availableHeight = visibleFrame.map { $0.height } ?? Self.contentSize.height
+        let contentHeight = min(max(height, Self.minimumSize.height), availableHeight)
+        let currentContentSize = win.contentRect(forFrameRect: win.frame).size
+        guard abs(contentHeight - currentContentSize.height) > 1 else { return }
+
+        let oldCenter = NSPoint(x: win.frame.midX, y: win.frame.midY)
+        win.setContentSize(NSSize(width: currentContentSize.width, height: contentHeight))
+        var origin = NSPoint(x: oldCenter.x - win.frame.width / 2, y: oldCenter.y - win.frame.height / 2)
+        if let visibleFrame {
+            origin.x = min(max(origin.x, visibleFrame.minX), visibleFrame.maxX - win.frame.width)
+            origin.y = min(max(origin.y, visibleFrame.minY), visibleFrame.maxY - win.frame.height)
+        }
+        win.setFrameOrigin(origin)
     }
 
     /// Close the recovery surface after the recovery owner has transitioned
@@ -88,23 +128,26 @@ public final class DshRecoveryWindowController: NSWindowController, NSWindowDele
     private func positionOnVisibleScreen(_ win: NSWindow, centered: Bool) {
         guard let visibleFrame = (win.screen ?? NSScreen.main)?.visibleFrame else {
             win.minSize = Self.minimumSize
-            win.setContentSize(Self.contentSize)
             if centered { win.center() }
             return
         }
 
-        // A restored window can be larger than the current screen (for
-        // example after moving between a laptop display and a small external
-        // display). Resize the content first, then clamp the complete frame;
-        // this keeps the titlebar and every control inside visibleFrame.
-        let frameForDefaultContent = win.frameRect(
-            forContentRect: NSRect(origin: .zero, size: Self.contentSize)
+        // Use the window's current content size (already fitted by
+        // fitWindowToContent) so we do not reset a content-driven height back
+        // to the fixed default. A restored window can be larger than the
+        // current screen (for example after moving between a laptop display
+        // and a small external display). Resize the content first, then clamp
+        // the complete frame; this keeps the titlebar and every control inside
+        // visibleFrame.
+        let currentContentSize = win.contentRect(forFrameRect: win.frame).size
+        let frameForContent = win.frameRect(
+            forContentRect: NSRect(origin: .zero, size: currentContentSize)
         )
-        let horizontalFrameInset = max(0, frameForDefaultContent.width - Self.contentSize.width)
-        let verticalFrameInset = max(0, frameForDefaultContent.height - Self.contentSize.height)
+        let horizontalFrameInset = max(0, frameForContent.width - currentContentSize.width)
+        let verticalFrameInset = max(0, frameForContent.height - currentContentSize.height)
         let contentSize = NSSize(
-            width: min(Self.contentSize.width, max(1, visibleFrame.width - horizontalFrameInset)),
-            height: min(Self.contentSize.height, max(1, visibleFrame.height - verticalFrameInset))
+            width: min(currentContentSize.width, max(1, visibleFrame.width - horizontalFrameInset)),
+            height: min(currentContentSize.height, max(1, visibleFrame.height - verticalFrameInset))
         )
         let minimumSize = NSSize(
             width: min(Self.minimumSize.width, contentSize.width),
