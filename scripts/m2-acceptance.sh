@@ -8,6 +8,7 @@ acceptance_tests=(
   # P01/P02: transaction, real fake-pnpm product chain, UI contract and gates.
   test/swift-plugin-operation.integration.test.js
   test/swift-plugin-product-chain.integration.test.js
+  test/swift-plugin-process-lifecycle.integration.test.js
   test/swift-plugin-manager-safety.test.js
   test/swift-plugin-ui-progress.test.js
 

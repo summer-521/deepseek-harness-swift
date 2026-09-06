@@ -261,14 +261,24 @@ public final class DshService: @unchecked Sendable {
             processIO: processIO,
             access: access
         ))
-        saveProcessRecord(DshProcessRecord(
+        let processRecord = DshProcessRecord(
             pid: proc.processIdentifier,
             port: actualPort,
             nodePath: canonicalPath(nodePath),
             processGroupID: processGroupID,
             generationID: access.generation.id.uuidString,
             processStartTime: processStartTime(proc.processIdentifier)
-        ))
+        )
+        do {
+            try saveProcessRecord(processRecord)
+        } catch {
+            // The child is not recoverable across a force-quit without its
+            // ownership record. Never return a successful session after this
+            // durable handoff failed; stop the just-started child while the
+            // startup gate still belongs to this launch.
+            await stopAndWait()
+            throw ServiceError.startupFailed("无法保存 DSH 服务进程记录：\(error.localizedDescription)")
+        }
 
         do {
             try access.sendBootstrap(
@@ -531,12 +541,20 @@ public final class DshService: @unchecked Sendable {
         return try? JSONDecoder().decode(DshProcessRecord.self, from: data)
     }
 
-    private func saveProcessRecord(_ record: DshProcessRecord) {
+    private func saveProcessRecord(_ record: DshProcessRecord) throws {
         do {
+            try FileManager.default.createDirectory(
+                at: processRecordURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
             let data = try JSONEncoder().encode(record)
             try data.write(to: processRecordURL, options: .atomic)
         } catch {
-            print("[DshService] Failed to save process record:", error)
+            throw NSError(
+                domain: "DshService.Persistence",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: error.localizedDescription]
+            )
         }
     }
 

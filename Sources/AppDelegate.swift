@@ -29,6 +29,21 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = AppUpdateManager.shared
         setupAppMenu()
         Task { @MainActor in
+            // Recovery work begins before MainWindowController.launch(). Show
+            // the native progress surface now so AppKit state restoration can
+            // never expose the empty WKWebView underneath it.
+            MainWindowController.shared.beginStartupPreparation()
+            // Do not let the in-memory default stand in for an existing but
+            // unreadable/corrupt primary state file. This guard must precede
+            // every Runtime, Profile, and plugin recovery hook because those
+            // hooks can otherwise write using the fallback config.
+            switch DshStateStartupDecision.decide(for: DshStateManager.shared.loadResult) {
+            case .proceed:
+                break
+            case .block(let detail):
+                MainWindowController.shared.blockStartupForStateFailure(detail)
+                return
+            }
             // Recovery and Profile cleanup can touch thousands of files. Keep
             // the UI responsive and let MainWindowController perform the one
             // actual snapshot restore immediately before the old Runtime is
@@ -39,6 +54,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             // Reclaim an orphaned Node process before any recovery path can
             // touch package.json, pnpm-lock.yaml, or node_modules.
             var startupRecoveryError: Error?
+            var startupPersistenceError: DshStatePersistenceError?
             do {
                 // Startup recovery, snapshot cleanup, and the first launch
                 // share one operation gate. This prevents MainWindow from
@@ -46,9 +62,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 // recovery write.
                 try await MainWindowController.shared.withRuntimeOperation {
                     try await DshService.shared.prepareForProfileMutation()
-                    await SettingsViewModel.shared.recoverPendingProfileSwitch()
-                    await SettingsViewModel.shared.recoverPendingRuntimeUpdate()
-                    await SettingsViewModel.shared.retryRetainedWebProfileSnapshotCleanup()
+                    try await SettingsViewModel.shared.recoverPendingProfileSwitch()
+                    try await SettingsViewModel.shared.recoverPendingRuntimeUpdate()
+                    try await SettingsViewModel.shared.retryRetainedWebProfileSnapshotCleanup()
 
                     // P01 recovery runs inside this already-held Runtime /
                     // Profile gate. Its health hooks call
@@ -80,8 +96,24 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 if case let .pluginOperation(pluginError) = error as? DshStartupRecoveryError {
                     startupRecoveryError = pluginError
                 }
+                if let persistenceError = error as? DshStatePersistenceError {
+                    startupPersistenceError = persistenceError
+                }
                 print("[AppDelegate] Profile recovery deferred until the DSH port is safe:", DshAppDelegateLog.safe(error))
             }
+            if let startupPersistenceError {
+                // A failed recovery commit is itself a startup blocker. Do
+                // not continue into launch with an in-memory state that was
+                // never durably written.
+                MainWindowController.shared.blockStartupForStateFailure(
+                    startupPersistenceError.localizedDescription
+                )
+                return
+            }
+            // Settings may have restored a verifying banner before recovery
+            // ran. Re-read the durable result so a committed recovery is
+            // shown as success, while corrupt records remain fail-closed.
+            SettingsViewModel.shared.synchronizePersistedPluginOperationState()
             if let startupRecoveryError {
                 // Do not continue into a normal launch after an unresolved
                 // Runtime/Profile/plugin recovery condition. The native

@@ -38,6 +38,7 @@ function run(binaryPath, root, scenario) {
         'update-preflight',
       'update-preflight-confirm',
       'update-preflight-symlink',
+      'input-boundaries',
     ].includes(scenario) ? 'minimum-release-age'
         : ['silent-update-minimum-release-age', 'silent-update-preflight'].includes(scenario) ? 'silent-minimum-release-age'
           : scenario === 'silent-no-keyword-preflight' ? 'silent-no-keyword'

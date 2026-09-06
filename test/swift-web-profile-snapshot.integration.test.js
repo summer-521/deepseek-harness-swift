@@ -75,6 +75,8 @@ const hostName = 'dsh-desktop-host'
 const webServerName = '@deepseek-ai/dsh-host-webserver'
 const hostDir = path.join(profile, 'node_modules', hostName)
 const webServerDir = path.join(profile, 'node_modules', '@deepseek-ai', 'dsh-host-webserver')
+const logFile = process.env.DSH_TEST_PNPM_LOG
+if (logFile) fs.appendFileSync(logFile, JSON.stringify({ command, args }) + '\\n')
 if (process.env.DSH_TEST_PNPM_OUTPUT === '1') {
   const shapedToken = 'T'.repeat(43)
   process.stdout.write('stdout-' + 'x'.repeat(6000) + '?token=' + shapedToken + '\\n')
@@ -112,6 +114,7 @@ fs.writeFileSync(packageFile, JSON.stringify(pkg))
       env: {
         ...process.env,
         DSH_TEST_APP_SUPPORT: appSupportRoot,
+        DSH_TEST_PNPM_LOG: path.join(testRoot, 'pnpm.log'),
         TMPDIR: tempRoot,
       },
       encoding: 'utf8',
@@ -119,6 +122,12 @@ fs.writeFileSync(packageFile, JSON.stringify(pkg))
     })
     assert.equal(run.status, 0, run.stderr || run.stdout)
     assert.match(run.stdout, /web profile snapshot and ownership integration harness passed/)
+    const pnpmLog = fs.readFileSync(path.join(testRoot, 'pnpm.log'), 'utf8')
+      .trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    const bridgeAdds = pnpmLog.filter((entry) =>
+      entry.command === 'add' && entry.args.some((value) => value.includes('dsh-desktop-host'))
+    )
+    assert.equal(bridgeAdds.length, 1, 'healthy/stale bridge recheck must not invoke a second pnpm add')
   } finally {
     try {
       fs.rmSync(testRoot, { recursive: true, force: true })

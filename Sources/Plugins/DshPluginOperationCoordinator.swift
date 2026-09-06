@@ -261,9 +261,10 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
         }
     }
 
-    /// Resume a persisted record after a normal process interruption.  A
-    /// record that was still `mutating` has no proof of who changed the tree,
-    /// so it is retained as `recoveryRequired` rather than overwritten.
+    /// Resume a persisted record after a normal process interruption. A
+    /// post-mutation digest is required before an interrupted tree can be
+    /// restored; when it is absent, recovery keeps the record and refuses to
+    /// overwrite a tree that may contain a concurrent external edit.
     @discardableResult
     public func recoverPendingOperation(
         hooks: DshPluginOperationHooks? = nil
@@ -280,11 +281,16 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
             operation = loaded
         }
         guard operation.profile == .desktop,
-              operation.profile == operation.snapshot.profile else {
+              operation.profile == operation.snapshot.profile,
+              operation.snapshot.profileDirectory == Self.canonicalDesktopProfilePath else {
             throw DshPluginOperationError.desktopProfileRequired
         }
 
         let profileURL = URL(fileURLWithPath: operation.snapshot.profileDirectory, isDirectory: true)
+        if FileManager.default.fileExists(atPath: profileURL.path),
+           profileURL.resolvingSymlinksInPath().path != profileURL.standardizedFileURL.path {
+            throw DshPluginOperationError.unsafeProfileDirectory
+        }
         switch operation.phase {
         case .prepared:
             guard try await pluginManager.pluginProfileDigest(at: profileURL) == operation.snapshot.baselineDigest else {
@@ -307,8 +313,10 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
 
         case .mutating:
             guard let mutationDigest = operation.mutationDigest else {
-                operation = try markRecoveryRequired(operation, error: DshPluginOperationError.operationInterruptedDuringMutation)
-                throw DshPluginOperationError.operationInterruptedDuringMutation
+                return try await recoverInterruptedMutation(
+                    operation,
+                    profileURL: profileURL
+                )
             }
             return try await recoverVerifyingOrRestoring(
                 operation,
@@ -338,16 +346,52 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
                 do {
                     let snapshotExists = try await pluginManager.hasOwnedPluginOperationSnapshot(operation.snapshot)
                     // A recoveryRequired record may represent a failed
-                    // restored-health check. Keep it until the snapshot is
-                    // gone; only the snapshot-deleted + baseline case is an
-                    // unambiguous post-cleanup retry.
-                    if operation.phase == .restoring || !snapshotExists {
+                    // restored-health check. If the operation never had a
+                    // mutation digest, however, the baseline itself is the
+                    // only safe proof available after a fail-closed retry;
+                    // it is enough to finish cleanup without treating an
+                    // absent digest as permission to restore.
+                    if operation.phase == .restoring ||
+                        !snapshotExists ||
+                        (operation.phase == .recoveryRequired && operation.mutationDigest == nil) {
                         _ = try await finishRestoredCleanupIfSafe(operation)
                         return DshPluginOperationResult(
                             operationID: operation.operationID,
                             phase: .restoring,
                             wasRestored: true
                         )
+                    }
+
+                    // Restoration has already put the baseline back, but the
+                    // post-restore health hook failed. Retry that hook on a
+                    // later launch while the app-owned snapshot is retained.
+                    // Without the hook, keep the record unresolved rather
+                    // than converting a known baseline into an
+                    // externalModification dead end.
+                    guard let verifyRestored = hooks?.verifyRestored else {
+                        let recoveryError = DshPluginOperationError.recoveryRequired(
+                            operation.lastError ?? "恢复后的普通启动健康检查尚未完成"
+                        )
+                        _ = try markRecoveryRequired(operation, error: recoveryError)
+                        throw recoveryError
+                    }
+                    do {
+                        try await verifyRestored(makeRequest(from: operation))
+                        guard try await pluginManager.pluginProfileDigest(at: profileURL) ==
+                                operation.snapshot.baselineDigest else {
+                            throw DshPluginOperationError.externalModification
+                        }
+                        _ = try await finishRestoredCleanupIfSafe(operation)
+                        return DshPluginOperationResult(
+                            operationID: operation.operationID,
+                            phase: .restoring,
+                            wasRestored: true
+                        )
+                    } catch {
+                        let recoveryError = (error as? DshPluginOperationError) ??
+                            DshPluginOperationError.recoveryRequired(Self.redacted(error.localizedDescription))
+                        _ = try markRecoveryRequired(operation, error: recoveryError)
+                        throw recoveryError
                     }
                 } catch {
                     let recoveryError = (error as? DshPluginOperationError) ??
@@ -357,9 +401,10 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
                 }
             }
             guard let mutationDigest = operation.mutationDigest else {
-                let error = DshPluginOperationError.recoveryRequired("缺少可验证的变更指纹")
-                operation = try markRecoveryRequired(operation, error: error)
-                throw error
+                return try await recoverInterruptedMutation(
+                    operation,
+                    profileURL: profileURL
+                )
             }
             guard try await pluginManager.pluginProfileDigest(at: profileURL) == mutationDigest else {
                 let error = DshPluginOperationError.externalModification
@@ -393,6 +438,44 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
             return DshPluginOperationResult(operationID: operation.operationID, phase: .committed)
         }
 
+    }
+
+    private func recoverInterruptedMutation(
+        _ original: DshPluginOperationState,
+        profileURL: URL
+    ) async throws -> DshPluginOperationResult {
+        let currentDigest: String
+        do {
+            currentDigest = try await pluginManager.pluginProfileDigest(at: profileURL)
+        } catch {
+            let recoveryError = DshPluginOperationError.recoveryRequired("无法读取当前 Profile")
+            _ = try markRecoveryRequired(original, error: recoveryError)
+            throw recoveryError
+        }
+        if currentDigest == original.snapshot.baselineDigest {
+            do {
+                try await deleteAndClear(original)
+                return DshPluginOperationResult(
+                    operationID: original.operationID,
+                    phase: .restoring,
+                    wasRestored: true
+                )
+            } catch {
+                let recoveryError = (error as? DshPluginOperationError) ??
+                    DshPluginOperationError.recoveryRequired(Self.redacted(error.localizedDescription))
+                _ = try markRecoveryRequired(original, error: recoveryError)
+                throw recoveryError
+            }
+        }
+
+        // There is no durable proof that this tree was produced by the
+        // interrupted operation. Never overwrite it with the snapshot: it
+        // may contain a concurrent user/process edit. Retain the owner
+        // record so a later launch can retry after the caller has resolved
+        // the conflict (for example, by returning the Profile to baseline).
+        let recoveryError = DshPluginOperationError.operationInterruptedDuringMutation
+        _ = try markRecoveryRequired(original, error: recoveryError)
+        throw recoveryError
     }
 
     /// Delete the retained post-commit snapshot only after the caller has
@@ -555,6 +638,11 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
         )
         if let verifyRestored {
             try await verifyRestored(makeRequest(from: restoring))
+            guard try await pluginManager.pluginProfileDigest(
+                at: URL(fileURLWithPath: restoring.snapshot.profileDirectory, isDirectory: true)
+            ) == restoring.snapshot.baselineDigest else {
+                throw DshPluginOperationError.externalModification
+            }
         }
         // Keep the durable restoring marker until every cleanup side effect
         // is complete. If the process exits after snapshot deletion but
@@ -696,7 +784,7 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
             throw DshPluginOperationError.desktopProfileRequired
         }
         let path = request.profileDirectory.standardizedFileURL.path
-        guard path.hasPrefix("/"), path != "/", !path.isEmpty else {
+        guard path == Self.canonicalDesktopProfilePath else {
             throw DshPluginOperationError.unsafeProfileDirectory
         }
         if FileManager.default.fileExists(atPath: path),
@@ -705,14 +793,29 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
         }
         switch request.action {
         case .updateAll:
-            break
-        case .install, .update, .remove:
+            guard request.targetPackage == nil,
+                  request.targetPackages.allSatisfy({
+                      DshPluginOperationInputValidation.isValidPackageName($0)
+                  }) else {
+                throw DshPluginOperationError.unsafeProfileDirectory
+            }
+        case .install:
             guard let package = request.targetPackage,
-                  !package.isEmpty,
-                  !package.contains(where: { $0.isNewline || $0 == "\0" }) else {
+                  request.targetPackages.isEmpty,
+                  DshPluginOperationInputValidation.isValidPackageSpecifier(package) else {
+                throw DshPluginOperationError.unsafeProfileDirectory
+            }
+        case .update, .remove:
+            guard let package = request.targetPackage,
+                  request.targetPackages.isEmpty,
+                  DshPluginOperationInputValidation.isValidPackageName(package) else {
                 throw DshPluginOperationError.unsafeProfileDirectory
             }
         }
+    }
+
+    private static var canonicalDesktopProfilePath: String {
+        DshLaunchContext.profileDirectory(for: .desktop).standardizedFileURL.path
     }
 
     private static func redacted(_ value: String) -> String {

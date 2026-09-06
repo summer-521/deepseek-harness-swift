@@ -599,12 +599,77 @@ public struct DshStateConfig: Codable, Equatable {
     public static let `default` = DshStateConfig()
 }
 
+/// The primary state file has a different contract from optional caches:
+/// absence is a normal first-install condition, while an existing file that
+/// cannot be read or decoded is an unresolved persistence failure. Keeping
+/// those cases distinct prevents startup from silently replacing user state
+/// with defaults.
+public enum DshStateLoadResult: Equatable, Sendable {
+    case absent
+    case loaded
+    case unreadable(String)
+    case corrupted(String)
+
+    public var isUsable: Bool {
+        switch self {
+        case .absent, .loaded:
+            return true
+        case .unreadable, .corrupted:
+            return false
+        }
+    }
+
+    public var failureDescription: String? {
+        switch self {
+        case .absent, .loaded:
+            return nil
+        case .unreadable(let detail), .corrupted(let detail):
+            return detail
+        }
+    }
+}
+
+/// The first startup decision must be made from the primary state-file load
+/// result, not from the in-memory fallback config. An absent file is a normal
+/// first launch; an existing file that cannot be read or decoded is a hard
+/// stop until the user can inspect or repair it without DSH touching a
+/// Profile.
+public enum DshStateStartupDecision: Equatable, Sendable {
+    case proceed
+    case block(String)
+
+    public static func decide(for result: DshStateLoadResult) -> Self {
+        switch result {
+        case .absent, .loaded:
+            return .proceed
+        case .unreadable(let detail), .corrupted(let detail):
+            return .block(detail)
+        }
+    }
+}
+
+public enum DshStatePersistenceError: Error, LocalizedError, Equatable, Sendable {
+    case stateUnavailable(String)
+    case writeFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .stateUnavailable(let detail):
+            return "DSH 状态不可用：\(detail)"
+        case .writeFailed(let detail):
+            return "DSH 状态写入失败：\(detail)"
+        }
+    }
+}
+
 public final class DshStateManager {
     public static let shared = DshStateManager()
 
     private let lock = NSLock()
     private var config: DshStateConfig
     private let fileURL: URL
+    private var loadResultValue: DshStateLoadResult
+    private var persistenceErrorValue: DshStatePersistenceError?
 
     public static var appSupportDirectory: URL {
 #if DSH_TESTING
@@ -636,15 +701,64 @@ public final class DshStateManager {
 
     private init() {
         self.fileURL = Self.appSupportDirectory.appendingPathComponent("dsh-state.json")
-        self.config = Self.load(from: fileURL)
+        self.persistenceErrorValue = nil
+        switch Self.readStateResult(from: fileURL) {
+        case .absent:
+            self.config = .default
+            self.loadResultValue = .absent
+        case .loaded(let decoded):
+            self.config = decoded
+            self.loadResultValue = .loaded
+        case .unreadable(let detail):
+            self.config = .default
+            self.loadResultValue = .unreadable(detail)
+        case .corrupted(let detail):
+            self.config = .default
+            self.loadResultValue = .corrupted(detail)
+        }
     }
 
-    private static func load(from url: URL) -> DshStateConfig {
-        guard let data = try? Data(contentsOf: url),
-              let decoded = try? JSONDecoder().decode(DshStateConfig.self, from: data) else {
-            return .default
+    /// Read a state file without collapsing an existing but invalid file into
+    /// the first-launch default. This is public for isolated startup tests and
+    /// for callers that need to gate recovery before touching user state.
+    public static func readState(from url: URL) -> Result<DshStateConfig, DshStatePersistenceError> {
+        switch readStateResult(from: url) {
+        case .absent:
+            return .success(.default)
+        case .loaded(let decoded):
+            return .success(decoded)
+        case .unreadable(let detail), .corrupted(let detail):
+            return .failure(.stateUnavailable(detail))
         }
-        return decoded
+    }
+
+    private static func readStateResult(from url: URL) -> StateFileReadResult {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return .absent
+        }
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            return .unreadable(safePersistenceDetail(error))
+        }
+        do {
+            return .loaded(try JSONDecoder().decode(DshStateConfig.self, from: data))
+        } catch {
+            return .corrupted(safePersistenceDetail(error))
+        }
+    }
+
+    private enum StateFileReadResult {
+        case absent
+        case loaded(DshStateConfig)
+        case unreadable(String)
+        case corrupted(String)
+    }
+
+    private static func safePersistenceDetail(_ error: Error) -> String {
+        let description = error.localizedDescription
+        return description.isEmpty ? String(describing: error) : description
     }
 
     public var current: DshStateConfig {
@@ -653,21 +767,80 @@ public final class DshStateManager {
         return config
     }
 
-    public func update(_ mutate: (inout DshStateConfig) -> Void) {
+    /// Distinguish first launch, a valid state, and an invalid existing state.
+    /// A caller must not infer first launch merely from `current == .default`.
+    public var loadResult: DshStateLoadResult {
         lock.lock()
         defer { lock.unlock() }
-        mutate(&config)
-        save()
+        return loadResultValue
     }
 
-    private func save() {
+    public var lastPersistenceError: DshStatePersistenceError? {
+        lock.lock()
+        defer { lock.unlock() }
+        return persistenceErrorValue
+    }
+
+    /// Persist an update atomically. The return value is intentionally
+    /// discardable for source compatibility with existing UI call sites, but
+    /// callers that report success must inspect it (or use `updateOrThrow`).
+    @discardableResult
+    public func update(_ mutate: (inout DshStateConfig) -> Void) -> Result<Void, DshStatePersistenceError> {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard loadResultValue.isUsable else {
+            let detail = loadResultValue.failureDescription ?? "状态文件不可用"
+            let error = DshStatePersistenceError.stateUnavailable(detail)
+            persistenceErrorValue = error
+            return .failure(error)
+        }
+
+        var candidate = config
+        mutate(&candidate)
         do {
+            try Self.writeState(candidate, to: fileURL)
+            config = candidate
+            persistenceErrorValue = nil
+            if case .absent = loadResultValue {
+                loadResultValue = .loaded
+            }
+            return .success(())
+        } catch let error as DshStatePersistenceError {
+            persistenceErrorValue = error
+            return .failure(error)
+        } catch {
+            let wrapped = DshStatePersistenceError.writeFailed(Self.safePersistenceDetail(error))
+            persistenceErrorValue = wrapped
+            return .failure(wrapped)
+        }
+    }
+
+    /// Throwing form for transaction boundaries that cannot continue after a
+    /// failed state commit.
+    public func updateOrThrow(_ mutate: (inout DshStateConfig) -> Void) throws {
+        switch update(mutate) {
+        case .success:
+            return
+        case .failure(let error):
+            throw error
+        }
+    }
+
+    private static func writeState(_ state: DshStateConfig, to url: URL) throws {
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(config)
-            try data.write(to: fileURL, options: .atomic)
+            let data = try encoder.encode(state)
+            try data.write(to: url, options: .atomic)
+        } catch let error as DshStatePersistenceError {
+            throw error
         } catch {
-            print("[DshStateManager] Failed to save state:", error)
+            throw DshStatePersistenceError.writeFailed(safePersistenceDetail(error))
         }
     }
 }

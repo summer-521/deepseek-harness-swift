@@ -77,6 +77,34 @@ test('P02 plugin list keeps four categories and a read-only search/exception fil
   assert.match(pluginsView, /DshPluginListCategory\.allCases/)
 })
 
+test('P02 startup recovery synchronizes and clears stale plugin operation UI state', () => {
+  const viewModel = fs.readFileSync(viewModelPath, 'utf8')
+  const appSource = fs.readFileSync(
+    path.join(repositoryDirectory, 'Sources', 'AppDelegate.swift'),
+    'utf8'
+  )
+  const windowSource = fs.readFileSync(
+    path.join(repositoryDirectory, 'Sources', 'MainWindow', 'MainWindowController.swift'),
+    'utf8'
+  )
+
+  assert.match(viewModel, /public func synchronizePersistedPluginOperationState\(\)/)
+  assert.match(viewModel, /case \.loaded\(let operation\):[\s\S]*?applyPluginOperationState\(operation\)[\s\S]*?schedulePluginOperationSuccessDismissal\(\)/)
+  assert.match(viewModel, /case \.corrupt\(let detail\):[\s\S]*?pluginOperationPhase = \.recoveryRequired[\s\S]*?pluginOperationOutcome = \.recoveryRequired/)
+  assert.match(viewModel, /case \.absent:[\s\S]*?pluginOperationPhase = nil[\s\S]*?pluginOperationOutcome = nil[\s\S]*?pluginOperationDetail = nil/)
+  assert.match(viewModel, /if let operation = coordinator\.pendingOperation[\s\S]*?else if !self\.isOperatingPlugin \{[\s\S]*?synchronizePersistedPluginOperationState\(\)/)
+  assert.doesNotMatch(viewModel, /restorePersistedPluginOperationState/)
+
+  const recoveryIndex = appSource.indexOf('recoverPendingPluginOperationDuringStartup')
+  const appSyncIndex = appSource.indexOf('synchronizePersistedPluginOperationState')
+  assert.ok(recoveryIndex >= 0 && appSyncIndex > recoveryIndex)
+
+  const finalizeIndex = windowSource.indexOf('finalizeCommittedOperation(operationID: operationID)')
+  const windowSyncIndex = windowSource.indexOf('synchronizePersistedPluginOperationState', finalizeIndex)
+  assert.ok(finalizeIndex >= 0 && windowSyncIndex > finalizeIndex)
+  assert.match(viewModel, /Task\.sleep\(nanoseconds: 2_500_000_000\)/)
+})
+
 test('P02 retry is fail-closed and never opts out of release-age policy', () => {
   const viewModel = fs.readFileSync(viewModelPath, 'utf8')
   const pluginsView = fs.readFileSync(pluginsViewPath, 'utf8')
@@ -95,4 +123,27 @@ test('P02 retry is fail-closed and never opts out of release-age policy', () => 
   assert.match(viewModel, /finishPluginUpdatePreflight\(/)
   assert.match(pluginsView, /安全重试/)
   assert.match(pluginsView, /viewModel\.canRetryPluginOperation/)
+})
+
+test('M2 plugin UI gates shared web writes and isolates update targets', () => {
+  const viewModel = fs.readFileSync(viewModelPath, 'utf8')
+  const pluginsView = fs.readFileSync(pluginsViewPath, 'utf8')
+  const windowSource = fs.readFileSync(
+    path.join(repositoryDirectory, 'Sources', 'MainWindow', 'MainWindowController.swift'),
+    'utf8'
+  )
+
+  assert.match(viewModel, /public var pluginWritesAllowed[\s\S]*appProfile == \.desktop/)
+  assert.match(viewModel, /当前为 web Profile：与终端 dsh web 共享插件目录，插件安装、更新和卸载已禁用/)
+  assert.match(pluginsView, /!viewModel\.pluginWritesAllowed/)
+  assert.match(viewModel, /outdatedPluginsContext/)
+  assert.match(viewModel, /invalidateOutdatedPlugins/)
+  assert.match(viewModel, /requestGeneration == pluginUpdateRequestGeneration/)
+  assert.match(viewModel, /state\.appProfile == checked\.0\.profile/)
+  assert.match(viewModel, /当前没有可更新的第三方插件。/)
+
+  assert.match(windowSource, /markCommittedPluginCleanupFailure\(/)
+  assert.match(windowSource, /let recoveryError = DshPluginOperationError\.recoveryRequired\(/)
+  assert.match(windowSource, /startupRecoveryIsPluginOperation = true/)
+  assert.match(viewModel, /pending\?\.phase == \.committed[\s\S]*outcome = \.recoveryRequired/)
 })

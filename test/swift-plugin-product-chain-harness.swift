@@ -679,11 +679,185 @@ private func runUpdatePreflightSymlink() async throws {
     try fixture.require(externalAfter == fixture.baselineManifest,
                         "preflight must not modify a symlink target")
     let target = try FileManager.default.destinationOfSymbolicLink(atPath: packageURL.path)
-    try fixture.require(URL(fileURLWithPath: target).standardizedFileURL.path == externalPackageURL.path,
+    // Compare canonical locations: TMPDIR may be spelled with or without a
+    // symlinked prefix (/tmp vs /private/tmp, /var vs /private/var) depending
+    // on the caller's environment, and standardizedFileURL alone does not
+    // normalize that spelling on both sides.
+    let canonicalTarget = URL(fileURLWithPath: target).resolvingSymlinksInPath().standardizedFileURL.path
+    let canonicalExternal = externalPackageURL.resolvingSymlinksInPath().standardizedFileURL.path
+    try fixture.require(canonicalTarget == canonicalExternal,
                         "preflight must preserve the Profile symlink")
     try fixture.require(!FileManager.default.fileExists(atPath: fixture.fakeLog.path),
                         "symlink rejection must happen before pnpm starts")
     print("plugin product-chain update-preflight-symlink passed")
+}
+
+private func runInputBoundaries() async throws {
+    let fixture = try ProductFixture()
+    try fixture.reset()
+    let manager = DshPluginManager.shared
+
+    // Explicit update-all targets are untrusted UI/state input. The manager
+    // must apply the same managed/local/internal filtering as its derived
+    // list, even when the caller supplies a hand-written package list.
+    var manifest = try fixture.manifest()
+    manifest["dependencies"] = [
+        "plugin-a": "1.0.0",
+        "plugin-b": "1.0.0",
+        "dsh-desktop-host": "file:/app-owned-host",
+        "local-plugin": "file:/terminal-owned-plugin",
+        "@deepseek-ai/dsh-host-webserver": "1.0.0"
+    ]
+    let manifestData = try JSONSerialization.data(
+        withJSONObject: manifest,
+        options: [.prettyPrinted, .sortedKeys]
+    )
+    try manifestData.write(to: fixture.desktop.appendingPathComponent("package.json"), options: .atomic)
+
+    try await manager.updateAllPlugins(
+        packageNames: [
+            "plugin-a",
+            "dsh-desktop-host",
+            "local-plugin",
+            "@deepseek-ai/dsh-host-webserver"
+        ],
+        profileDirectory: fixture.desktop,
+        profile: .desktop,
+        registry: "http://127.0.0.1:9"
+    )
+    let updated = try fixture.dependencies()
+    try fixture.require(updated["plugin-a"] == "2.0.0",
+                        "explicit update-all must keep an ordinary plugin")
+    try fixture.require(updated["dsh-desktop-host"] == "file:/app-owned-host" &&
+                        updated["local-plugin"] == "file:/terminal-owned-plugin" &&
+                        updated["@deepseek-ai/dsh-host-webserver"] == "1.0.0",
+                        "explicit update-all must filter managed/local/internal dependencies")
+    let updateLog = try String(contentsOf: fixture.fakeLog, encoding: .utf8)
+    let updateLines = updateLog.split(separator: "\n").filter { $0.contains("\"update\"") }
+    try fixture.require(updateLines.count == 1,
+                        "filtered explicit update-all must invoke pnpm once")
+    try fixture.require(updateLines[0].contains("plugin-a") &&
+                        !updateLines[0].contains("dsh-desktop-host") &&
+                        !updateLines[0].contains("local-plugin") &&
+                        !updateLines[0].contains("dsh-host-webserver"),
+                        "filtered explicit update-all must pass only ordinary targets to pnpm")
+
+    // An option-looking target is rejected before Process starts; it must not
+    // be silently filtered because that would hide malformed persisted/UI
+    // input from the caller.
+    do {
+        try await manager.updateAllPlugins(
+            packageNames: ["--config.minimum-release-age=0"],
+            profileDirectory: fixture.desktop,
+            profile: .desktop,
+            registry: "http://127.0.0.1:9"
+        )
+        throw HarnessError.failed("option-looking update-all target unexpectedly succeeded")
+    } catch let error as HarnessError {
+        throw error
+    } catch {
+        let after = try String(contentsOf: fixture.fakeLog, encoding: .utf8)
+        try fixture.require(after == updateLog,
+                            "option-looking update-all target must be rejected before pnpm")
+    }
+    do {
+        try await manager.addPlugin(
+            spec: "--ignore-scripts",
+            profileDirectory: fixture.desktop,
+            profile: .desktop,
+            registry: "http://127.0.0.1:9"
+        )
+        throw HarnessError.failed("option-looking add spec unexpectedly succeeded")
+    } catch let error as HarnessError {
+        throw error
+    } catch {
+        let after = try String(contentsOf: fixture.fakeLog, encoding: .utf8)
+        try fixture.require(after == updateLog,
+                            "option-looking add spec must be rejected before pnpm")
+    }
+    do {
+        try await manager.updatePlugin(
+            name: "--latest",
+            profileDirectory: fixture.desktop,
+            profile: .desktop,
+            registry: "http://127.0.0.1:9"
+        )
+        throw HarnessError.failed("option-looking update name unexpectedly succeeded")
+    } catch let error as HarnessError {
+        throw error
+    } catch {
+        let after = try String(contentsOf: fixture.fakeLog, encoding: .utf8)
+        try fixture.require(after == updateLog,
+                            "option-looking update name must be rejected before pnpm")
+    }
+
+    // P01 snapshots and operation records are confined to the canonical
+    // desktop Profile. An arbitrary absolute sibling must be rejected before
+    // the preparation hook, and a forged persisted path must decode as corrupt
+    // rather than becoming a recovery write target.
+    let outside = fixture.dshHome.appendingPathComponent("outside-profile", isDirectory: true)
+    let coordinator = DshPluginOperationCoordinator(operationStoreURL: fixture.operationStore)
+    let prepareCalls = Counter()
+    let request = DshPluginOperationRequest(
+        action: .update,
+        profile: .desktop,
+        profileDirectory: outside,
+        targetPackage: "plugin-a"
+    )
+    do {
+        _ = try await coordinator.perform(
+            request,
+            hooks: DshPluginOperationHooks(
+                prepareForMutation: { prepareCalls.increment() },
+                mutate: { _ in }
+            )
+        )
+        throw HarnessError.failed("arbitrary Profile path unexpectedly succeeded")
+    } catch let error as HarnessError {
+        throw error
+    } catch let error as DshPluginOperationError {
+        try fixture.require(error == .unsafeProfileDirectory,
+                            "arbitrary Profile path must fail closed")
+    }
+    try fixture.require(prepareCalls.value == 0,
+                        "arbitrary Profile path must fail before preparation")
+    try fixture.require(!coordinator.hasPersistedOperationRecord,
+                        "rejected Profile path must not create an operation record")
+
+    do {
+        _ = try await manager.createPluginOperationSnapshot(
+            operationID: UUID().uuidString,
+            profile: .desktop,
+            profileDirectory: outside
+        )
+        throw HarnessError.failed("arbitrary snapshot Profile path unexpectedly succeeded")
+    } catch let error as HarnessError {
+        throw error
+    } catch let error as DshPluginOperationError {
+        try fixture.require(error == .unsafeProfileDirectory,
+                            "snapshot creation must reject arbitrary Profile paths")
+    }
+
+    let forgedOperationID = UUID().uuidString
+    let forgedSnapshot = DshPluginOperationSnapshotReference(
+        snapshotID: UUID().uuidString,
+        operationID: forgedOperationID,
+        profile: .desktop,
+        profileDirectory: outside,
+        baselineDigest: "forged-baseline"
+    )
+    let forged = DshPluginOperationState(
+        operationID: forgedOperationID,
+        profile: .desktop,
+        targetPackage: "plugin-a",
+        action: .update,
+        snapshot: forgedSnapshot
+    )
+    try fixture.writeOperationState(forged)
+    let forgedCoordinator = DshPluginOperationCoordinator(operationStoreURL: fixture.operationStore)
+    try fixture.require(forgedCoordinator.persistedStatus.isCorrupt,
+                        "forged operation path must remain a corrupt record")
+    print("plugin product-chain input-boundaries passed")
 }
 
 @main
@@ -701,6 +875,7 @@ struct PluginProductChainHarness {
         case "update-preflight": try await runUpdatePreflight()
         case "update-preflight-confirm": try await runUpdatePreflightConfirm()
         case "update-preflight-symlink": try await runUpdatePreflightSymlink()
+        case "input-boundaries": try await runInputBoundaries()
         case "silent-update-preflight":
             try await runUpdatePreflight(scenarioName: "silent-update-preflight")
         case "silent-no-keyword-preflight":

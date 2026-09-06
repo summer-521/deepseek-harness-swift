@@ -18,6 +18,7 @@ test('M2 acceptance entry point composes all isolated evidence groups', () => {
   for (const evidence of [
     'swift-plugin-operation.integration.test.js',
     'swift-plugin-product-chain.integration.test.js',
+    'swift-plugin-process-lifecycle.integration.test.js',
     'swift-plugin-ui-progress.test.js',
     'swift-plugin-failure-resolver.integration.test.js',
     'swift-recovery.integration.test.js',

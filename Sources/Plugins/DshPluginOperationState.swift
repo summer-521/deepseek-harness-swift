@@ -1,5 +1,101 @@
 import Foundation
 
+/// Validation shared by the durable P01 record and the manager's pnpm
+/// command boundary.  These values eventually become one argv element, but
+/// pnpm still treats an argv element beginning with `-` as an option.  Keep
+/// the allow-list deliberately small so persisted/UI input cannot smuggle a
+/// command-line option or an ambiguous package target into a later recovery.
+public enum DshPluginOperationInputValidation {
+    private static let packageComponentCharacters = CharacterSet(
+        charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789._~-"
+    )
+    private static let versionCharacters = CharacterSet(
+        charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._~^*<>=|()+,-"
+    )
+
+    public static func isValidPackageName(_ raw: String) -> Bool {
+        guard raw == raw.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              !raw.hasPrefix("-"),
+              !raw.contains(where: { $0.isWhitespace || $0.isNewline || $0 == "\0" }) else {
+            return false
+        }
+
+        let components: [Substring]
+        if raw.hasPrefix("@") {
+            let body = raw.dropFirst()
+            guard body.firstIndex(of: "/") == body.lastIndex(of: "/") else { return false }
+            components = body.split(separator: "/", omittingEmptySubsequences: false)
+            guard components.count == 2 else { return false }
+        } else {
+            guard !raw.contains("/") && !raw.contains("@") else { return false }
+            components = [raw[raw.startIndex...]]
+        }
+
+        return components.allSatisfy { component in
+            guard !component.isEmpty,
+                  component.first != ".",
+                  component.first != "_" else { return false }
+            return component.unicodeScalars.allSatisfy {
+                packageComponentCharacters.contains($0)
+            }
+        }
+    }
+
+    /// Validate a value accepted by `pnpm add`. Local/gib/github specs remain
+    /// supported by the product, while arbitrary slash-delimited values and
+    /// all option-looking values are rejected before Process is started.
+    public static func isValidPackageSpecifier(_ raw: String) -> Bool {
+        guard raw == raw.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              !raw.hasPrefix("-"),
+              !raw.contains(where: { $0.isNewline || $0 == "\0" }) else {
+            return false
+        }
+
+        let localPrefixes = ["file:", "link:", "github:", "git:", "git+", "workspace:"]
+        if let prefix = localPrefixes.first(where: { raw.hasPrefix($0) }) {
+            let rest = String(raw.dropFirst(prefix.count))
+            if prefix == "file:" || prefix == "link:" {
+                // Spaces are valid in a user-selected local path and remain
+                // one argv element because Process receives an argument
+                // array. Only control characters and an empty/option-looking
+                // path are unsafe here.
+                return !rest.isEmpty && !rest.hasPrefix("-") &&
+                    !rest.contains(where: { $0.isNewline || $0 == "\0" })
+            }
+            return !rest.isEmpty &&
+                !rest.contains(where: { $0.isWhitespace || $0.isNewline || $0 == "\0" })
+        }
+        if raw.hasPrefix("http://") || raw.hasPrefix("https://") {
+            guard let url = URL(string: raw), url.scheme != nil, url.host != nil else {
+                return false
+            }
+            return !raw.contains(where: { $0.isWhitespace || $0.isNewline || $0 == "\0" })
+        }
+
+        let nameEnd: String.Index?
+        if raw.hasPrefix("@") {
+            guard let slash = raw.firstIndex(of: "/"),
+                  let at = raw[raw.index(after: slash)...].firstIndex(of: "@") else {
+                nameEnd = nil
+                if isValidPackageName(raw) { return true }
+                return false
+            }
+            nameEnd = at
+        } else {
+            nameEnd = raw.firstIndex(of: "@")
+        }
+        let end = nameEnd ?? raw.endIndex
+        let name = String(raw[..<end])
+        guard isValidPackageName(name) else { return false }
+        guard end != raw.endIndex else { return true }
+        let version = String(raw[raw.index(after: end)...])
+        guard !version.isEmpty, !version.hasPrefix("-") else { return false }
+        return version.unicodeScalars.allSatisfy { versionCharacters.contains($0) }
+    }
+}
+
 /// The operation is deliberately independent from Runtime/Profile-switch
 /// transactions.  A record is written before the first package mutation and
 /// is kept until the post-commit health window has been acknowledged.
@@ -136,9 +232,17 @@ public struct DshPluginOperationState: Codable, Equatable, Sendable {
               !snapshot.snapshotID.isEmpty,
               operationID == snapshot.operationID,
               profile == snapshot.profile,
+              profile == .desktop,
               !snapshot.profileDirectory.isEmpty,
-              snapshot.profileDirectory.hasPrefix("/"),
-              !snapshot.baselineDigest.isEmpty else {
+              snapshot.profileDirectory == DshLaunchContext
+                .profileDirectory(for: .desktop)
+                .standardizedFileURL.path,
+              !snapshot.baselineDigest.isEmpty,
+              Self.validTargets(
+                action: action,
+                targetPackage: targetPackage,
+                targetPackages: targetPackages
+              ) else {
             throw DecodingError.dataCorruptedError(
                 forKey: .snapshot,
                 in: container,
@@ -170,6 +274,27 @@ public struct DshPluginOperationState: Codable, Equatable, Sendable {
         case phase
         case mutationDigest
         case lastError
+    }
+
+    private static func validTargets(
+        action: DshPluginOperationAction,
+        targetPackage: String?,
+        targetPackages: [String]
+    ) -> Bool {
+        switch action {
+        case .install:
+            return targetPackages.isEmpty && targetPackage.map {
+                DshPluginOperationInputValidation.isValidPackageSpecifier($0)
+            } == true
+        case .update, .remove:
+            return targetPackages.isEmpty && targetPackage.map {
+                DshPluginOperationInputValidation.isValidPackageName($0)
+            } == true
+        case .updateAll:
+            return targetPackage == nil && targetPackages.allSatisfy {
+                DshPluginOperationInputValidation.isValidPackageName($0)
+            }
+        }
     }
 
     public func changing(

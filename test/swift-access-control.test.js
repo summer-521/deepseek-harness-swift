@@ -219,7 +219,7 @@ test('first launch bootstraps the canonical profile and installs the host before
   assert.match(PLUGIN_SOURCE, /CryptoKit/)
   assert.match(PLUGIN_SOURCE, /SHA256/)
   assert.match(PLUGIN_SOURCE, /desktopHostBundleFingerprint/)
-  assert.match(PLUGIN_SOURCE, /--force/)
+  assert.doesNotMatch(PLUGIN_SOURCE, /hostBundleNeedsRefresh[\s\S]*?\["--force"\]/)
   assert.match(PLUGIN_SOURCE, /removeInstalledDesktopHostBundle/)
   assert.match(PLUGIN_SOURCE, /isInstalledWebServerPackage/)
   assert.match(PLUGIN_SOURCE, /repairProfileDependenciesIfNeeded\([\s\S]*registry: String\? = nil,[\s\S]*profileDirectory: URL\? = nil,[\s\S]*profile: DshAppProfile\? = nil[\s\S]*\) async throws -> Bool/)
@@ -234,6 +234,11 @@ test('first launch bootstraps the canonical profile and installs the host before
   assert.match(WINDOW_SOURCE, /SettingsViewModel\.shared\.refreshPlugins\(for:\s*context\)/)
   assert.match(APP_SOURCE, /let restartItem = appMenu\.addItem\([\s\S]*#selector\(restartService\)/)
   assert.match(APP_SOURCE, /restartItem\.target = self/)
+})
+
+test('startup recovery shows native progress before any asynchronous profile work', () => {
+  assert.match(APP_SOURCE, /MainWindowController\.shared\.beginStartupPreparation\(\)[\s\S]*recoverPendingProfileSwitch\(\)/)
+  assert.match(WINDOW_SOURCE, /public func beginStartupPreparation\(\)[\s\S]*showStartupSurface\(\)[\s\S]*正在检查并恢复上次启动状态/)
 })
 
 test('profile repair is scoped, lazy, and provides a manual recovery command', () => {
@@ -328,7 +333,17 @@ test('the managed host webserver dependency is hidden from user plugin managemen
   assert.match(PLUGIN_SOURCE, /不能直接更新 DSH 内部依赖/)
   assert.match(PLUGIN_SOURCE, /不能直接卸载 DSH 内部依赖/)
   assert.match(PLUGIN_SOURCE, /filter \{ !\$0\.isManaged && !\$0\.isLocal \}/)
-  assert.match(PLUGIN_SOURCE, /var arguments = \["update"\] \+ pluginNames \+ \["--latest"\][\s\S]*proc\.arguments = arguments \+ registryArguments\(capturedRegistry\)/)
+  assert.match(PLUGIN_SOURCE, /var arguments = \["update"\] \+ pluginNames \+ \["--latest", "--network-concurrency=4"\][\s\S]*proc\.arguments = arguments \+ registryArguments\(capturedRegistry\)/)
+  assert.match(SETTINGS_SOURCE, /filter \{ \$0\.hasUpdate && !\$0\.isManaged && !\$0\.isLocal \}[\s\S]*packageNames: targetPackages/)
+  assert.match(PLUGIN_SOURCE, /processMaximumRuntime: TimeInterval = 30 \* 60/)
+  assert.doesNotMatch(PLUGIN_SOURCE, /inactivityTimeout/)
+  assert.doesNotMatch(PLUGIN_SOURCE, /collector\.inactivityDuration\(\)/)
+  assert.match(PLUGIN_SOURCE, /finishAfterProcessExit\(\)/)
+  assert.match(PLUGIN_SOURCE, /perStreamByteLimit = 64 \* 1024/)
+  assert.match(PLUGIN_SOURCE, /ownedProcessGroupID\(for: pid\)/)
+  assert.match(PLUGIN_SOURCE, /groupID != getpgrp\(\)/)
+  assert.match(PLUGIN_SOURCE, /code: -37/)
+  assert.doesNotMatch(PLUGIN_SOURCE, /code: -30,[\s\S]*插件命令长时间没有产生任何活动/)
 })
 
 test('plugin removal uses pnpm-supported arguments and preserves diagnostics', () => {

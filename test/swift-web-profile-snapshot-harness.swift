@@ -212,6 +212,56 @@ struct WebProfileSnapshotHarness {
         let ownershipMarker = managedProfile.appendingPathComponent(".dsh-desktop-host-ownership.json")
         require(fileManager.fileExists(atPath: ownershipMarker.path), "Managed install must write the ownership marker")
         require(fileManager.fileExists(atPath: managedProfile.appendingPathComponent("node_modules/dsh-desktop-host/package.json").path), "Managed install must materialize the bridge package")
+
+        // Simulate an app upgrade that changes the bundled bridge in place.
+        // The marker still proves that the installed old fingerprint belongs
+        // to this app, so the next ensure must refresh only the bridge tree
+        // locally and must not invoke a second full pnpm add.
+        guard let sourceBundlePath = NodeRuntime.shared.resolveDesktopHostBundlePath() else {
+            fatalError("controlled desktop host bundle disappeared")
+        }
+        try Data("controlled-upgraded-bridge\n".utf8)
+            .write(to: URL(fileURLWithPath: sourceBundlePath).appendingPathComponent("index.js"), options: .atomic)
+        let rechecked = try await manager.ensureDesktopHostPlugin(
+            registry: "https://registry.invalid",
+            profileDirectory: managedProfile,
+            profile: .web,
+            runtimeVersion: "9.9.9"
+        )
+        require(!rechecked, "stale but app-owned bridge must be repaired locally without pnpm")
+        let refreshedIndex = try String(
+            contentsOf: managedProfile.appendingPathComponent("node_modules/dsh-desktop-host/index.js"),
+            encoding: .utf8
+        )
+        require(refreshedIndex == "controlled-upgraded-bridge\n", "local bridge refresh must install the current bundled bytes")
+
+        // Simulate a force-quit immediately after the atomic directory
+        // publication but before the ownership marker is rewritten. On the
+        // next launch the current bundled bytes plus the still-managed
+        // manifest must be adopted without another pnpm transaction.
+        try Data("controlled-post-publish-bridge\n".utf8)
+            .write(to: URL(fileURLWithPath: sourceBundlePath).appendingPathComponent("index.js"), options: .atomic)
+        let installedHost = managedProfile.appendingPathComponent("node_modules/dsh-desktop-host", isDirectory: true)
+        try fileManager.removeItem(at: installedHost)
+        try fileManager.copyItem(at: URL(fileURLWithPath: sourceBundlePath), to: installedHost)
+        let recoveredAfterPublish = try await manager.ensureDesktopHostPlugin(
+            registry: "https://registry.invalid",
+            profileDirectory: managedProfile,
+            profile: .web,
+            runtimeVersion: "9.9.9"
+        )
+        require(!recoveredAfterPublish, "post-publication force-quit recovery must not invoke pnpm")
+        let recoveredIndex = try String(
+            contentsOf: installedHost.appendingPathComponent("index.js"),
+            encoding: .utf8
+        )
+        require(recoveredIndex == "controlled-post-publish-bridge\n", "post-publication recovery must retain current bundled bytes")
+        let profileEntries = try fileManager.contentsOfDirectory(atPath: managedProfile.path)
+        require(
+            !profileEntries.contains(where: { $0.hasPrefix(".dsh-desktop-host-staging-") }),
+            "successful local refresh must not retain staging directories"
+        )
+
         try await manager.removeDesktopHostArtifacts(
             from: .web,
             profileDirectory: managedProfile,

@@ -15,9 +15,15 @@ public struct PluginsTabView: View {
         viewModel.installedPlugins.filter { $0.hasUpdate }.count
     }
 
+    private var pluginSectionFooter: String {
+        let base = "通过 DSH 的插件机制安装到当前 \(viewModel.appProfile.rawValue) Profile，安装或卸载成功后会自动重启 DSH 服务。"
+        guard let reason = viewModel.pluginMutationUnavailableReason else { return base }
+        return "\(base) \(reason)"
+    }
+
     public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            SettingsSection("安装插件", footer: "通过 DSH 的插件机制安装到当前 \(viewModel.appProfile.rawValue) Profile，安装或卸载成功后会自动重启 DSH 服务。") {
+            SettingsSection("安装插件", footer: pluginSectionFooter) {
                 HStack(spacing: 9) {
                     TextField("npm 包名、@scope/name 或 github:owner/repo", text: Binding(
                         get: { localState.newPluginSpec },
@@ -35,9 +41,9 @@ public struct PluginsTabView: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .disabled(localState.newPluginSpec.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || viewModel.isOperatingPlugin
-                        || !viewModel.pluginMutationsAllowed)
-                    .help("安装指定的 npm 插件")
+                        || viewModel.isOperatingPlugin || !viewModel.pluginMutationsAllowed
+                        || !viewModel.pluginWritesAllowed)
+                    .help(viewModel.pluginMutationUnavailableReason ?? "安装指定的 npm 插件")
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -75,8 +81,9 @@ public struct PluginsTabView: View {
                             Button("全部更新") { viewModel.updateAllPlugins() }
                                 .buttonStyle(.borderedProminent)
                                 .controlSize(.small)
-                                .disabled(viewModel.isOperatingPlugin || !viewModel.pluginMutationsAllowed)
-                                .help("更新所有可更新插件")
+                                .disabled(viewModel.isOperatingPlugin || !viewModel.pluginMutationsAllowed
+                                    || !viewModel.pluginWritesAllowed)
+                                .help(viewModel.pluginMutationUnavailableReason ?? "更新所有可更新插件")
                         }
                         Button {
                             Task { await viewModel.checkPluginUpdates() }
@@ -236,8 +243,9 @@ public struct PluginsTabView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
-                        .disabled(viewModel.isOperatingPlugin || !viewModel.pluginMutationsAllowed)
-                        .help("仅在原状态已恢复且没有待处理事务时重新执行；仍遵守本次 minimum-release-age 确认")
+                        .disabled(viewModel.isOperatingPlugin || !viewModel.pluginMutationsAllowed
+                            || !viewModel.pluginWritesAllowed)
+                        .help(viewModel.pluginMutationUnavailableReason ?? "仅在原状态已恢复且没有待处理事务时重新执行；仍遵守本次 minimum-release-age 确认")
                     }
                 }
                 Spacer(minLength: 0)
@@ -346,14 +354,15 @@ public struct PluginsTabView: View {
                         Button("更新") { viewModel.updatePlugin(name: plugin.name) }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
-                            .help("更新 " + plugin.name + " 到最新版本")
+                            .help(viewModel.pluginMutationUnavailableReason ?? ("更新 " + plugin.name + " 到最新版本"))
                     }
                     Button("卸载") { viewModel.removePlugin(name: plugin.name) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .help("卸载 " + plugin.name)
                 }
-                .disabled(viewModel.isOperatingPlugin || !viewModel.pluginMutationsAllowed)
+                    .disabled(viewModel.isOperatingPlugin || !viewModel.pluginMutationsAllowed
+                        || !viewModel.pluginWritesAllowed)
             }
         }
         .padding(.horizontal, 14)

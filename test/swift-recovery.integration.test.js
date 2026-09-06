@@ -54,6 +54,36 @@ test("native recovery keeps the JSON preview visible across model refresh", () =
   assert.match(mainWindow, /if showingDiagnosticPreview \{\s*detailsScroll\.isHidden = false/s);
 });
 
+test("persisted recovery cleanup and corrupt-record diagnostics stay isolated", () => {
+  const mainWindow = fs.readFileSync(mainWindowPath, "utf8");
+  assert.match(mainWindow, /makeRecoveryRecordDiagnosticContext\(\)/);
+  assert.match(
+    mainWindow,
+    /case \.corrupted\(let detail\):[\s\S]*?let context = makeRecoveryRecordDiagnosticContext\(\)/,
+  );
+  assert.match(mainWindow, /startupRecoveryRecordCorrupted = true/);
+  assert.match(mainWindow, /retryCorruptedRecoveryRecord\(request, context: context\)/);
+  assert.match(mainWindow, /case \.loaded:[\s\S]*?presentPersistedRecoveryIfNeeded\(\)/);
+  assert.match(
+    mainWindow,
+    /if startupRecoveryRecordCorrupted \{[\s\S]*?已停止普通启动/s,
+  );
+  assert.match(
+    mainWindow,
+    /\[\.returned, \.cleanupPending, \.cleaned\]\.contains\(state\.phase\)/,
+  );
+  assert.match(
+    mainWindow,
+    /\[\.returned, \.cleanupPending, \.cleaned\]\.contains\(persistedRecoveryRecord\.phase\)/,
+  );
+  assert.match(mainWindow, /webUINavigationGenerations/);
+  assert.match(mainWindow, /isCurrentWebUINavigation\(navigation\)/);
+  assert.match(
+    mainWindow,
+    /private func isCurrentWebUINavigation\(_ navigation: WKNavigation!\)[\s\S]*?generation == webUIReadinessGeneration/,
+  );
+});
+
 test("Swift recovery view model filters launches and guards explicit actions", () => {
   const binaryPath = path.join(os.tmpdir(), `dsh-recovery-${process.pid}`);
   const moduleCachePath = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-recovery-module-cache-"));

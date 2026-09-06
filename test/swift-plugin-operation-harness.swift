@@ -188,8 +188,8 @@ private func recoverPrepared() async throws {
 
 private func setupMutatingWithoutDigest() async throws {
     try resetFixture()
-    try marker("mutating-before-interruption")
     let state = try await persistFixtureOperation(phase: .mutating)
+    try marker("mutating-before-interruption")
     require(state.mutationDigest == nil, "mutating interruption fixture must omit digest")
 }
 
@@ -198,8 +198,31 @@ private func recoverMutatingWithoutDigest() async throws {
     await expectOperationError(.operationInterruptedDuringMutation) {
         _ = try await coordinator.recoverPendingOperation()
     }
-    require(coordinator.pendingOperation?.phase == .recoveryRequired, "missing mutation digest must require recovery")
-    try requireContents("mutating-before-interruption", at: profileURL().appendingPathComponent("marker"), "missing digest must not overwrite current tree")
+    require(coordinator.pendingOperation?.phase == .recoveryRequired,
+            "missing mutation digest must require recovery")
+    try requireContents(
+        "mutating-before-interruption",
+        at: profileURL().appendingPathComponent("marker"),
+        "missing digest must not overwrite the current tree"
+    )
+}
+
+private func recoverMutatingWithoutDigestAfterConflictResolution() async throws {
+    // This models an explicit operator resolution between launches. Once the
+    // Profile is back at the snapshot baseline, the retained owner record can
+    // be cleaned up without guessing that an unowned tree belonged to P01.
+    try marker("baseline")
+    let coordinator = DshPluginOperationCoordinator(operationStoreURL: operationStoreURL())
+    let result = try await coordinator.recoverPendingOperation()
+    require(result?.wasRestored == true,
+            "missing digest recovery must continue after the conflict is resolved")
+    require(coordinator.pendingOperation == nil,
+            "resolved missing-digest recovery must clear the record")
+    try requireContents(
+        "baseline",
+        at: profileURL().appendingPathComponent("marker"),
+        "resolved missing-digest recovery must preserve the baseline"
+    )
 }
 
 private func setupVerifying() async throws {
@@ -253,6 +276,57 @@ private func recoverVerifyingRestore() async throws {
     require(result?.phase == .restoring && result?.wasRestored == true, "failed verifying restart must restore")
     require(coordinator.pendingOperation == nil, "successful restore must clear verifying record")
     try requireContents("baseline", at: profileURL().appendingPathComponent("marker"), "failed verifying restart must restore baseline")
+}
+
+private func setupRestoredHealthFailure() async throws {
+    try await setupVerifying()
+    let coordinator = DshPluginOperationCoordinator(operationStoreURL: operationStoreURL())
+    await expectOperationError(.recoveryRequired("restored health rejected")) {
+        _ = try await coordinator.recoverPendingOperation(
+            hooks: DshPluginOperationHooks(
+                mutate: { _ in },
+                verify: { _ in
+                    throw NSError(domain: "fixture", code: 92, userInfo: [
+                        NSLocalizedDescriptionKey: "verification failed"
+                    ])
+                },
+                verifyRestored: { _ in
+                    throw NSError(domain: "fixture", code: 93, userInfo: [
+                        NSLocalizedDescriptionKey: "restored health rejected"
+                    ])
+                }
+            )
+        )
+    }
+    require(coordinator.pendingOperation?.phase == .recoveryRequired,
+            "failed restored health must retain recoveryRequired")
+    try requireContents(
+        "baseline",
+        at: profileURL().appendingPathComponent("marker"),
+        "failed restored health must leave the baseline restored"
+    )
+}
+
+private func recoverRestoredHealthFailure() async throws {
+    let coordinator = DshPluginOperationCoordinator(operationStoreURL: operationStoreURL())
+    let restoredChecks = Counter()
+    let result = try await coordinator.recoverPendingOperation(
+        hooks: DshPluginOperationHooks(
+            mutate: { _ in },
+            verifyRestored: { _ in restoredChecks.increment() }
+        )
+    )
+    require(result?.wasRestored == true,
+            "a second launch must retry restored health instead of reporting external modification")
+    require(restoredChecks.value == 1,
+            "a second launch must run the restored health hook once")
+    require(coordinator.pendingOperation == nil,
+            "successful restored health retry must clear the record")
+    try requireContents(
+        "baseline",
+        at: profileURL().appendingPathComponent("marker"),
+        "successful restored health retry must preserve the baseline"
+    )
 }
 
 private func setupRestoring() async throws {
@@ -732,9 +806,12 @@ struct PluginOperationHarness {
         case "prepared-recover": try await recoverPrepared()
         case "mutating-no-digest-setup": try await setupMutatingWithoutDigest()
         case "mutating-no-digest-recover": try await recoverMutatingWithoutDigest()
+        case "mutating-no-digest-recover-again": try await recoverMutatingWithoutDigestAfterConflictResolution()
         case "verifying-setup": try await setupVerifying()
         case "verifying-commit-recover": try await recoverVerifyingCommit()
         case "verifying-restore-recover": try await recoverVerifyingRestore()
+        case "restored-health-failure-setup": try await setupRestoredHealthFailure()
+        case "restored-health-failure-recover": try await recoverRestoredHealthFailure()
         case "restoring-setup": try await setupRestoring()
         case "restoring-recover": try await recoverRestoringIdempotently()
         case "restoring-cleanup-setup": try await setupRestoringAfterSnapshotDeletion()

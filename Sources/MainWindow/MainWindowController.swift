@@ -533,6 +533,11 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     private var onboardingHostingView: NSView?
     private var webUIReadinessGeneration = 0
     private var pendingWebUINavigation: WKNavigation?
+    /// WebKit can deliver a navigation failure after a newer load has
+    /// already replaced the page (and after `pendingWebUINavigation` was
+    /// cleared). Keep the startup generation attached to every navigation we
+    /// initiate so a late callback cannot fail the newer health page.
+    private var webUINavigationGenerations: [ObjectIdentifier: Int] = [:]
     private var webUIReadyContinuation: CheckedContinuation<Void, Error>?
     private var webUIReadyTimeoutTask: Task<Void, Never>?
     private var windowDragMouseDownEvent: NSEvent?
@@ -559,6 +564,14 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     /// remains unresolved.
     private var startupRecoveryError: String?
     private var startupRecoveryIsPluginOperation = false
+    /// A corrupt/unreadable primary state file is a process-wide startup
+    /// blocker. Keep it separate from Runtime/Profile/plugin recovery so a
+    /// retry can never accidentally fall through to normal launch.
+    private var startupStatePersistenceBlocked = false
+    /// A malformed app-owned recovery record has no trustworthy owner ID.
+    /// Keep this blocker distinct from an ordinary startup failure so Retry
+    /// cannot silently start the user's Profile after the record is rejected.
+    private var startupRecoveryRecordCorrupted = false
     /// A recovered plugin mutation is committed only after the next ordinary
     /// healthy launch. Keep its owner ID in memory until that launch passes.
     private var pendingCommittedPluginOperationID: String?
@@ -709,7 +722,36 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
 
     // MARK: - App Launch & Initialization
 
+    /// Present native progress before AppDelegate begins any persisted-state
+    /// recovery. macOS may restore the window independently of our normal
+    /// `launch()` path; keeping this opaque surface visible prevents the
+    /// underlying, not-yet-navigated WKWebView from appearing as a white
+    /// screen during snapshot restoration or dependency preparation.
+    public func beginStartupPreparation() {
+        hideRecoverySurface()
+        showStartupSurface()
+        startupStatusView?.update(
+            phase: .preparing,
+            detail: "正在检查并恢复上次启动状态…"
+        )
+        revealWindow()
+    }
+
     public func launch() {
+        if startupStatePersistenceBlocked {
+            showStatePersistenceRecoverySurface()
+            return
+        }
+        if let detail = DshStateManager.shared.loadResult.failureDescription {
+            blockStartupForStateFailure(detail)
+            return
+        }
+        if startupRecoveryRecordCorrupted {
+            if let context = launchContext {
+                showRecoverySurface(for: context)
+            }
+            return
+        }
         if startupRecoveryError != nil {
             if let context = launchContext ?? makeLaunchContext() {
                 launchContext = context
@@ -741,12 +783,17 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         switch manager.readState() {
         case .absent:
             persistedRecoveryRecord = nil
+            startupRecoveryRecordCorrupted = false
             return false
         case .corrupted(let detail):
-            guard let context = makeLaunchContext() else {
-                showErrorAlert("恢复记录损坏：\(DshMainWindowUIMessage.safe(detail))")
-                return true
-            }
+            // The record cannot authorize a Profile path or Runtime. Use an
+            // isolated diagnostic context even when the primary state is
+            // healthy; falling back to `makeLaunchContext()` would let the
+            // native recovery surface inspect or mutate personal data.
+            let context = makeRecoveryRecordDiagnosticContext()
+            persistedRecoveryRecord = nil
+            recoveryProfileManager = nil
+            startupRecoveryRecordCorrupted = true
             launchContext = context
             beginDiagnosticLaunch(for: context)
             _ = diagnosticStore.appendLog(
@@ -768,9 +815,20 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             recoveryViewModel?.setSafeModeAvailability(false, reason: safeModeUnavailableReason)
             return true
         case .loaded(let state):
-            guard let context = makeLaunchContext() else {
-                showErrorAlert("检测到未完成的安全模式恢复记录，请重新启动 DSH。")
-                return true
+            startupRecoveryRecordCorrupted = false
+            let context: DshLaunchContext
+            if [.returned, .cleanupPending, .cleaned].contains(state.phase) {
+                // These phases only need the app-owned cleanup path. They do
+                // not need a normal Profile context, and using one here
+                // would make diagnostics inspect personal Profile files or
+                // make cleanup depend on an invalid primary state.
+                context = makeRecoveryRecordDiagnosticContext()
+            } else {
+                guard let normalContext = makeLaunchContext() else {
+                    showErrorAlert("检测到未完成的安全模式恢复记录，请重新启动 DSH。")
+                    return true
+                }
+                context = normalContext
             }
             persistedRecoveryRecord = state
             recoveryProfileManager = manager
@@ -805,6 +863,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         persistedRecoveryRecord != nil
             || isSafeModeActive
             || safeModeUnavailableReason != nil
+            || startupRecoveryRecordCorrupted
             || startupRecoveryError != nil
             || DshPluginOperationCoordinator.shared.pendingOperation != nil
     }
@@ -870,6 +929,8 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     /// AppDelegate calls this after leaving the operation gate, before
     /// `launch()` decides whether a normal service start is allowed.
     public func blockStartupForRecovery(_ error: Error) {
+        startupStatePersistenceBlocked = false
+        startupRecoveryRecordCorrupted = false
         let safeMessage = DshMainWindowUIMessage.safe(error)
         startupRecoveryError = safeMessage
         startupRecoveryIsPluginOperation = error is DshPluginOperationError
@@ -885,6 +946,90 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             error,
             context: context
         )
+    }
+
+    /// Retain the committed P01 owner when only its app-owned snapshot
+    /// cleanup fails. The package mutation is already live, but the durable
+    /// owner must continue through the plugin recovery/diagnostic surface
+    /// until the snapshot and record are both cleared.
+    public func markCommittedPluginCleanupFailure(
+        operationID: String,
+        error: Error
+    ) {
+        pendingCommittedPluginOperationID = operationID
+        let recoveryError = DshPluginOperationError.recoveryRequired(
+            "插件事务已提交，但快照清理失败：\(DshMainWindowUIMessage.safe(error))"
+        )
+        blockStartupForRecovery(recoveryError)
+        // Keep this explicit even for a future error type that does not carry
+        // the coordinator's domain or happen while the record is readable.
+        startupRecoveryIsPluginOperation = true
+        if let context = launchContext {
+            showRecoverySurface(for: context)
+        }
+    }
+
+    /// Stop startup on an invalid primary state file and present the native
+    /// diagnostic/recovery page. The context points at an app-owned isolated
+    /// directory and is never allowed to become a normal Profile launch.
+    public func blockStartupForStateFailure(_ detail: String) {
+        startupRecoveryRecordCorrupted = false
+        let alreadyBlocked = startupStatePersistenceBlocked
+        startupStatePersistenceBlocked = true
+        startupRecoveryIsPluginOperation = false
+        let safeDetail = DshMainWindowUIMessage.safe(detail)
+        let error = DshStatePersistenceError.stateUnavailable(safeDetail)
+        startupRecoveryError = safeDetail
+        // A normal launch context may already exist when a later state commit
+        // fails. Do not reuse it for the diagnostic surface: the state-failure
+        // path must remain isolated from the user's Profile. Reuse only the
+        // synthetic context created by an earlier invocation.
+        let context = alreadyBlocked
+            ? (launchContext ?? makeStatePersistenceRecoveryContext())
+            : makeStatePersistenceRecoveryContext()
+        launchContext = context
+        beginDiagnosticLaunch(for: context)
+        recordStartupFailure(error, context: context)
+        showRecoverySurface(for: context)
+    }
+
+    private func showStatePersistenceRecoverySurface() {
+        guard let context = launchContext else { return }
+        beginDiagnosticLaunch(for: context)
+        showRecoverySurface(for: context)
+    }
+
+    private func makeStatePersistenceRecoveryContext() -> DshLaunchContext {
+        let launchID = UUID()
+        let profileName = "dsh-recovery-\(launchID.uuidString.lowercased())"
+        let recoveryHome = DshStateManager.appSupportDirectory
+            .appendingPathComponent("dsh-state-recovery-\(launchID.uuidString.lowercased())", isDirectory: true)
+        let profileDirectory = DshLaunchContext.profileDirectory(
+            forName: profileName,
+            dshHome: recoveryHome
+        )
+        return DshLaunchContext.makeRecovery(
+            launchID: launchID,
+            runtimeDescriptor: NpmRuntimeDescriptor(
+                version: "unknown",
+                registry: DshVersionManager.defaultRegistry
+            ),
+            profile: .desktop,
+            profileName: profileName,
+            profileDirectory: profileDirectory,
+            effectiveDshHome: recoveryHome,
+            originalProfile: .desktop,
+            transactionID: nil,
+            port: 3080
+        )
+    }
+
+    /// A malformed recovery record has no trustworthy Profile, Runtime, or
+    /// recovery ID. Present its diagnostics against a fresh app-owned
+    /// synthetic context instead of reusing the normal launch context, which
+    /// would expose the user's Profile to inspection or a recovery action.
+    private func makeRecoveryRecordDiagnosticContext() -> DshLaunchContext {
+        makeStatePersistenceRecoveryContext()
     }
 
     private var coordinatorHasPendingPluginOperation: Bool {
@@ -916,6 +1061,20 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     }
 
     public func startAndLoadDsh() {
+        if startupStatePersistenceBlocked {
+            showStatePersistenceRecoverySurface()
+            return
+        }
+        if let detail = DshStateManager.shared.loadResult.failureDescription {
+            blockStartupForStateFailure(detail)
+            return
+        }
+        if startupRecoveryRecordCorrupted {
+            if let context = launchContext {
+                showRecoverySurface(for: context)
+            }
+            return
+        }
         if startupRecoveryError != nil {
             if let context = launchContext ?? makeLaunchContext() {
                 launchContext = context
@@ -946,13 +1105,13 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                     SettingsViewModel.shared.refreshPlugins(for: context)
                     switch context.purpose {
                     case .normal:
-                        await SettingsViewModel.shared.recordHealthyRuntimeStart(for: context)
+                        try await SettingsViewModel.shared.recordHealthyRuntimeStart(for: context)
                     case .runtimeRollback:
-                        await SettingsViewModel.shared.finalizeRecoveredRuntimeAfterSuccessfulStart(for: context)
+                        try await SettingsViewModel.shared.finalizeRecoveredRuntimeAfterSuccessfulStart(for: context)
                     case .profileSwitch:
-                        await SettingsViewModel.shared.retryPendingProfileSwitchCleanup(for: context)
+                        try await SettingsViewModel.shared.retryPendingProfileSwitchCleanup(for: context)
                     case .profileRollback:
-                        await SettingsViewModel.shared.retryPendingProfileSwitchCleanup(for: context)
+                        try await SettingsViewModel.shared.retryPendingProfileSwitchCleanup(for: context)
                     case .runtimeVerification, .recovery:
                         // Verification and recovery starts only establish that
                         // this generation is available. Their success cannot
@@ -964,16 +1123,45 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                        let operationID = self.pendingCommittedPluginOperationID {
                         // A committed plugin snapshot is deliberately kept
                         // until this extra ordinary launch is healthy.
-                        try await DshPluginOperationCoordinator.shared
-                            .finalizeCommittedOperation(operationID: operationID)
+                        do {
+                            try await DshPluginOperationCoordinator.shared
+                                .finalizeCommittedOperation(operationID: operationID)
+                        } catch {
+                            self.markCommittedPluginCleanupFailure(
+                                operationID: operationID,
+                                error: error
+                            )
+                            throw error
+                        }
                         self.pendingCommittedPluginOperationID = nil
+                        SettingsViewModel.shared.synchronizePersistedPluginOperationState()
                     }
                     return session
                 }
             } catch {
                 print("[MainWindowController] Service start failed:", DshMainWindowUIMessage.safe(error))
                 self.revealWindow()
-                if let context = self.launchContext {
+                if error is DshStatePersistenceError {
+                    await DshService.shared.stopAndWait()
+                    self.serviceSession = nil
+                    self.webShell?.clearBridgeValidationContext()
+                    self.blockStartupForStateFailure(error.localizedDescription)
+                    return
+                }
+                let committedPluginOwnerFailure =
+                    self.pendingCommittedPluginOperationID != nil
+                    && DshPluginOperationCoordinator.shared.hasPersistedOperationRecord
+                if committedPluginOwnerFailure {
+                    // The committed plugin owner still exists even when the
+                    // extra ordinary health start failed before cleanup was
+                    // attempted. Keep retry on the plugin recovery path.
+                    if self.startupRecoveryError == nil {
+                        self.blockStartupForRecovery(error)
+                    }
+                    if let context = self.launchContext {
+                        self.showRecoverySurface(for: context)
+                    }
+                } else if let context = self.launchContext {
                     self.recordStartupFailure(error, context: context)
                     self.showRecoverySurface(for: context)
                 } else {
@@ -1006,6 +1194,9 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     public func restartDshServiceDuringOperation(
         context providedContext: DshLaunchContext? = nil
     ) async throws -> DshServiceSession {
+        if let detail = DshStateManager.shared.loadResult.failureDescription {
+            throw DshStatePersistenceError.stateUnavailable(detail)
+        }
         // Both the default and explicit paths use a single state snapshot
         // while the caller owns runtimeOperationGate. Explicit contexts must
         // still describe the transaction that is current at this boundary.
@@ -1106,7 +1297,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                     SettingsViewModel.shared.installProgressDetail = progress.detail.map(DshMainWindowUIMessage.safe)
                 }
             }
-            DshStateManager.shared.update { state in
+            try DshStateManager.shared.updateOrThrow { state in
                 guard state.runtimeState.pending?.version == runtimeState.pending?.version,
                       state.runtimeState.transactionID == context.transactionID,
                       [.switching, .verifying].contains(state.runtimeState.phase) else { return }
@@ -1182,6 +1373,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             throw error
         }
         pendingWebUINavigation = navigation
+        webUINavigationGenerations[ObjectIdentifier(navigation)] = webUIReadinessGeneration
         do {
             try await webUIReadyTask.value
             let upstreamCookies = try await upstreamCookieStore.waitForAuthenticatedCookies(for: session)
@@ -1918,6 +2110,9 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         retryability: DshDiagnosticRetryability,
         source: DshDiagnosticSource
     ) {
+        if error is DshStatePersistenceError {
+            return (.dependencyMissing, "DSH 主状态不可读或损坏，普通启动已停止。", .notRetryable, .native)
+        }
         if let error = error as? DshProcessIOError {
             switch error {
             case .timedOut:
@@ -2233,11 +2428,11 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                     _ = try await self.restartDshServiceDuringOperation(context: context)
                     switch context.purpose {
                     case .normal:
-                        await SettingsViewModel.shared.recordHealthyRuntimeStart(for: context)
+                        try await SettingsViewModel.shared.recordHealthyRuntimeStart(for: context)
                     case .runtimeRollback:
-                        await SettingsViewModel.shared.finalizeRecoveredRuntimeAfterSuccessfulStart(for: context)
+                        try await SettingsViewModel.shared.finalizeRecoveredRuntimeAfterSuccessfulStart(for: context)
                     case .profileSwitch, .profileRollback:
-                        await SettingsViewModel.shared.retryPendingProfileSwitchCleanup(for: context)
+                        try await SettingsViewModel.shared.retryPendingProfileSwitchCleanup(for: context)
                     case .runtimeVerification, .recovery:
                         break
                     }
@@ -2252,6 +2447,13 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                 self.hideSafeModeIndicator()
                 self.launchContext = normalContext
             } catch {
+                if error is DshStatePersistenceError {
+                    await DshService.shared.stopAndWait()
+                    self.serviceSession = nil
+                    self.webShell?.clearBridgeValidationContext()
+                    self.blockStartupForStateFailure(error.localizedDescription)
+                    return
+                }
                 self.isSafeModeActive = true
                 self.launchContext = fallbackContext ?? self.launchContext
                 self.recordStartupFailure(error, context: self.launchContext ?? (fallbackContext ?? launch.context))
@@ -2265,6 +2467,18 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     private func handleRecoveryRetry(_ request: DshRecoveryActionRequest, context: DshLaunchContext) {
         guard request.launchID == context.launchID,
               recoveryViewModel?.launchID == context.launchID else { return }
+        if startupStatePersistenceBlocked {
+            _ = recoveryViewModel?.finishAction(
+                request,
+                message: "主状态文件不可读或已损坏，未执行重试或修改。请修复后重启 DSH，并可先导出诊断。"
+            )
+            showStatePersistenceRecoverySurface()
+            return
+        }
+        if startupRecoveryRecordCorrupted {
+            retryCorruptedRecoveryRecord(request, context: context)
+            return
+        }
         if startupRecoveryIsPluginOperation {
             Task { @MainActor [weak self] in
                 await self?.retryPendingPluginOperation(request, context: context)
@@ -2272,7 +2486,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             return
         }
         if let persistedRecoveryRecord,
-           [.returned, .cleanupPending].contains(persistedRecoveryRecord.phase) {
+           [.returned, .cleanupPending, .cleaned].contains(persistedRecoveryRecord.phase) {
             Task { @MainActor [weak self] in
                 await self?.retryPersistedRecoveryCleanup(request, context: context)
             }
@@ -2290,6 +2504,36 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         safeModeUnavailableReason = nil
         // startAndLoadDsh creates a fresh launch ID at the serialized boundary.
         startAndLoadDsh()
+    }
+
+    /// Re-read a previously rejected record after the user has repaired it
+    /// outside the app. This path performs no write and never treats a
+    /// missing record as permission to launch the personal Profile.
+    private func retryCorruptedRecoveryRecord(
+        _ request: DshRecoveryActionRequest,
+        context: DshLaunchContext
+    ) {
+        let manager = DshRecoveryProfileManager(
+            applicationSupportDirectory: DshStateManager.appSupportDirectory
+        )
+        switch manager.readState() {
+        case .loaded:
+            startupRecoveryRecordCorrupted = false
+            _ = recoveryViewModel?.finishAction(request, message: "恢复记录已重新读取，正在显示可验证的恢复步骤。")
+            _ = presentPersistedRecoveryIfNeeded()
+        case .corrupted(let detail):
+            _ = recoveryViewModel?.finishAction(
+                request,
+                message: "恢复记录仍然损坏，已停止普通启动：\(DshMainWindowUIMessage.safe(detail))"
+            )
+            showRecoverySurface(for: context)
+        case .absent:
+            _ = recoveryViewModel?.finishAction(
+                request,
+                message: "恢复记录无法验证，已停止普通启动；请保留诊断并重新启动 DSH。"
+            )
+            showRecoverySurface(for: context)
+        }
     }
 
     /// Retry the startup-side P01 handoff from the recovery surface. The
@@ -2318,7 +2562,14 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                 request,
                 message: "插件事务仍未恢复：\(DshMainWindowUIMessage.safe(error))"
             )
-            blockStartupForRecovery(error)
+            if error is DshStatePersistenceError {
+                await DshService.shared.stopAndWait()
+                serviceSession = nil
+                webShell?.clearBridgeValidationContext()
+                blockStartupForStateFailure(error.localizedDescription)
+            } else {
+                blockStartupForRecovery(error)
+            }
             if let newContext = launchContext {
                 showRecoverySurface(for: newContext)
             }
@@ -2332,7 +2583,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         guard request.launchID == context.launchID,
               let manager = recoveryProfileManager,
               let state = persistedRecoveryRecord,
-              [.returned, .cleanupPending].contains(state.phase) else {
+              [.returned, .cleanupPending, .cleaned].contains(state.phase) else {
             _ = recoveryViewModel?.finishAction(request, message: "恢复记录当前不能清理。")
             return
         }
@@ -3028,6 +3279,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             throw error
         }
         pendingWebUINavigation = navigation
+        webUINavigationGenerations[ObjectIdentifier(navigation)] = webUIReadinessGeneration
         do {
             try await webUIReadyTask.value
         } catch {
@@ -3130,6 +3382,20 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         return error.domain == "WebKitErrorDomain" && error.code == 102
     }
 
+    /// Match a callback to the current navigation generation. A missing map
+    /// entry is allowed for user-initiated navigations after startup, but a
+    /// navigation that we tracked must still belong to the current readiness
+    /// generation. This prevents an old WebKit `didFail` delivered after a
+    /// reload from clearing the new page's readiness waiter.
+    private func isCurrentWebUINavigation(_ navigation: WKNavigation!) -> Bool {
+        guard let navigation else { return false }
+        let identifier = ObjectIdentifier(navigation)
+        if let generation = webUINavigationGenerations[identifier] {
+            guard generation == webUIReadinessGeneration else { return false }
+        }
+        return pendingWebUINavigation == nil || navigation === pendingWebUINavigation
+    }
+
     public func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else {
@@ -3182,11 +3448,9 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     }
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard isCurrentWebUINavigation(navigation) else { return }
         syncUiTheme()
         syncTranslateCommands()
-        let matchesPendingNavigation = pendingWebUINavigation == nil
-            || (navigation != nil && navigation === pendingWebUINavigation)
-        guard matchesPendingNavigation else { return }
         pendingWebUINavigation = nil
         beginWebUIReadinessCheck()
     }
@@ -3204,9 +3468,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             print("[MainWindowController] Ignored expected navigation interruption:", DshMainWindowUIMessage.safe(error))
             return
         }
-        let matchesPendingNavigation = pendingWebUINavigation == nil
-            || (navigation != nil && navigation === pendingWebUINavigation)
-        guard matchesPendingNavigation else { return }
+        guard isCurrentWebUINavigation(navigation) else { return }
         pendingWebUINavigation = nil
         let hadReadinessWaiter = webUIReadyContinuation != nil
         completeWebUIReadiness(.failure(error))
@@ -3220,9 +3482,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             print("[MainWindowController] Ignored expected provisional navigation interruption:", DshMainWindowUIMessage.safe(error))
             return
         }
-        let matchesPendingNavigation = pendingWebUINavigation == nil
-            || (navigation != nil && navigation === pendingWebUINavigation)
-        guard matchesPendingNavigation else { return }
+        guard isCurrentWebUINavigation(navigation) else { return }
         pendingWebUINavigation = nil
         let hadReadinessWaiter = webUIReadyContinuation != nil
         completeWebUIReadiness(.failure(error))

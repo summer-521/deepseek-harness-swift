@@ -42,11 +42,35 @@ public final class NodeRuntime {
             }
         }
 
-        // 4. Fallback search via which in login environment
+        // 4. Current process PATH, searched directly without spawning a
+        // shell. This covers dev shells, CI and test harnesses
+        // deterministically; the login-shell fallback below stays for
+        // sparse-PATH contexts such as Finder-launched apps.
+        if let pathNode = resolveBinaryFromPATH("node") {
+            return pathNode
+        }
+
+        // 5. Fallback search via login shell environment
         if let shellNode = resolveBinaryFromShell("node") {
             return shellNode
         }
 
+        return nil
+    }
+
+    /// Search the current process PATH without spawning a shell. Skips empty
+    /// components and relative entries; the caller still verifies the
+    /// executable bit.
+    private func resolveBinaryFromPATH(_ name: String) -> String? {
+        guard let pathValue = ProcessInfo.processInfo.environment["PATH"] else { return nil }
+        for component in pathValue.split(separator: ":") {
+            let dir = String(component).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard dir.hasPrefix("/"), !dir.contains("..") else { continue }
+            let candidate = (dir as NSString).appendingPathComponent(name)
+            if FileManager.default.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+        }
         return nil
     }
 
@@ -146,7 +170,13 @@ public final class NodeRuntime {
     private func fetchUserPathFromShell() -> String {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        proc.arguments = ["-ilc", "print -r -- \"$PATH\""]
+        // Same rule as resolveBinaryFromShell: never run an interactive
+        // shell for a machine query. ~/.zshrc session plugins print banners
+        // to stdout and race on shared state under concurrency, which used
+        // to corrupt this PATH with banner fragments and break every child
+        // process lookup (pnpm shebang: `env: node: No such file`). nvm is
+        // sourced explicitly so its bin dir stays on the returned PATH.
+        proc.arguments = ["-lc", "if [ -n \"${NVM_DIR:-}\" ] && [ -s \"$NVM_DIR/nvm.sh\" ]; then source \"$NVM_DIR/nvm.sh\" >/dev/null 2>&1; elif [ -s \"$HOME/.nvm/nvm.sh\" ]; then source \"$HOME/.nvm/nvm.sh\" >/dev/null 2>&1; fi; print -r -- \"$PATH\""]
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
@@ -162,7 +192,13 @@ public final class NodeRuntime {
             }
             if group.wait(timeout: .now() + 3.0) == .success {
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                resultPath = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let text = String(data: data, encoding: .utf8) ?? ""
+                // If any login file still prints noise, it lands on its own
+                // lines; the PATH itself is the last non-empty line.
+                resultPath = text.split(separator: "\n", omittingEmptySubsequences: true)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .last ?? ""
             } else {
                 proc.terminate()
             }
@@ -171,9 +207,31 @@ public final class NodeRuntime {
         }
 
         var parts = resultPath.split(separator: ":").map(String.init)
-        if parts.isEmpty {
+        // A corrupted shell answer (banner fragment, single bogus entry)
+        // must never become the child-process PATH nor the cached value.
+        // Fall back to the current process PATH when nothing usable arrived.
+        let hasUsableDir = parts.contains { FileManager.default.fileExists(atPath: $0) }
+        if parts.isEmpty || !hasUsableDir {
             let envPath = ProcessInfo.processInfo.environment["PATH"] ?? ""
-            parts = envPath.split(separator: ":").map(String.init)
+            let envParts = envPath.split(separator: ":").map(String.init)
+            if !envParts.isEmpty {
+                parts = envParts
+            }
+        }
+
+        // Union with the inherited process PATH, inherited-first. The login
+        // shell legitimately lacks entries the parent already carries (nvm
+        // shims, toolchain bins) and vice versa; either side alone can miss
+        // the active node under sparse or VDIsolated environments.
+        let inherited = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":").map(String.init)
+            .filter { $0.hasPrefix("/") && !$0.contains("..") }
+        if !inherited.isEmpty {
+            var merged = inherited
+            for part in parts where !merged.contains(part) {
+                merged.append(part)
+            }
+            parts = merged
         }
 
         let standardDirs = [
@@ -203,9 +261,28 @@ public final class NodeRuntime {
     }
 
     private func resolveBinaryFromShell(_ name: String) -> String? {
+        // Login-shell init can fail transiently under parallel load (user
+        // plugins, nvm init IO, fork pressure). A bounded retry keeps this
+        // best-effort lookup stable; the success path takes exactly one shot.
+        for attempt in 0..<3 {
+            if let found = resolveBinaryFromShellOnce(name) {
+                return found
+            }
+            Thread.sleep(forTimeInterval: 0.2 * Double(attempt + 1))
+        }
+        return nil
+    }
+
+    private func resolveBinaryFromShellOnce(_ name: String) -> String? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        proc.arguments = ["-ilc", "which \(name)"]
+        // Non-interactive login shell on purpose: interactive shells run
+        // user plugins (session managers, banners) that race on shared
+        // state when many resolutions happen concurrently and garble
+        // stdout, which used to make this lookup randomly fail under
+        // parallel test load. nvm is sourced explicitly so nvm-managed
+        // binaries still resolve without an interactive shell.
+        proc.arguments = ["-lc", "if [ -n \"${NVM_DIR:-}\" ] && [ -s \"$NVM_DIR/nvm.sh\" ]; then source \"$NVM_DIR/nvm.sh\" >/dev/null 2>&1; elif [ -s \"$HOME/.nvm/nvm.sh\" ]; then source \"$HOME/.nvm/nvm.sh\" >/dev/null 2>&1; fi; which \(name)"]
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
@@ -213,7 +290,14 @@ public final class NodeRuntime {
         guard (try? proc.run()) != nil else { return nil }
         proc.waitUntilExit()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let text = String(data: data, encoding: .utf8) ?? ""
+        // Interactive login shells may print session banners or plugin noise
+        // to stdout before which(1) output. Only an absolute-path line can be
+        // a candidate; which prints the real result last.
+        let path = text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.hasPrefix("/") }
+            .last ?? ""
         return (!path.isEmpty && FileManager.default.isExecutableFile(atPath: path)) ? path : nil
     }
 

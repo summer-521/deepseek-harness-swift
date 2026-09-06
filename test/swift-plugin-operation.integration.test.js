@@ -53,10 +53,15 @@ function assertRun(binaryPath, root, scenario) {
 }
 
 function runAcrossRestart(binaryPath, setupScenario, recoverScenario) {
+  return runAcrossRestarts(binaryPath, [setupScenario, recoverScenario])
+}
+
+function runAcrossRestarts(binaryPath, scenarios) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-plugin-operation-test-'))
   try {
-    assertRun(binaryPath, root, setupScenario)
-    assertRun(binaryPath, root, recoverScenario)
+    for (const scenario of scenarios) {
+      assertRun(binaryPath, root, scenario)
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
@@ -96,12 +101,20 @@ test('P01 restart and rollback matrix stays fail-closed', () => {
     ], { encoding: 'utf8', timeout: 120000 })
     assert.equal(compile.status, 0, compile.stderr || compile.stdout)
 
-    // These pairs execute setup and recovery in separate Swift processes,
-    // exercising the on-disk operation state as a real restart would.
+    // These scenarios execute in separate Swift processes, exercising the
+    // on-disk operation state as a real restart would.
     runAcrossRestart(binaryPath, 'prepared-setup', 'prepared-recover')
-    runAcrossRestart(binaryPath, 'mutating-no-digest-setup', 'mutating-no-digest-recover')
+    runAcrossRestarts(binaryPath, [
+      'mutating-no-digest-setup',
+      'mutating-no-digest-recover',
+      'mutating-no-digest-recover-again',
+    ])
     runAcrossRestart(binaryPath, 'verifying-setup', 'verifying-commit-recover')
     runAcrossRestart(binaryPath, 'verifying-setup', 'verifying-restore-recover')
+    runAcrossRestarts(binaryPath, [
+      'restored-health-failure-setup',
+      'restored-health-failure-recover',
+    ])
     runAcrossRestart(binaryPath, 'restoring-setup', 'restoring-recover')
     runAcrossRestart(binaryPath, 'restoring-cleanup-setup', 'restoring-cleanup-recover')
     runAcrossRestart(binaryPath, 'missing-snapshot-setup', 'missing-snapshot-recover')
