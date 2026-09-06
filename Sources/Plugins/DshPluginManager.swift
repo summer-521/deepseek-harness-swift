@@ -2,6 +2,19 @@ import Foundation
 import CryptoKit
 import Darwin
 
+/// A resolved install target: the registry name plus the concrete version
+/// the specifier would install. Produced without mutating anything so the
+/// UI can gate downgrades before stopping services or taking snapshots.
+public struct DshInstallCandidate: Equatable, Sendable {
+    public let name: String
+    public let version: String
+
+    public init(name: String, version: String) {
+        self.name = name
+        self.version = version
+    }
+}
+
 public struct DshPluginItem: Identifiable, Equatable {
     public var id: String { name }
     public let name: String
@@ -30,6 +43,24 @@ public struct DshPluginItem: Identifiable, Equatable {
 public enum DshPendingPluginUpdate: Equatable, Sendable {
     case plugin(String)
     case all
+}
+
+/// A pending user confirmation for an install that would downgrade an
+/// already-installed plugin (the requested tag currently resolves below the
+/// installed version). Confirming proceeds with the same release-age policy;
+/// only the downgrade itself is acknowledged.
+public struct DshPendingPluginDowngrade: Equatable, Sendable {
+    public let spec: String
+    public let name: String
+    public let installedVersion: String
+    public let candidateVersion: String
+
+    public init(spec: String, name: String, installedVersion: String, candidateVersion: String) {
+        self.spec = spec
+        self.name = name
+        self.installedVersion = installedVersion
+        self.candidateVersion = candidateVersion
+    }
 }
 
 /// Result of the read-only update resolver.  A preflight is deliberately
@@ -117,6 +148,12 @@ private final class DshProcessOutputCollector: @unchecked Sendable {
     private var stopped = false
     private var stdoutTruncated = false
     private var stderrTruncated = false
+    /// Live progress lines (pnpm `Progress: …` summaries). Set before
+    /// start(); invoked outside the lock, never for buffered history.
+    var progressHandler: (@Sendable (String) -> Void)?
+    private static let progressResidualLimit = 4096
+    private var stdoutResidual = ""
+    private var stderrResidual = ""
 
     init(stdout: Pipe?, stderr: Pipe?) {
         self.stdoutPipe = stdout
@@ -161,6 +198,8 @@ private final class DshProcessOutputCollector: @unchecked Sendable {
             let data = readable.availableData
             self.lock.lock()
             let shouldStop = self.stopped
+            var progressLines: [String] = []
+            let progressHandler = self.progressHandler
             if !data.isEmpty && !shouldStop {
                 let destination: Data
                 let truncated: Bool
@@ -187,8 +226,41 @@ private final class DshProcessOutputCollector: @unchecked Sendable {
                         self.stderrTruncated = true
                     }
                 }
+                if progressHandler != nil,
+                   let chunk = String(data: data, encoding: .utf8) {
+                    // Split on both newline styles; keep only the trailing
+                    // partial line (capped) for the next chunk.
+                    let normalized = chunk.replacingOccurrences(of: "\r", with: "\n")
+                    var pending: String
+                    if isStdout {
+                        pending = self.stdoutResidual + normalized
+                    } else {
+                        pending = self.stderrResidual + normalized
+                    }
+                    var lines = pending.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+                    var tail = lines.popLast() ?? ""
+                    if tail.count > Self.progressResidualLimit {
+                        tail = String(tail.suffix(Self.progressResidualLimit))
+                    }
+                    if isStdout {
+                        self.stdoutResidual = tail
+                    } else {
+                        self.stderrResidual = tail
+                    }
+                    for line in lines {
+                        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmed.isEmpty, trimmed.contains("Progress") {
+                            progressLines.append(trimmed)
+                        }
+                    }
+                }
             }
             self.lock.unlock()
+            if progressHandler != nil {
+                for line in progressLines {
+                    progressHandler?(line)
+                }
+            }
             if data.isEmpty || shouldStop {
                 self.finish(streamID: streamID, handle: readable)
             }
@@ -285,6 +357,16 @@ public final class DshPluginManager {
     public static func profileDirectory(for profile: DshAppProfile) -> URL {
         DshLaunchContext.profileDirectory(for: profile)
     }
+
+    /// Thin-link tolerant fetch policy shared by every mutating pnpm
+    /// command. `--network-concurrency=4` caps parallel connections; the
+    /// explicit fetch budget replaces pnpm's 60s default timeout that turns
+    /// slow-but-progressing downloads into endless timeout/retry storms.
+    static let thinLinkFetchArguments = [
+        "--network-concurrency=4",
+        "--fetch-timeout=300000",
+        "--fetch-retries=2",
+    ]
 
     /// P01 is deliberately confined to the app's canonical desktop Profile.
     /// Callers may pass an explicit path for ordinary web-profile utilities,
@@ -1250,7 +1332,8 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         ignoringMinimumReleaseAge: Bool = false,
         profileDirectory: URL? = nil,
         profile: DshAppProfile? = nil,
-        registry: String? = nil
+        registry: String? = nil,
+        progress: (@Sendable (String) -> Void)? = nil
     ) async throws {
         try validatePluginPackageSpecifier(spec)
         let stateSnapshot = DshStateManager.shared.current
@@ -1277,7 +1360,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: pnpm)
         proc.currentDirectoryURL = profileDir
-        var arguments = ["add", spec] + registryArguments(capturedRegistry)
+        var arguments = ["add", spec] + Self.thinLinkFetchArguments + registryArguments(capturedRegistry)
         if ignoringMinimumReleaseAge {
             arguments.append("--config.minimum-release-age=0")
         }
@@ -1293,7 +1376,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         proc.standardOutput = stdout
         proc.standardError = stderr
 
-        let result = try await runProcess(proc, stdout: stdout, stderr: stderr)
+        let result = try await runProcess(proc, stdout: stdout, stderr: stderr, onProgressLine: progress)
 
         guard result.status == 0 else {
             let detail = processOutput(result)
@@ -1366,6 +1449,35 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         )
     }
 
+    /// Read-only install resolver: `pnpm add --lockfile-only` inside a
+    /// disposable copy of the Profile. Surfaces minimum-release-age
+    /// rejections before any service stop, snapshot or mutation, mirroring
+    /// the update preflight below.
+    public func preflightInstallPluginUpdate(
+        spec: String,
+        profileDirectory: URL,
+        profile: DshAppProfile,
+        registry: String
+    ) async throws -> DshPluginUpdatePreflightResult {
+        try Task.checkCancellation()
+        guard DshPluginOperationInputValidation.isValidPackageSpecifier(spec) else {
+            return .inconclusive
+        }
+        var outdatedLookupNames: [String] = []
+        if let name = packageName(from: spec) {
+            outdatedLookupNames = [name]
+        }
+        return try await runPreflightResolver(
+            pnpmArguments: ["add", spec, "--lockfile-only", "--ignore-scripts", "--network-concurrency=4"]
+                + registryArguments(DshVersionManager.normalizedRegistry(registry))
+                + ["--reporter=append-only"],
+            outdatedLookupNames: outdatedLookupNames,
+            profileDirectory: profileDirectory,
+            profile: profile,
+            registry: registry
+        )
+    }
+
     private func preflightPluginUpdates(
         _ packageNames: [String],
         profileDirectory: URL,
@@ -1376,6 +1488,31 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         for packageName in packageNames {
             try validatePluginPackageName(packageName)
         }
+        return try await runPreflightResolver(
+            pnpmArguments: ["update"] + packageNames + [
+                "--latest",
+                "--lockfile-only",
+                "--ignore-scripts",
+                "--network-concurrency=4"
+            ] + registryArguments(DshVersionManager.normalizedRegistry(registry)) + ["--reporter=append-only"],
+            outdatedLookupNames: packageNames,
+            profileDirectory: profileDirectory,
+            profile: profile,
+            registry: registry
+        )
+    }
+
+    /// Shared disposable-tree resolver behind the update/install
+    /// preflights. Copies only manifests into a temporary directory with an
+    /// isolated store/config, runs the given lockfile-only pnpm command and
+    /// interprets the result. Never touches the real Profile.
+    private func runPreflightResolver(
+        pnpmArguments: [String],
+        outdatedLookupNames: [String],
+        profileDirectory: URL,
+        profile: DshAppProfile,
+        registry: String
+    ) async throws -> DshPluginUpdatePreflightResult {
         let capturedRegistry = DshVersionManager.normalizedRegistry(registry)
         guard let pnpm = NodeRuntime.shared.resolvePnpmBinary(),
               let node = NodeRuntime.shared.resolveNodeBinary() else {
@@ -1444,14 +1581,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: pnpm)
         proc.currentDirectoryURL = preflightDirectory
-        proc.arguments = [
-            "update"
-        ] + packageNames + [
-            "--latest",
-            "--lockfile-only",
-            "--ignore-scripts",
-            "--network-concurrency=4"
-        ] + registryArguments(capturedRegistry) + ["--reporter=append-only"]
+        proc.arguments = pnpmArguments
 
         var env = NodeRuntime.shared.buildEnvironment()
         env["DSH_NODE_BIN"] = node
@@ -1547,7 +1677,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                     profile: profile,
                     registry: capturedRegistry
                 )
-                if packageNames.contains(where: { outdated[$0] != nil }) {
+                if outdatedLookupNames.contains(where: { outdated[$0] != nil }) {
                     return .minimumReleaseAgeViolation
                 }
             } catch {
@@ -1576,7 +1706,8 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         ignoringMinimumReleaseAge: Bool = false,
         profileDirectory: URL? = nil,
         profile: DshAppProfile? = nil,
-        registry: String? = nil
+        registry: String? = nil,
+        progress: (@Sendable (String) -> Void)? = nil
     ) async throws {
         try validatePluginPackageName(name)
         let stateSnapshot = DshStateManager.shared.current
@@ -1603,7 +1734,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: pnpm)
         proc.currentDirectoryURL = profileDir
-        var arguments = ["update", name, "--latest"]
+        var arguments = ["update", name, "--latest"] + Self.thinLinkFetchArguments
         if ignoringMinimumReleaseAge {
             arguments.append("--config.minimum-release-age=0")
         }
@@ -1617,7 +1748,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         let stderr = Pipe()
         proc.standardOutput = stdout
         proc.standardError = stderr
-        let result = try await runProcess(proc, stdout: stdout, stderr: stderr)
+        let result = try await runProcess(proc, stdout: stdout, stderr: stderr, onProgressLine: progress)
 
         guard result.status == 0 else {
             let detail = processOutput(result)
@@ -1638,7 +1769,8 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         ignoringMinimumReleaseAge: Bool = false,
         profileDirectory: URL? = nil,
         profile: DshAppProfile? = nil,
-        registry: String? = nil
+        registry: String? = nil,
+        progress: (@Sendable (String) -> Void)? = nil
     ) async throws {
         let stateSnapshot = DshStateManager.shared.current
         let targetProfile = profile ?? stateSnapshot.appProfile
@@ -1660,7 +1792,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: pnpm)
         proc.currentDirectoryURL = profileDir
-        var arguments = ["update"] + pluginNames + ["--latest", "--network-concurrency=4"]
+        var arguments = ["update"] + pluginNames + ["--latest"] + Self.thinLinkFetchArguments
         if ignoringMinimumReleaseAge {
             arguments.append("--config.minimum-release-age=0")
         }
@@ -1674,7 +1806,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         let stderr = Pipe()
         proc.standardOutput = stdout
         proc.standardError = stderr
-        let result = try await runProcess(proc, stdout: stdout, stderr: stderr)
+        let result = try await runProcess(proc, stdout: stdout, stderr: stderr, onProgressLine: progress)
 
         guard result.status == 0 else {
             let detail = processOutput(result)
@@ -1963,37 +2095,69 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
     /// pnpm so its native error remains the source of truth.
     private func validateRegistryPackageIfNeeded(spec: String, registry: String) async throws {
         let value = spec.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.hasPrefix("github:"),
-              !value.hasPrefix("file:"),
-              !value.hasPrefix("link:"),
-              !value.hasPrefix("workspace:"),
-              !value.hasPrefix("./"),
-              !value.hasPrefix("../"),
-              let name = packageName(from: value),
-              let encodedName = name.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
-            return
-        }
-
+        guard !value.hasPrefix("workspace:"),
+              !value.hasPrefix("http://"),
+              !value.hasPrefix("https://"),
+              !value.hasPrefix("git:"),
+              !value.hasPrefix("git+"),
+              let name = packageName(from: spec) else { return }
         let base = registry.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let url = URL(string: "\(base)/\(encodedName)") else { return }
+        guard URL(string: "\(base)/\(name)") != nil else { return }
+
+        let (_, status) = await fetchPackument(name: name, registry: registry)
+        guard status != 404 else {
+            throw NSError(
+                domain: "DshPluginManager",
+                code: -7,
+                userInfo: [NSLocalizedDescriptionKey: "未找到 npm 包 \(name)（HTTP 404），请检查拼写或确认该包已发布到当前镜像"]
+            )
+        }
+    }
+
+    /// Fetch a registry packument without failing the caller on transport
+    /// problems: offline and private-registry failures stay fail-open and
+    /// surface later through the normal pnpm/verify path.
+    private func fetchPackument(name: String, registry: String) async -> (document: [String: Any]?, status: Int?) {
+        guard let encodedName = name.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
+            return (nil, nil)
+        }
+        let base = registry.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(base)/\(encodedName)") else { return (nil, nil) }
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 8
         request.setValue("application/vnd.npm.install-v1+json", forHTTPHeaderField: "Accept")
 
-        let response: URLResponse
         do {
-            (_, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode
+            guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return (nil, status)
+            }
+            return (object, status)
         } catch {
-            return
+            return (nil, nil)
         }
+    }
 
-        guard (response as? HTTPURLResponse)?.statusCode == 404 else { return }
-        throw NSError(
-            domain: "DshPluginManager",
-            code: -7,
-            userInfo: [NSLocalizedDescriptionKey: "未找到 npm 包 \(name)（HTTP 404），请检查拼写或确认该包已发布到当前镜像"]
-        )
+    /// Resolve what `spec` would install to a concrete version without
+    /// mutating anything. Exact pins need no network; tags resolve through
+    /// the packument's dist-tags. Returns nil for ranges, local/github
+    /// specs and every transport failure so callers fail open.
+    public func resolveInstallCandidateVersion(spec: String, registry: String) async -> DshInstallCandidate? {
+        guard let split = DshPluginOperationInputValidation.splitInstallSpecifier(spec) else {
+            return nil
+        }
+        if let pinned = split.pinned, DshSemanticVersion(pinned) != nil {
+            return DshInstallCandidate(name: split.name, version: pinned)
+        }
+        let tag = split.pinned ?? "latest"
+        let (document, _) = await fetchPackument(name: split.name, registry: registry)
+        guard let tags = document?["dist-tags"] as? [String: String],
+              let version = tags[tag] else {
+            return nil
+        }
+        return DshInstallCandidate(name: split.name, version: version)
     }
 
     /// Keep the local bridge dependency and pnpm lockfile aligned with the
@@ -2083,9 +2247,11 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
     private func runProcess(
         _ proc: Process,
         stdout: Pipe? = nil,
-        stderr: Pipe? = nil
+        stderr: Pipe? = nil,
+        onProgressLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> DshProcessExecutionResult {
         let collector = DshProcessOutputCollector(stdout: stdout, stderr: stderr)
+        collector.progressHandler = onProgressLine
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
                 do {

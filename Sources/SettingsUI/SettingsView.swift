@@ -193,6 +193,27 @@ public struct SettingsView: View {
                 Text(viewModel.pendingPluginInstallMessage ?? "")
             }
             .confirmationDialog(
+                "降级安装插件？",
+                isPresented: Binding(
+                    get: { viewModel.pendingPluginDowngrade != nil },
+                    set: { isPresented in
+                        if !isPresented {
+                            viewModel.cancelPendingPluginDowngrade()
+                        }
+                    }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("确认降级安装", role: .destructive) {
+                    viewModel.confirmPendingPluginDowngrade()
+                }
+                Button("取消", role: .cancel) {
+                    viewModel.cancelPendingPluginDowngrade()
+                }
+            } message: {
+                Text(viewModel.pendingPluginDowngradeMessage ?? "")
+            }
+            .confirmationDialog(
                 "继续更新插件？",
                 isPresented: Binding(
                     get: { viewModel.pendingPluginUpdate != nil },

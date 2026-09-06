@@ -94,6 +94,57 @@ public enum DshPluginOperationInputValidation {
         guard !version.isEmpty, !version.hasPrefix("-") else { return false }
         return version.unicodeScalars.allSatisfy { versionCharacters.contains($0) }
     }
+
+    /// Split an install specifier into its package name and the pinned
+    /// version or tag that follows the trailing `@`, if any. Version ranges
+    /// (`^`, `~`, `>=`) are reported as untagged so callers fail open rather
+    /// than guessing registry resolution. Local (`file:`, `link:`),
+    /// `github:`/`git:` and URL specifiers carry no comparable version.
+    public static func splitInstallSpecifier(_ raw: String) -> (name: String, pinned: String?)? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty,
+              !value.hasPrefix("-"),
+              !value.hasPrefix("github:"),
+              !value.hasPrefix("git:"),
+              !value.hasPrefix("git+"),
+              !value.hasPrefix("file:"),
+              !value.hasPrefix("link:"),
+              !value.hasPrefix("workspace:"),
+              !value.hasPrefix("http://"),
+              !value.hasPrefix("https://"),
+              !value.hasPrefix("./"),
+              !value.hasPrefix("../") else {
+            return nil
+        }
+        let nameEnd: String.Index?
+        if value.hasPrefix("@") {
+            guard let slash = value.firstIndex(of: "/") else { return nil }
+            nameEnd = value[value.index(after: slash)...].firstIndex(of: "@")
+        } else {
+            nameEnd = value.firstIndex(of: "@")
+        }
+        guard let end = nameEnd else {
+            guard isValidPackageName(value) else { return nil }
+            return (value, nil)
+        }
+        let name = String(value[..<end])
+        guard isValidPackageName(name) else { return nil }
+        let pinned = String(value[value.index(after: end)...])
+        guard !pinned.isEmpty else { return nil }
+        return (name, pinned)
+    }
+
+    /// Decide whether installing `candidate` over `installed` is a version
+    /// downgrade. Returns nil when either side is not a strict semantic
+    /// version (tags, ranges, local specs): callers must fail open and let
+    /// the normal verify/rollback net handle such installs.
+    public static func isInstallDowngrade(installed: String, candidate: String) -> Bool? {
+        guard let current = DshSemanticVersion(installed),
+              let next = DshSemanticVersion(candidate) else {
+            return nil
+        }
+        return next < current
+    }
 }
 
 /// The operation is deliberately independent from Runtime/Profile-switch
@@ -469,7 +520,12 @@ public enum DshPluginOperationTransition {
              (.verifying, .restoring),
              (.verifying, .recoveryRequired),
              (.restoring, .recoveryRequired),
-             (.recoveryRequired, .restoring):
+             (.recoveryRequired, .restoring),
+             // User-consented adopt only: re-verify the current tree after
+             // an interruption that left no mutation digest. Automatic
+             // recovery paths must never take this edge; they stay
+             // fail-closed through recoverInterruptedMutation instead.
+             (.recoveryRequired, .verifying):
             return true
         default:
             return false

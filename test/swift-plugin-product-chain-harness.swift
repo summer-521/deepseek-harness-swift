@@ -614,6 +614,44 @@ private func runUpdatePreflight(
     print("plugin product-chain \(scenarioName) passed")
 }
 
+private func runInstallPreflight() async throws {
+    let fixture = try ProductFixture()
+    try fixture.reset()
+    let before = try fixture.manifest()
+    let manager = DshPluginManager.shared
+    let result = try await manager.preflightInstallPluginUpdate(
+        spec: "plugin-c@9.9.9",
+        profileDirectory: fixture.desktop,
+        profile: .desktop,
+        registry: "http://127.0.0.1:9"
+    )
+    try fixture.require(result == .minimumReleaseAgeViolation,
+                        "freshly published install candidate must surface before any mutation")
+    let after = try fixture.manifest()
+    try fixture.require(NSDictionary(dictionary: after).isEqual(to: before),
+                        "install preflight must leave the real Profile manifest untouched")
+    print("plugin product-chain install-preflight passed")
+}
+
+private func runInstallPreflightClear() async throws {
+    let fixture = try ProductFixture()
+    try fixture.reset()
+    let before = try fixture.manifest()
+    let manager = DshPluginManager.shared
+    let result = try await manager.preflightInstallPluginUpdate(
+        spec: "plugin-c@9.9.9",
+        profileDirectory: fixture.desktop,
+        profile: .desktop,
+        registry: "http://127.0.0.1:9"
+    )
+    try fixture.require(result == .clear,
+                        "resolvable install candidate must clear the read-only resolver")
+    let after = try fixture.manifest()
+    try fixture.require(NSDictionary(dictionary: after).isEqual(to: before),
+                        "install preflight must leave the real Profile manifest untouched")
+    print("plugin product-chain install-preflight-clear passed")
+}
+
 private func runUpdatePreflightConfirm() async throws {
     let fixture = try ProductFixture()
     try fixture.reset()
@@ -874,6 +912,8 @@ struct PluginProductChainHarness {
         case "update-all-minimum-release-age": try await runMinimumReleaseAgeUpdateFailure(action: .updateAll)
         case "update-preflight": try await runUpdatePreflight()
         case "update-preflight-confirm": try await runUpdatePreflightConfirm()
+        case "install-preflight": try await runInstallPreflight()
+        case "install-preflight-clear": try await runInstallPreflightClear()
         case "update-preflight-symlink": try await runUpdatePreflightSymlink()
         case "input-boundaries": try await runInputBoundaries()
         case "silent-update-preflight":

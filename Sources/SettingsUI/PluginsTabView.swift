@@ -225,6 +225,14 @@ public struct PluginsTabView: View {
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
+                    if viewModel.isOperatingPlugin,
+                       let progressText = viewModel.pluginOperationProgressText,
+                       !progressText.isEmpty {
+                        Text(progressText)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
                     if let outcome {
                         Text(outcome.title)
                             .font(.system(size: 10, weight: .semibold))

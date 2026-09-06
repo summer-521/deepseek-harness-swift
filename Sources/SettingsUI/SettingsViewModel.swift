@@ -193,6 +193,8 @@ public final class SettingsViewModel: ObservableObject {
     @Published public var operatingPluginName: String? = nil
     @Published public private(set) var pendingPluginInstallSpec: String? = nil
     @Published public private(set) var pendingPluginUpdate: DshPendingPluginUpdate? = nil
+    @Published public private(set) var pendingPluginDowngrade: DshPendingPluginDowngrade? = nil
+    @Published public private(set) var pluginOperationProgressText: String? = nil
     @Published public var pluginStatusMessage: String? = nil
     @Published public private(set) var pluginOperationPhase: DshPluginOperationDisplayPhase?
     @Published public private(set) var pluginOperationOutcome: DshPluginOperationOutcome?
@@ -284,6 +286,7 @@ public final class SettingsViewModel: ObservableObject {
               retryablePluginOperation != nil,
               pendingPluginInstallSpec == nil,
               pendingPluginUpdate == nil,
+              pendingPluginDowngrade == nil,
               !isOperatingPlugin,
               !isSwitchingProfile else { return false }
         guard case .absent = DshPluginOperationCoordinator.shared.persistedStatus else {
@@ -362,6 +365,7 @@ public final class SettingsViewModel: ObservableObject {
     private var pluginStatusDismissTask: Task<Void, Never>?
     private var pluginStatusGeneration = 0
     private var pluginOperationProgressTask: Task<Void, Never>?
+    private var lastPluginOperationProgressUpdate = Date.distantPast
     private var pluginOperationDismissTask: Task<Void, Never>?
     private var pluginOperationDisplayGeneration = 0
 
@@ -434,7 +438,12 @@ public final class SettingsViewModel: ObservableObject {
                         ignoringMinimumReleaseAge: ignoringMinimumReleaseAge,
                         profileDirectory: request.profileDirectory,
                         profile: request.profile,
-                        registry: registry
+                        registry: registry,
+                        progress: { line in
+                            Task { @MainActor in
+                                self.notePluginOperationProgress(line)
+                            }
+                        },
                     )
                 case .update:
                     guard let name = request.targetPackage else {
@@ -445,7 +454,12 @@ public final class SettingsViewModel: ObservableObject {
                         ignoringMinimumReleaseAge: ignoringMinimumReleaseAge,
                         profileDirectory: request.profileDirectory,
                         profile: request.profile,
-                        registry: registry
+                        registry: registry,
+                        progress: { line in
+                            Task { @MainActor in
+                                self.notePluginOperationProgress(line)
+                            }
+                        },
                     )
                 case .updateAll:
                     try await DshPluginManager.shared.updateAllPlugins(
@@ -453,7 +467,12 @@ public final class SettingsViewModel: ObservableObject {
                         ignoringMinimumReleaseAge: ignoringMinimumReleaseAge,
                         profileDirectory: request.profileDirectory,
                         profile: request.profile,
-                        registry: registry
+                        registry: registry,
+                        progress: { line in
+                            Task { @MainActor in
+                                self.notePluginOperationProgress(line)
+                            }
+                        },
                     )
                 case .remove:
                     guard let name = request.targetPackage else {
@@ -539,6 +558,8 @@ public final class SettingsViewModel: ObservableObject {
         pluginOperationPhase = .preparing
         pluginOperationOutcome = nil
         pluginOperationDetail = nil
+        pluginOperationProgressText = nil
+        lastPluginOperationProgressUpdate = .distantPast
 
         pluginOperationProgressTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -643,6 +664,7 @@ public final class SettingsViewModel: ObservableObject {
     private func finishPluginOperationProgress() {
         pluginOperationProgressTask?.cancel()
         pluginOperationProgressTask = nil
+        pluginOperationProgressText = nil
     }
 
     /// A release-age prompt raised by the read-only resolver is not a failed
@@ -2057,13 +2079,107 @@ public final class SettingsViewModel: ObservableObject {
         pendingPluginInstallSpec = nil
     }
 
+    public func confirmPendingPluginDowngrade() {
+        guard let pending = pendingPluginDowngrade else { return }
+        guard pluginWritesAllowed else {
+            alertMessage = "插件安装仍在等待恢复完成；请求已保留，请完成恢复后重试。"
+            return
+        }
+        guard !isOperatingPlugin, !isSwitchingProfile else {
+            alertMessage = "当前已有插件操作排队，请稍后重试。"
+            return
+        }
+        if startPluginInstall(spec: pending.spec, ignoringMinimumReleaseAge: false, allowingDowngrade: true) {
+            pendingPluginDowngrade = nil
+        }
+    }
+
+    public func cancelPendingPluginDowngrade() {
+        pendingPluginDowngrade = nil
+    }
+
+    public var pendingPluginDowngradeMessage: String? {
+        guard let pending = pendingPluginDowngrade else { return nil }
+        return "安装 \(pending.spec) 会把已安装的 \(pending.installedVersion) 降级到 \(pending.candidateVersion)（npm latest 标签当前指向旧版本）。降级后插件可能无法通过健康检查并触发回滚，确认继续吗？"
+    }
+
+    /// Resolve what an install spec would put down and compare it with the
+    /// installed version. Returns a pending confirmation only for a strict
+    /// downgrade; every unresolvable or unparsable case fails open so the
+    /// normal P01 verify/rollback net stays the source of truth.
+    private func pendingInstallDowngrade(spec: String) async -> DshPendingPluginDowngrade? {
+        let registry = DshVersionManager.normalizedRegistry(npmRegistry)
+        guard let candidate = await DshPluginManager.shared.resolveInstallCandidateVersion(spec: spec, registry: registry),
+              let installed = installedPlugins.first(where: { $0.name == candidate.name })?.version,
+              DshPluginOperationInputValidation.isInstallDowngrade(installed: installed, candidate: candidate.version) == true else {
+            return nil
+        }
+        return DshPendingPluginDowngrade(
+            spec: spec,
+            name: candidate.name,
+            installedVersion: installed,
+            candidateVersion: candidate.version
+        )
+    }
+
+    /// A downgrade gate hit is not a failed operation: clear transient
+    /// progress exactly like the release-age preflight gate so the
+    /// confirmation appears without a misleading rollback result.
+    private func finishPluginInstallDowngradeGate(_ pending: DshPendingPluginDowngrade) {
+        isOperatingPlugin = false
+        operatingPluginName = nil
+        pluginOperationDisplayGeneration &+= 1
+        pluginOperationDismissTask?.cancel()
+        pluginOperationDismissTask = nil
+        finishPluginOperationProgress()
+        pluginOperationPhase = nil
+        pluginOperationOutcome = nil
+        pluginOperationDetail = nil
+        pluginOperationProgressText = nil
+        clearRetryablePluginOperation()
+        pendingPluginDowngrade = pending
+    }
+
+    /// A release-age prompt raised by the install preflight is not a
+    /// failed P01 operation. Reuses the existing install confirmation: the
+    /// one-time override stays scoped to the confirmed install.
+    private func finishPluginInstallPreflight(spec: String) {
+        isOperatingPlugin = false
+        operatingPluginName = nil
+        pluginOperationDisplayGeneration &+= 1
+        pluginOperationDismissTask?.cancel()
+        pluginOperationDismissTask = nil
+        finishPluginOperationProgress()
+        pluginOperationPhase = nil
+        pluginOperationOutcome = nil
+        pluginOperationDetail = nil
+        pluginOperationProgressText = nil
+        clearRetryablePluginOperation()
+        pendingPluginInstallSpec = spec
+    }
+
+    /// Live pnpm progress line handler (MainActor): surface download
+    /// summaries while a mutation runs, throttled so the UI stays quiet.
+    private func notePluginOperationProgress(_ line: String) {
+        guard isOperatingPlugin else { return }
+        let now = Date()
+        let significant = line.contains("added")
+        guard significant || now.timeIntervalSince(lastPluginOperationProgressUpdate) >= 2.0 else { return }
+        lastPluginOperationProgressUpdate = now
+        var text = DshSecretRedactor().redact(line)
+        if text.count > 140 {
+            text = String(text.prefix(140)) + "…"
+        }
+        pluginOperationProgressText = text
+    }
+
     public var pendingPluginInstallMessage: String? {
         guard let spec = pendingPluginInstallSpec else { return nil }
         return "安装插件 \(spec) 时，npm 检测到依赖版本发布时间过近。继续安装将仅对本次操作使用 --config.minimum-release-age=0，不会修改全局 pnpm 配置。"
     }
 
     @discardableResult
-    private func startPluginInstall(spec: String, ignoringMinimumReleaseAge: Bool) -> Bool {
+    private func startPluginInstall(spec: String, ignoringMinimumReleaseAge: Bool, allowingDowngrade: Bool = false) -> Bool {
         let trimmedSpec = spec.trimmingCharacters(in: .whitespacesAndNewlines)
         guard pluginWritesAllowed else {
             alertMessage = "插件安装暂不可用；请求已保留，请完成恢复后重试。"
@@ -2081,6 +2197,26 @@ public final class SettingsViewModel: ObservableObject {
         beginPluginOperationProgress(action: .install)
         Task {
             do {
+                if !allowingDowngrade,
+                   let pending = await self.pendingInstallDowngrade(spec: trimmedSpec) {
+                    self.finishPluginInstallDowngradeGate(pending)
+                    return
+                }
+                if !ignoringMinimumReleaseAge {
+                    let preflight = try await MainWindowController.shared.withRuntimeOperation {
+                        let context = try self.makeDesktopPluginOperationContext()
+                        return try await DshPluginManager.shared.preflightInstallPluginUpdate(
+                            spec: trimmedSpec,
+                            profileDirectory: context.profileDirectory,
+                            profile: context.profile,
+                            registry: DshVersionManager.normalizedRegistry(self.npmRegistry)
+                        )
+                    }
+                    if preflight == .minimumReleaseAgeViolation {
+                        self.finishPluginInstallPreflight(spec: trimmedSpec)
+                        return
+                    }
+                }
                 _ = try await MainWindowController.shared.withRuntimeOperation {
                     let context = try self.makeDesktopPluginOperationContext()
                     return try await self.executeDesktopPluginOperation(

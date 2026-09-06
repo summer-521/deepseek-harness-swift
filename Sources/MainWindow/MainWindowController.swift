@@ -284,6 +284,7 @@ private final class NativeRecoveryView: NSVisualEffectView {
     private let actionLabel = NSTextField(wrappingLabelWithString: "")
     private let availabilityLabel = NSTextField(wrappingLabelWithString: "")
     private let retryButton = NSButton(title: "重试", target: nil, action: nil)
+    private let adoptButton = NSButton(title: "验证当前状态并继续", target: nil, action: nil)
     private let settingsButton = NSButton(title: "打开设置", target: nil, action: nil)
     private let safeModeButton = NSButton(title: "安全模式", target: nil, action: nil)
     private let detailsButton = NSButton(title: "查看诊断详情", target: nil, action: nil)
@@ -349,6 +350,9 @@ private final class NativeRecoveryView: NSVisualEffectView {
             button.target = self
         }
         retryButton.action = #selector(retry)
+        adoptButton.bezelStyle = .rounded
+        adoptButton.target = self
+        adoptButton.action = #selector(adoptInterruptedTransaction)
         settingsButton.action = #selector(openSettings)
         safeModeButton.action = #selector(startSafeMode)
 
@@ -361,7 +365,7 @@ private final class NativeRecoveryView: NSVisualEffectView {
             title, subtitle, phaseLabel, summaryLabel, codeLabel,
             actionLabel, detailsButton, previewButton, detailsScroll,
             NSStackView(views: [copyDiagnosticsButton, saveDiagnosticsButton]),
-            actions, availabilityLabel
+            actions, adoptButton, availabilityLabel
         ])
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
@@ -420,6 +424,8 @@ private final class NativeRecoveryView: NSVisualEffectView {
         retryButton.isEnabled = !viewModel.isActionInFlight
         settingsButton.isEnabled = !viewModel.isActionInFlight
         safeModeButton.isEnabled = viewModel.isSafeModeAvailable && !viewModel.isActionInFlight
+        adoptButton.isHidden = !viewModel.canAdoptInterruptedTransaction
+        adoptButton.isEnabled = !viewModel.isActionInFlight && !viewModel.pluginRemovalInFlight && !viewModel.adoptInterruptedTransactionInFlight
         availabilityLabel.stringValue = viewModel.isSafeModeAvailable ? "" : viewModel.safeModeAvailabilityDescription
         availabilityLabel.isHidden = availabilityLabel.stringValue.isEmpty
     }
@@ -427,6 +433,19 @@ private final class NativeRecoveryView: NSVisualEffectView {
     @objc private func retry() { _ = viewModel.requestRetry() }
     @objc private func openSettings() { _ = viewModel.requestOpenSettings() }
     @objc private func startSafeMode() { _ = viewModel.requestSafeMode() }
+
+    @objc private func adoptInterruptedTransaction() {
+        let alert = NSAlert()
+        alert.messageText = "验证当前状态并继续？"
+        alert.informativeText = "将验证当前desktop Profile 是否健康：健康则继续启动，不健康的包变更会自动从安装前快照恢复。快照完整时才可执行；不会静默保留未经验证的状态。"
+        alert.addButton(withTitle: "验证并继续")
+        alert.addButton(withTitle: "取消")
+        guard let window = self.window else { return }
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            _ = self?.viewModel.requestAdoptInterruptedTransaction()
+        }
+    }
 
     @objc private func toggleDetails() {
         showingDiagnosticPreview = false
@@ -872,20 +891,11 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     /// Runtime/Profile gate (normally AppDelegate's startup gate). This
     /// method intentionally does not acquire that gate again.
     @discardableResult
-    public func recoverPendingPluginOperationDuringStartup() async throws -> DshPluginOperationResult? {
-        let coordinator = DshPluginOperationCoordinator.shared
-        if let pending = coordinator.pendingOperation,
-           pending.phase != .prepared {
-            guard DshStateManager.shared.current.appProfile == .desktop else {
-                throw DshPluginOperationError.desktopProfileRequired
-            }
-        }
-        if let pending = coordinator.pendingOperation,
-           pending.phase != .prepared,
-           pending.phase != .committed {
-            _ = try makeOrdinaryDesktopStartupContext()
-        }
-
+    /// Health hooks shared by startup plugin recovery and the
+    /// user-consented verify-and-continue path. Recovery never begins a new
+    /// package mutation; ordinary startup health validates both fresh and
+    /// restored trees.
+    private func makeStartupPluginOperationHooks() -> DshPluginOperationHooks {
         let restartHealth: @Sendable (DshPluginOperationRequest) async throws -> Void = {
             [weak self] request in
             guard let self else {
@@ -905,7 +915,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             // point is the only legal way to perform the health start here.
             _ = try await self.restartDshServiceDuringOperation(context: context)
         }
-        let hooks = DshPluginOperationHooks(
+        return DshPluginOperationHooks(
             mutate: { _ in
                 // Recovery never begins a new package mutation. The required
                 // placeholder keeps the coordinator's side-effect hooks
@@ -914,6 +924,23 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             verify: restartHealth,
             verifyRestored: restartHealth
         )
+    }
+
+    public func recoverPendingPluginOperationDuringStartup() async throws -> DshPluginOperationResult? {
+        let coordinator = DshPluginOperationCoordinator.shared
+        if let pending = coordinator.pendingOperation,
+           pending.phase != .prepared {
+            guard DshStateManager.shared.current.appProfile == .desktop else {
+                throw DshPluginOperationError.desktopProfileRequired
+            }
+        }
+        if let pending = coordinator.pendingOperation,
+           pending.phase != .prepared,
+           pending.phase != .committed {
+            _ = try makeOrdinaryDesktopStartupContext()
+        }
+
+        let hooks = makeStartupPluginOperationHooks()
         let result = try await coordinator.recoverPendingOperation(hooks: hooks)
         if let result, result.phase == .committed {
             pendingCommittedPluginOperationID = result.operationID
@@ -2100,8 +2127,42 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             summary: classification.summary,
             technicalDetail: safeDetail,
             retryability: classification.retryability,
-            source: classification.source
+            source: classification.source,
+            evidence: interruptedTransactionEvidence(for: error)
         )
+    }
+
+    /// Attach transaction evidence when a startup failure is caused by an
+    /// interrupted plugin operation. The resolver stays purely attributive:
+    /// confidence never reaches confirmed, so no removal plan can be
+    /// enabled by this evidence alone. Without it the recovery panel and
+    /// the resolver report "unknown" for a transaction the app fully knows.
+    private func interruptedTransactionEvidence(for error: Error) -> [DshDiagnosticEvidence] {
+        guard let operationError = error as? DshPluginOperationError,
+              case .operationInterruptedDuringMutation = operationError,
+              let operation = DshPluginOperationCoordinator.shared.pendingOperation,
+              operation.phase == .recoveryRequired else {
+            return []
+        }
+        let target = operation.targetPackage ?? operation.targetPackages.first
+        let actionName: String
+        switch operation.action {
+        case .install:
+            actionName = "安装"
+        case .update:
+            actionName = "更新"
+        case .updateAll:
+            actionName = "批量更新"
+        case .remove:
+            actionName = "卸载"
+        }
+        let targetText = target.map { "「\($0)」" } ?? "插件"
+        return [DshDiagnosticEvidence(
+            source: .native,
+            confidence: .suspected,
+            summary: "插件事务\(actionName)\(targetText)在包变更阶段中断，包变更效果无法证明；该包与失败的因果关系尚未确定",
+            pluginName: target
+        )]
     }
 
     private func diagnosticClassification(for error: Error) -> (
@@ -2175,7 +2236,9 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                 return (.dependencyMissing, "Runtime 或 Profile 恢复事务尚未完成，插件事务已暂停。", .retryable, .native)
             case .externalModification:
                 return (.pluginConfigurationInvalid, "检测到插件 Profile 外部修改，事务已暂停以保护现有数据。", .notRetryable, .pluginInspector)
-            case .operationInterruptedDuringMutation, .recoveryRequired, .persistenceConflict:
+            case .operationInterruptedDuringMutation:
+                return (.pluginConfigurationInvalid, "插件事务在包变更阶段中断，已保留现场；普通启动已停止，请按恢复页指引处理。", .retryable, .native)
+            case .recoveryRequired, .persistenceConflict:
                 return (.pluginConfigurationInvalid, "插件事务恢复未完成，已停止普通启动。", .retryable, .native)
             case .snapshotCapacityInsufficient:
                 return (.pluginConfigurationInvalid, "插件事务快照空间不足，已停止普通启动。", .retryable, .native)
@@ -2261,6 +2324,9 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                 removePluginAndRetry: { [weak self] request in
                     self?.handleRecoveryPluginRemoval(request, context: context)
                 },
+                adoptInterruptedTransaction: { [weak self] request in
+                    self?.adoptInterruptedPluginOperation(request, context: context)
+                },
                 copyDiagnosticSummary: { [weak self] summary in
                     self?.copyDiagnosticSummary(summary)
                 },
@@ -2272,7 +2338,12 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             // Reuse only a read-only inspector snapshot that names this exact
             // desktop Profile; stale/web results are discarded above.
             pluginInspection: matchingPluginInspection,
-            originalProfilePath: context.profileDirectory.path
+            originalProfilePath: context.profileDirectory.path,
+            readAdoptableInterruptedTransaction: {
+                DshPluginOperationCoordinator.shared.pendingOperation.flatMap(
+                    DshPluginOperationCoordinator.adoptableInterruptedTransaction(from:)
+                )
+            }
         )
         let safeMode = safeModeAvailability(for: context)
         viewModel.setSafeModeAvailability(safeMode.available, reason: safeMode.reason)
@@ -2561,6 +2632,72 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             _ = recoveryViewModel?.finishAction(
                 request,
                 message: "插件事务仍未恢复：\(DshMainWindowUIMessage.safe(error))"
+            )
+            if error is DshStatePersistenceError {
+                await DshService.shared.stopAndWait()
+                serviceSession = nil
+                webShell?.clearBridgeValidationContext()
+                blockStartupForStateFailure(error.localizedDescription)
+            } else {
+                blockStartupForRecovery(error)
+            }
+            if let newContext = launchContext {
+                showRecoverySurface(for: newContext)
+            }
+        }
+    }
+
+    /// Run the user-consented verify-and-continue for an interrupted
+    /// plugin transaction. A healthy current tree commits and launches;
+    /// an unhealthy tree is restored from the retained snapshot by the
+    /// coordinator. Either way the app never keeps an unverified tree.
+    private func adoptInterruptedPluginOperation(
+        _ request: DshRecoveryAdoptRequest,
+        context: DshLaunchContext
+    ) {
+        guard request.launchID == context.launchID,
+              recoveryViewModel?.launchID == context.launchID else { return }
+        guard let viewModel = recoveryViewModel,
+              viewModel.adoptInterruptedTransactionRequest == request else {
+            _ = recoveryViewModel?.finishAdoptInterruptedTransaction(request)
+            return
+        }
+        Task { @MainActor [weak self] in
+            await self?.runAdoptInterruptedPluginOperation(request, context: context)
+        }
+    }
+
+    private func runAdoptInterruptedPluginOperation(
+        _ request: DshRecoveryAdoptRequest,
+        context: DshLaunchContext
+    ) async {
+        guard request.launchID == context.launchID,
+              recoveryViewModel?.launchID == context.launchID else { return }
+        do {
+            let result = try await withRuntimeOperation {
+                let context = try self.makeOrdinaryDesktopStartupContext()
+                try await DshService.shared.prepareForProfileMutation(context: context)
+                return try await DshPluginOperationCoordinator.shared.adoptInterruptedTransaction(
+                    operationID: request.operationID,
+                    hooks: self.makeStartupPluginOperationHooks()
+                )
+            }
+            if result.phase == .committed {
+                pendingCommittedPluginOperationID = result.operationID
+            } else if DshPluginOperationCoordinator.shared.pendingOperation == nil {
+                pendingCommittedPluginOperationID = nil
+            }
+            startupRecoveryError = nil
+            startupRecoveryIsPluginOperation = false
+            _ = recoveryViewModel?.finishAdoptInterruptedTransaction(request)
+            hideRecoverySurface()
+            showStartupSurface()
+            safeModeUnavailableReason = nil
+            startAndLoadDsh()
+        } catch {
+            _ = recoveryViewModel?.finishAdoptInterruptedTransaction(
+                request,
+                message: "验证当前状态失败，仍未恢复：\(DshMainWindowUIMessage.safe(error))"
             )
             if error is DshStatePersistenceError {
                 await DshService.shared.stopAndWait()

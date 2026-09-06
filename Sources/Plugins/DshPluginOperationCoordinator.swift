@@ -440,6 +440,88 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
 
     }
 
+    /// Decide whether a persisted operation is adoptable without touching
+    /// the Profile. Adopt applies only to records that automatic recovery
+    /// refuses to overwrite: recoveryRequired, no mutation digest, desktop.
+    /// Snapshot ownership is revalidated by the coordinator when the action
+    /// runs. Pure and behavior-covered in the operation harness.
+    static func adoptableInterruptedTransaction(
+        from operation: DshPluginOperationState
+    ) -> (operationID: String, targetPackage: String?)? {
+        guard operation.phase == .recoveryRequired,
+              operation.mutationDigest == nil,
+              operation.profile == .desktop,
+              operation.snapshot.profile == .desktop else {
+            return nil
+        }
+        return (
+            operationID: operation.operationID,
+            targetPackage: operation.targetPackage ?? operation.targetPackages.first
+        )
+    }
+
+    /// Adopt the current tree after an interruption that left no mutation
+    /// digest, **only with explicit user consent from the recovery surface**.
+    /// Automatic recovery must keep refusing to overwrite such a tree
+    /// (see recoverInterruptedMutation). The caller owns the serial gate
+    /// held by perform/recover paths; this method re-acquires it, so it must
+    /// never be called while the caller holds it.
+    ///
+    /// The adopted tree is bound as the mutation digest and run through the
+    /// ordinary verifying path: a healthy tree commits and the record
+    /// clears, while an unhealthy tree is restored from the retained
+    /// app-owned snapshot. Either outcome is safe; the only unsafe choice
+    /// (silently keeping an unverified tree) never happens.
+    public func adoptInterruptedTransaction(
+        operationID: String,
+        hooks: DshPluginOperationHooks
+    ) async throws -> DshPluginOperationResult {
+        await Self.gate.acquire()
+        defer { Self.gate.release() }
+        let operation: DshPluginOperationState
+        switch operationStore.status() {
+        case .absent:
+            throw DshPluginOperationError.recoveryRequired("没有待验证的中断事务。")
+        case .corrupt(let detail):
+            throw DshPluginOperationError.recoveryRequired(detail)
+        case .loaded(let loaded):
+            operation = loaded
+        }
+        guard operation.operationID == operationID else {
+            throw DshPluginOperationError.persistenceConflict(
+                expected: operationID,
+                actual: operation.operationID
+            )
+        }
+        guard operation.phase == .recoveryRequired,
+              operation.mutationDigest == nil else {
+            throw DshPluginOperationError.invalidTransition(operation.phase, .verifying)
+        }
+        guard operation.profile == .desktop,
+              operation.profile == operation.snapshot.profile,
+              operation.snapshot.profileDirectory == Self.canonicalDesktopProfilePath else {
+            throw DshPluginOperationError.desktopProfileRequired
+        }
+        let profileURL = URL(fileURLWithPath: operation.snapshot.profileDirectory, isDirectory: true)
+        if FileManager.default.fileExists(atPath: profileURL.path),
+           profileURL.resolvingSymlinksInPath().path != profileURL.standardizedFileURL.path {
+            throw DshPluginOperationError.unsafeProfileDirectory
+        }
+        guard try await pluginManager.hasOwnedPluginOperationSnapshot(operation.snapshot) else {
+            throw DshPluginOperationError.recoveryRequired("插件事务快照已缺失或不再归属本机，无法验证当前状态。")
+        }
+        let currentDigest = try await pluginManager.pluginProfileDigest(at: profileURL)
+        var verifying = try advance(operation, to: .verifying, mutationDigest: currentDigest)
+        verifying.lastError = nil
+        try persist(verifying, replacing: operation.operationID)
+        return try await recoverVerifyingOrRestoring(
+            verifying,
+            profileURL: profileURL,
+            mutationDigest: currentDigest,
+            hooks: hooks
+        )
+    }
+
     private func recoverInterruptedMutation(
         _ original: DshPluginOperationState,
         profileURL: URL

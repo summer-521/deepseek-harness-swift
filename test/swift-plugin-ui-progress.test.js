@@ -114,6 +114,14 @@ test('P02 retry is fail-closed and never opts out of release-age policy', () => 
   assert.match(viewModel, /case \.absent = DshPluginOperationCoordinator\.shared\.persistedStatus/)
   assert.match(viewModel, /func retryLastPluginOperation\(\)/)
   assert.match(viewModel, /startPluginInstall\(spec: spec, ignoringMinimumReleaseAge: false\)/)
+  assert.match(viewModel, /allowingDowngrade: Bool = false/)
+  assert.match(viewModel, /pendingPluginDowngrade/)
+  assert.match(viewModel, /resolveInstallCandidateVersion\(spec: spec, registry: registry\)/)
+  assert.match(viewModel, /isInstallDowngrade\(installed: installed, candidate: candidate\.version\)/)
+  assert.match(viewModel, /confirmPendingPluginDowngrade\(\)/)
+  assert.match(viewModel, /cancelPendingPluginDowngrade\(\)/)
+  assert.match(viewModel, /notePluginOperationProgress\(line\)/)
+  assert.match(viewModel, /pluginOperationProgressText/)
   assert.match(viewModel, /startPluginUpdate\(name: name, ignoringMinimumReleaseAge: false\)/)
   assert.match(viewModel, /startPluginUpdateAll\(ignoringMinimumReleaseAge: false\)/)
   assert.match(viewModel, /startPluginRemove\(name: name\)/)
@@ -123,6 +131,31 @@ test('P02 retry is fail-closed and never opts out of release-age policy', () => 
   assert.match(viewModel, /finishPluginUpdatePreflight\(/)
   assert.match(pluginsView, /安全重试/)
   assert.match(pluginsView, /viewModel\.canRetryPluginOperation/)
+})
+
+test('plugin install gates tag downgrades and streams download progress', () => {
+  const viewModel = fs.readFileSync(viewModelPath, 'utf8')
+  const pluginsView = fs.readFileSync(pluginsViewPath, 'utf8')
+  const settingsView = fs.readFileSync(
+    path.join(repositoryDirectory, 'Sources', 'SettingsUI', 'SettingsView.swift'),
+    'utf8'
+  )
+  const managerSource = fs.readFileSync(
+    path.join(repositoryDirectory, 'Sources', 'Plugins', 'DshPluginManager.swift'),
+    'utf8'
+  )
+
+  assert.match(viewModel, /finishPluginInstallDowngradeGate\(pending\)/)
+  assert.match(settingsView, /降级安装插件？/)
+  assert.match(settingsView, /viewModel\.pendingPluginDowngrade != nil/)
+  assert.match(settingsView, /confirmPendingPluginDowngrade\(\)/)
+  assert.match(settingsView, /pendingPluginDowngradeMessage/)
+  assert.match(pluginsView, /viewModel\.pluginOperationProgressText/)
+  assert.match(managerSource, /resolveInstallCandidateVersion\(spec: String, registry: String\)/)
+  assert.match(managerSource, /dist-tags/)
+  assert.match(managerSource, /thinLinkFetchArguments/)
+  assert.match(managerSource, /progressHandler/)
+  assert.match(managerSource, /onProgressLine/)
 })
 
 test('M2 plugin UI gates shared web writes and isolates update targets', () => {

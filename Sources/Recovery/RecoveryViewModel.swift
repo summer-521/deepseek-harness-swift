@@ -86,11 +86,34 @@ public struct DshRecoveryPluginRemovalRequest: Identifiable, Equatable, Sendable
     public var isExecutable: Bool { true }
 }
 
+/// Consent to verify-and-continue an interrupted plugin transaction.
+/// Unlike removal plans this names an existing durable operation; the
+/// MainWindow coordinator revalidates phase, digest absence, profile,
+/// snapshot ownership and launch identity before doing anything.
+public struct DshRecoveryAdoptRequest: Equatable, Sendable {
+    public let id: UUID
+    public let launchID: UUID
+    public let operationID: String
+
+    public init(
+        id: UUID = UUID(),
+        launchID: UUID,
+        operationID: String
+    ) {
+        self.id = id
+        self.launchID = launchID
+        self.operationID = operationID
+    }
+
+    public var isExecutable: Bool { true }
+}
+
 public struct DshRecoveryActions {
     public var retry: (DshRecoveryActionRequest) -> Void
     public var openSettings: (DshRecoveryActionRequest) -> Void
     public var startSafeMode: (DshRecoveryActionRequest) -> Void
     public var removePluginAndRetry: (DshRecoveryPluginRemovalRequest) -> Void
+    public var adoptInterruptedTransaction: (DshRecoveryAdoptRequest) -> Void
     public var copyDiagnosticSummary: (String) -> Void
     public var saveDiagnosticExport: (DshDiagnosticExportPlan) -> Void
 
@@ -99,6 +122,7 @@ public struct DshRecoveryActions {
         openSettings: @escaping (DshRecoveryActionRequest) -> Void = { _ in },
         startSafeMode: @escaping (DshRecoveryActionRequest) -> Void = { _ in },
         removePluginAndRetry: @escaping (DshRecoveryPluginRemovalRequest) -> Void = { _ in },
+        adoptInterruptedTransaction: @escaping (DshRecoveryAdoptRequest) -> Void = { _ in },
         copyDiagnosticSummary: @escaping (String) -> Void = { _ in },
         saveDiagnosticExport: @escaping (DshDiagnosticExportPlan) -> Void = { _ in }
     ) {
@@ -106,6 +130,7 @@ public struct DshRecoveryActions {
         self.openSettings = openSettings
         self.startSafeMode = startSafeMode
         self.removePluginAndRetry = removePluginAndRetry
+        self.adoptInterruptedTransaction = adoptInterruptedTransaction
         self.copyDiagnosticSummary = copyDiagnosticSummary
         self.saveDiagnosticExport = saveDiagnosticExport
     }
@@ -135,12 +160,15 @@ public final class DshRecoveryViewModel: ObservableObject {
     @Published public private(set) var pluginFailureAnalysis: DshPluginFailureAnalysis?
     @Published public private(set) var pluginRemovalInFlight = false
     @Published public private(set) var pluginRemovalRequest: DshRecoveryPluginRemovalRequest?
+    @Published public private(set) var adoptInterruptedTransactionInFlight = false
+    @Published public private(set) var adoptInterruptedTransactionRequest: DshRecoveryAdoptRequest?
 
     private let actions: DshRecoveryActions
     private let redactor: DshSecretRedactor
     private let maximumDetailBytes: Int
     private let diagnosticExporter: DshDiagnosticExporter
     private let diagnosticMetadata: DshDiagnosticExportMetadata
+    private let readAdoptableInterruptedTransaction: () -> (operationID: String, targetPackage: String?)?
     private let pluginResolver: DshPluginFailureResolver
     private var pluginInspection: DshPluginInspectionResult?
     private let originalProfilePath: String?
@@ -157,7 +185,8 @@ public final class DshRecoveryViewModel: ObservableObject {
         diagnosticMetadata: DshDiagnosticExportMetadata = DshDiagnosticExportMetadata(),
         pluginInspection: DshPluginInspectionResult? = nil,
         pluginResolver: DshPluginFailureResolver = DshPluginFailureResolver(),
-        originalProfilePath: String? = nil
+        originalProfilePath: String? = nil,
+        readAdoptableInterruptedTransaction: @escaping () -> (operationID: String, targetPackage: String?)? = { nil }
     ) {
         self.launchID = launchID
         self.actions = actions
@@ -167,6 +196,7 @@ public final class DshRecoveryViewModel: ObservableObject {
         self.diagnosticMetadata = diagnosticMetadata
         self.pluginInspection = pluginInspection
         self.pluginResolver = pluginResolver
+        self.readAdoptableInterruptedTransaction = readAdoptableInterruptedTransaction
         self.originalProfilePath = originalProfilePath
         self.snapshot = nil
         self.actionInFlight = nil
@@ -177,6 +207,8 @@ public final class DshRecoveryViewModel: ObservableObject {
         self.pluginFailureAnalysis = nil
         self.pluginRemovalInFlight = false
         self.pluginRemovalRequest = nil
+        self.adoptInterruptedTransactionInFlight = false
+        self.adoptInterruptedTransactionRequest = nil
 
         if let snapshot {
             _ = apply(snapshot, for: launchID)
@@ -214,13 +246,13 @@ public final class DshRecoveryViewModel: ObservableObject {
             lines.append("阶段：\(record.phase.displayName)")
             lines.append("错误码：\(record.code.rawValue)")
             lines.append("来源：\(record.source.rawValue)")
-            lines.append("判断：\(record.evidence.map { $0.confidence.rawValue }.first ?? "unknown")")
+            lines.append("判断：\(record.evidence.map { $0.confidence.displayName }.first ?? "无法确定")")
             if let technicalDetail = record.technicalDetail, !technicalDetail.isEmpty {
                 lines.append("详情：\(technicalDetail)")
             }
             for evidence in record.evidence.prefix(8) {
                 let plugin = evidence.pluginName.map { " (\($0))" } ?? ""
-                lines.append("证据：\(evidence.confidence.rawValue)\(plugin) \(evidence.summary)")
+                lines.append("证据：\(evidence.confidence.displayName)\(plugin) \(evidence.summary)")
             }
         }
         if !snapshot.log.isEmpty {
@@ -431,6 +463,58 @@ public final class DshRecoveryViewModel: ObservableObject {
         pluginRemovalInFlight = true
         actionMessage = "正在验证插件移除计划…"
         actions.removePluginAndRetry(request)
+        return true
+    }
+
+    /// Whether the recovery surface may offer verify-and-continue for
+    /// an interrupted plugin transaction. Mirrors the coordinator's adopt
+    /// preconditions without touching the Profile: recoveryRequired record,
+    /// no mutation digest, desktop Profile. Snapshot ownership is
+    /// revalidated by the coordinator when the action runs.
+    public var canAdoptInterruptedTransaction: Bool {
+        guard !pluginRemovalInFlight,
+              !adoptInterruptedTransactionInFlight,
+              actionInFlight == nil,
+              let snapshot,
+              snapshot.context?.profile == "desktop",
+              readAdoptableInterruptedTransaction() != nil else {
+            return false
+        }
+        return true
+    }
+
+    /// Dispatch a verify-and-continue intent for the persisted interrupted
+    /// transaction. A healthy current tree commits and launches; an
+    /// unhealthy tree is restored from the retained snapshot. Either way
+    /// the app never keeps an unverified tree silently.
+    @discardableResult
+    public func requestAdoptInterruptedTransaction() -> Bool {
+        guard canAdoptInterruptedTransaction,
+              let adoptable = readAdoptableInterruptedTransaction() else {
+            actionMessage = "当前没有可验证的中断事务。"
+            return false
+        }
+        let request = DshRecoveryAdoptRequest(
+            launchID: launchID,
+            operationID: adoptable.operationID
+        )
+        adoptInterruptedTransactionRequest = request
+        adoptInterruptedTransactionInFlight = true
+        actionMessage = "正在验证当前插件状态……"
+        actions.adoptInterruptedTransaction(request)
+        return true
+    }
+
+    @discardableResult
+    public func finishAdoptInterruptedTransaction(
+        _ request: DshRecoveryAdoptRequest,
+        message: String? = nil
+    ) -> Bool {
+        guard adoptInterruptedTransactionInFlight, adoptInterruptedTransactionRequest == request,
+              request.launchID == launchID else { return false }
+        adoptInterruptedTransactionInFlight = false
+        adoptInterruptedTransactionRequest = nil
+        actionMessage = message.map(boundedRedacted)
         return true
     }
 

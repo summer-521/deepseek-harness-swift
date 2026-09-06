@@ -213,7 +213,7 @@ test('plugin updates ask before bypassing the minimum release age policy', () =>
   assert.match(PLUGIN_SOURCE, /public func updatePlugin\([\s\S]*name: String,[\s\S]*ignoringMinimumReleaseAge: Bool = false/)
   assert.match(PLUGIN_SOURCE, /public func updateAllPlugins\([\s\S]*ignoringMinimumReleaseAge: Bool = false/)
   assert.match(PLUGIN_SOURCE, /var arguments = \["update", name, "--latest"\][\s\S]*if ignoringMinimumReleaseAge[\s\S]*--config\.minimum-release-age=0/)
-  assert.match(PLUGIN_SOURCE, /var arguments = \["update"\] \+ pluginNames \+ \["--latest", "--network-concurrency=4"\][\s\S]*if ignoringMinimumReleaseAge[\s\S]*--config\.minimum-release-age=0/)
+  assert.match(PLUGIN_SOURCE, /var arguments = \["update"\] \+ pluginNames \+ \["--latest"\] \+ Self\.thinLinkFetchArguments[\s\S]*if ignoringMinimumReleaseAge[\s\S]*--config\.minimum-release-age=0/)
   assert.match(SETTINGS_SOURCE, /pendingPluginUpdate/)
   assert.match(SETTINGS_SOURCE, /confirmPendingPluginUpdate\(\)/)
   assert.match(SETTINGS_SOURCE, /cancelPendingPluginUpdate\(\)/)

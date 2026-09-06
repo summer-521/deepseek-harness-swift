@@ -225,6 +225,118 @@ private func recoverMutatingWithoutDigestAfterConflictResolution() async throws 
     )
 }
 
+private func setupAdoptInterrupted() async throws {
+    try resetFixture()
+    let state = try await persistFixtureOperation(phase: .recoveryRequired)
+    try marker("adopted-tree")
+    require(state.mutationDigest == nil, "adopt fixture must omit digest")
+    require(state.phase == .recoveryRequired, "adopt fixture must persist recoveryRequired")
+}
+
+private func recoverAdoptVerified() async throws {
+    let operationID = try readOperationState().operationID
+    let coordinator = DshPluginOperationCoordinator(operationStoreURL: operationStoreURL())
+    let result = try await coordinator.adoptInterruptedTransaction(
+        operationID: operationID,
+        hooks: DshPluginOperationHooks(
+            mutate: { _ in },
+            verify: { _ in }
+        )
+    )
+    require(result.phase == .committed, "healthy adopted tree must commit")
+    require(coordinator.pendingOperation?.phase == .committed, "committed adopt must remain durable")
+    try requireContents(
+        "adopted-tree",
+        at: profileURL().appendingPathComponent("marker"),
+        "verified adopt must keep the current tree"
+    )
+}
+
+private func recoverAdoptUnhealthy() async throws {
+    let operationID = try readOperationState().operationID
+    let coordinator = DshPluginOperationCoordinator(operationStoreURL: operationStoreURL())
+    let result = try await coordinator.adoptInterruptedTransaction(
+        operationID: operationID,
+        hooks: DshPluginOperationHooks(
+            mutate: { _ in },
+            verify: { _ in
+                throw NSError(domain: "fixture", code: 92, userInfo: [
+                    NSLocalizedDescriptionKey: "adopted tree failed health verification"
+                ])
+            }
+        )
+    )
+    require(result.phase == .restoring && result.wasRestored == true, "unhealthy adopted tree must restore")
+    require(coordinator.pendingOperation == nil, "adopt restore must clear the record")
+    try requireContents(
+        "baseline",
+        at: profileURL().appendingPathComponent("marker"),
+        "adopt restore must bring back the snapshot baseline"
+    )
+}
+
+private func recoverAdoptRejectsCommitted() async throws {
+    try resetFixture()
+    let state = try await persistFixtureOperation(phase: .committed)
+    let coordinator = DshPluginOperationCoordinator(operationStoreURL: operationStoreURL())
+    await expectOperationError(.invalidTransition(state.phase, .verifying)) {
+        _ = try await coordinator.adoptInterruptedTransaction(
+            operationID: state.operationID,
+            hooks: DshPluginOperationHooks(mutate: { _ in })
+        )
+    }
+    require(coordinator.pendingOperation?.phase == .committed, "rejected adopt must leave the record untouched")
+}
+
+private func runAdoptGatingMatrix() throws {
+    var interrupted = try interruptedFixtureState()
+    let adoptable = DshPluginOperationCoordinator.adoptableInterruptedTransaction(from: interrupted)
+    require(
+        adoptable?.operationID == interrupted.operationID,
+        "recoveryRequired record without digest on desktop must be adoptable"
+    )
+    interrupted = DshPluginOperationState(
+        operationID: interrupted.operationID,
+        profile: interrupted.profile,
+        targetPackage: interrupted.targetPackage,
+        targetPackages: interrupted.targetPackages,
+        action: interrupted.action,
+        snapshot: interrupted.snapshot,
+        phase: .committed,
+        mutationDigest: interrupted.mutationDigest,
+        lastError: interrupted.lastError
+    )
+    require(
+        DshPluginOperationCoordinator.adoptableInterruptedTransaction(from: interrupted) == nil,
+        "committed record must never be adoptable"
+    )
+    print("plugin operation scenario adopt-gating-matrix passed")
+}
+
+private func interruptedFixtureState() throws -> DshPluginOperationState {
+    let operationID = UUID().uuidString
+    let snapshot = DshPluginOperationSnapshotReference(
+        snapshotID: UUID().uuidString,
+        operationID: operationID,
+        profile: .desktop,
+        profileDirectory: profileURL(),
+        baselineDigest: "baseline",
+        ownerID: DshPluginOperationSnapshotReference.owner,
+        profileWasMissing: false
+    )
+    return DshPluginOperationState(
+        operationID: operationID,
+        profile: .desktop,
+        targetPackage: "plugin",
+        targetPackages: [],
+        action: .install,
+        snapshot: snapshot,
+        phase: .recoveryRequired,
+        mutationDigest: nil,
+        lastError: "interrupted"
+    )
+}
+
 private func setupVerifying() async throws {
     try resetFixture()
     let manager = DshPluginManager.shared
@@ -614,6 +726,35 @@ private func runSnapshotCapacityContract() throws {
     )
 }
 
+private func runInstallDowngradeGate() throws {
+    // Exact pins need no network: the gate must decide purely.
+    let splitLatest = DshPluginOperationInputValidation.splitInstallSpecifier("@deepseek-ai/dsh-subagent-codex@latest")
+    require(splitLatest?.name == "@deepseek-ai/dsh-subagent-codex", "scoped spec must split the name")
+    require(splitLatest?.pinned == "latest", "scoped spec must split the tag")
+    let splitExact = DshPluginOperationInputValidation.splitInstallSpecifier("dsh-codex-subscription@0.1.2")
+    require(splitExact?.name == "dsh-codex-subscription", "bare spec must split the name")
+    require(splitExact?.pinned == "0.1.2", "bare spec must split the version")
+    let splitBare = DshPluginOperationInputValidation.splitInstallSpecifier("@deepseek-ai/dsh-subagent-codex")
+    require(splitBare?.name == "@deepseek-ai/dsh-subagent-codex", "bare scoped spec keeps the name")
+    require(splitBare?.pinned == nil, "bare spec has no pinned value")
+    require(DshPluginOperationInputValidation.splitInstallSpecifier("file:/tmp/x") == nil, "local specs carry no version")
+    require(DshPluginOperationInputValidation.splitInstallSpecifier("--global") == nil, "option-looking specs are rejected")
+    require(DshPluginOperationInputValidation.splitInstallSpecifier("@scope/only@") == nil, "empty pinned value is rejected")
+
+    // The user's case: latest (0.0.1-rc.1) over installed 0.1.2-alpha.2.
+    require(DshPluginOperationInputValidation.isInstallDowngrade(installed: "0.1.2-alpha.2", candidate: "0.0.1-rc.1") == true,
+            "older candidate over newer install is a downgrade")
+    require(DshPluginOperationInputValidation.isInstallDowngrade(installed: "0.1.2-alpha.2", candidate: "0.1.2-alpha.2") == false,
+            "same version is not a downgrade")
+    require(DshPluginOperationInputValidation.isInstallDowngrade(installed: "0.1.2-alpha.2", candidate: "0.1.3") == false,
+            "newer candidate is not a downgrade")
+    require(DshPluginOperationInputValidation.isInstallDowngrade(installed: "1.0.0", candidate: "latest") == nil,
+            "unparsable candidate fails open")
+    require(DshPluginOperationInputValidation.isInstallDowngrade(installed: "^1.0.0", candidate: "1.0.1") == nil,
+            "unparsable installed fails open")
+    print("plugin operation scenario install-downgrade-gate passed")
+}
+
 private func runOwnedSnapshotDeleteGuard() async throws {
     try resetFixture()
     let manager = DshPluginManager.shared
@@ -807,6 +948,11 @@ struct PluginOperationHarness {
         case "mutating-no-digest-setup": try await setupMutatingWithoutDigest()
         case "mutating-no-digest-recover": try await recoverMutatingWithoutDigest()
         case "mutating-no-digest-recover-again": try await recoverMutatingWithoutDigestAfterConflictResolution()
+        case "adopt-setup": try await setupAdoptInterrupted()
+        case "adopt-verified": try await recoverAdoptVerified()
+        case "adopt-unhealthy": try await recoverAdoptUnhealthy()
+        case "adopt-rejects-committed": try await recoverAdoptRejectsCommitted()
+        case "adopt-gating-matrix": try runAdoptGatingMatrix()
         case "verifying-setup": try await setupVerifying()
         case "verifying-commit-recover": try await recoverVerifyingCommit()
         case "verifying-restore-recover": try await recoverVerifyingRestore()
@@ -822,6 +968,7 @@ struct PluginOperationHarness {
         case "cancel-during-mutation-recovery-failure": try await runCancelledDuringMutation(restoreFails: true)
         case "cancel-during-verify": try await runCancelledDuringVerify()
         case "capacity-contract": try runSnapshotCapacityContract()
+        case "install-downgrade-gate": try runInstallDowngradeGate()
         case "owned-snapshot-delete-guard": try await runOwnedSnapshotDeleteGuard()
         case "batch-failure": try await runBatchFailure()
         case "corrupt-record": try await runCorruptRecord()

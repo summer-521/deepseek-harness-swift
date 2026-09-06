@@ -70,6 +70,12 @@ if (command === 'add') {
   const manifest = readManifest()
   manifest.dependencies = { ...(manifest.dependencies || {}), [installed.name]: args[1] }
   writeManifest(manifest)
+  // The product harness models pnpm's lockfile-only resolver for installs:
+  // the copied manifest records the resolution while nothing is linked.
+  if (args.includes('--lockfile-only')) {
+    process.stdout.write(`preflight resolved ${installed.name}@${installed.version}\n`)
+    process.exit(0)
+  }
   writeInstalled(installed.name, installed.version, installed.description)
   process.stdout.write(`added ${installed.name}@${installed.version}\n`)
   process.exit(0)

@@ -72,6 +72,21 @@ public enum DshDiagnosticConfidence: String, Codable, Sendable {
     case unknown
 }
 
+extension DshDiagnosticConfidence {
+    /// Human-readable judgment for the recovery panel. Raw values stay
+    /// English because they are persisted; only the display is localized.
+    public var displayName: String {
+        switch self {
+        case .confirmed:
+            return "已确认"
+        case .suspected:
+            return "疑似"
+        case .unknown:
+            return "无法确定"
+        }
+    }
+}
+
 public struct DshDiagnosticEvidence: Codable, Equatable, Sendable {
     public let source: DshDiagnosticSource
     public let confidence: DshDiagnosticConfidence
