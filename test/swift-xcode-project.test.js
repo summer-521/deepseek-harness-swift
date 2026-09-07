@@ -124,7 +124,7 @@ test('Swift build delegates compilation to xcodebuild and keeps the app metadata
   assert.doesNotMatch(PACKAGE_SOURCE, /REPO_DIR/)
   assert.match(BUILD_SOURCE, /SWIFT_APP_VERSION/)
   assert.match(PACKAGE_SOURCE, /Version\.xcconfig/)
-  assert.match(VERSION_CONFIG_SOURCE, /SWIFT_APP_VERSION = 1\.0\.0/)
+  assert.match(VERSION_CONFIG_SOURCE, /SWIFT_APP_VERSION = \d+\.\d+\.\d+/)
   assert.doesNotMatch(BUILD_SOURCE, /APP_VERSION[^\n]*package\.json/)
   assert.doesNotMatch(PACKAGE_SOURCE, /package\.json/)
   assert.match(SWIFT_PNPM_SOURCE, /DSH_NODE_BIN/)

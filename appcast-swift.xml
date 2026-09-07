@@ -6,6 +6,92 @@
         <description>Updates for the native Swift shell of DSH Desktop.</description>
         <language>zh-CN</language>
         <item>
+            <title>1.2.0</title>
+            <pubDate>Mon, 07 Sep 2026 20:19:57 +0800</pubDate>
+            <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.0</link>
+            <sparkle:version>9</sparkle:version>
+            <sparkle:shortVersionString>1.2.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[
+## 更新内容
+
+### 启动与故障恢复
+
+- 新增独立 SwiftUI 启动页，在运行时准备期间提供明确的阶段状态。
+- 新增独立 SwiftUI 恢复页，支持故障说明、诊断详情、JSON 预览与导出，以及受保护的恢复操作。
+- 强化启动事务恢复、端口冲突处理与进程所有权校验，避免异常退出后残留服务阻塞启动。
+
+### Runtime 与 Profile
+
+- 默认使用隔离的 desktop Profile，并支持显式切换至共享 web Profile。
+- Runtime 安装与升级采用分阶段事务、健康检查、失败回滚和连续健康启动后的旧版本清理。
+- 增加 npm stable、next 与 alpha 更新通道，同时阻止不受支持的降级和版本格式。
+
+### 插件管理
+
+- 新增原生插件管理界面，支持检查更新、单项更新、批量更新、搜索、异常筛选和配置检查。
+- 插件变更采用串行事务、快照和失败恢复，并在实际写入前完成版本与最小发布时间检查。
+- 优化更新状态、二次确认和操作完成提示，避免重复事务及长时间停留在处理中。
+
+### 桌面集成与安全
+
+- 新增受控的浏览器与局域网访问能力，凭据、来源和服务代际由原生端校验。
+- 新增任务完成系统通知，并将授权请求延后到主界面加载完成后。
+- 改进窗口拖动、下载保存、诊断脱敏与 WebView 桥接边界。
+
+## 已知限制
+
+- 仅支持 macOS 26 及以上系统。
+- 安装包使用本地自签名证书，尚未接入 Developer ID 和公证；首次打开可能需要在“隐私与安全性”中放行。
+- Intel 安装包完成交叉构建和结构校验，尚未取得 Intel 实机运行证据。
+]]></description>
+            <enclosure url="https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.2.0/DSH-Desktop-1.2.0-arm64.dmg" length="50228145" type="application/octet-stream" sparkle:edSignature="BaSMe6nDlFUsXqk7leia5X9jNWvD6Ac3I8O9SXhmJMoo6pnwf2M0xyJAS8Q5q+u+I+tU/pjxxcuSLqL7Lb8jCg=="/>
+        </item>
+        <item>
+            <title>1.2.0</title>
+            <pubDate>Mon, 07 Sep 2026 20:19:57 +0800</pubDate>
+            <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.0</link>
+            <sparkle:version>9</sparkle:version>
+            <sparkle:shortVersionString>1.2.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>x86_64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[
+## 更新内容
+
+### 启动与故障恢复
+
+- 新增独立 SwiftUI 启动页，在运行时准备期间提供明确的阶段状态。
+- 新增独立 SwiftUI 恢复页，支持故障说明、诊断详情、JSON 预览与导出，以及受保护的恢复操作。
+- 强化启动事务恢复、端口冲突处理与进程所有权校验，避免异常退出后残留服务阻塞启动。
+
+### Runtime 与 Profile
+
+- 默认使用隔离的 desktop Profile，并支持显式切换至共享 web Profile。
+- Runtime 安装与升级采用分阶段事务、健康检查、失败回滚和连续健康启动后的旧版本清理。
+- 增加 npm stable、next 与 alpha 更新通道，同时阻止不受支持的降级和版本格式。
+
+### 插件管理
+
+- 新增原生插件管理界面，支持检查更新、单项更新、批量更新、搜索、异常筛选和配置检查。
+- 插件变更采用串行事务、快照和失败恢复，并在实际写入前完成版本与最小发布时间检查。
+- 优化更新状态、二次确认和操作完成提示，避免重复事务及长时间停留在处理中。
+
+### 桌面集成与安全
+
+- 新增受控的浏览器与局域网访问能力，凭据、来源和服务代际由原生端校验。
+- 新增任务完成系统通知，并将授权请求延后到主界面加载完成后。
+- 改进窗口拖动、下载保存、诊断脱敏与 WebView 桥接边界。
+
+## 已知限制
+
+- 仅支持 macOS 26 及以上系统。
+- 安装包使用本地自签名证书，尚未接入 Developer ID 和公证；首次打开可能需要在“隐私与安全性”中放行。
+- Intel 安装包完成交叉构建和结构校验，尚未取得 Intel 实机运行证据。
+]]></description>
+            <enclosure url="https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.2.0/DSH-Desktop-1.2.0-x64.dmg" length="51542201" type="application/octet-stream" sparkle:edSignature="CLKw6guWmlRyIVeH6/xCCnaCVe87fesuo8aJa7A/F2By7w9onXE5gJbomQhKIozQNqWb1Egcbr6nNbxkhY/cDA=="/>
+        </item>
+        <item>
             <title>1.0.0</title>
             <pubDate>Sat, 29 Aug 2026 19:12:10 +0800</pubDate>
             <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.0.0</link>
