@@ -5,11 +5,10 @@ repository_directory=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 architecture=${1:-arm64}
 case "$architecture" in
   arm64) artifact_arch=arm64 ;;
-  x86_64) artifact_arch=x64 ;;
-  *) echo 'Usage: bash scripts/release-local.sh [arm64|x86_64] [--dry-run]' >&2; exit 2 ;;
+  *) echo 'Usage: bash scripts/release-local.sh [arm64] [--dry-run]' >&2; exit 2 ;;
 esac
 if [[ $# -gt 2 || ( $# -eq 2 && $2 != --dry-run ) ]]; then
-  echo 'Usage: bash scripts/release-local.sh [arm64|x86_64] [--dry-run]' >&2
+  echo 'Usage: bash scripts/release-local.sh [arm64] [--dry-run]' >&2
   exit 2
 fi
 if [[ ${2:-} == --dry-run ]]; then

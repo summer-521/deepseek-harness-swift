@@ -12,7 +12,7 @@
   <a href="https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.0"><img alt="Swift 原生版 v1.2.0" src="https://img.shields.io/badge/Swift%20Native-v1.2.0-171513.svg?style=flat-square" /></a>
   <a href="LICENSE"><img alt="许可证：MIT" src="https://img.shields.io/badge/License-MIT-171513.svg?style=flat-square" /></a>
   <img alt="macOS 26+" src="https://img.shields.io/badge/macOS-26%2B-171513.svg?style=flat-square" />
-  <img alt="Apple Silicon 与 Intel" src="https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-171513.svg?style=flat-square" />
+  <img alt="Apple Silicon arm64" src="https://img.shields.io/badge/arch-arm64-171513.svg?style=flat-square" />
 </p>
 
 DSH Swift Native Shell 是 DSH Desktop 的独立 Swift 原生 macOS 实现。它负责窗口、菜单、设置页、运行时生命周期和桌面系统集成，核心 DSH Web UI 仍由官方 `@deepseek-ai/dsh` 运行时提供。
@@ -29,7 +29,6 @@ DSH Swift Native Shell 是 DSH Desktop 的独立 Swift 原生 macOS 实现。它
 | 平台 | 架构 | 安装包 | 下载 |
 | --- | --- | --- | --- |
 | macOS | Apple Silicon | DMG | [下载 arm64](https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.2.0/DSH-Desktop-1.2.0-arm64.dmg) |
-| macOS | Intel | DMG | [下载 x86_64](https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.2.0/DSH-Desktop-1.2.0-x64.dmg) |
 
 ## 界面预览
 
@@ -67,7 +66,7 @@ DSH Swift Native Shell 是 DSH Desktop 的独立 Swift 原生 macOS 实现。它
 - **插件管理**：支持当前 DSH Profile 插件的安装、更新、卸载和服务重启，桥接插件随应用内置。
 - **桌面通知**：支持 DSH 任务完成通知，并可从通知恢复应用窗口。
 - **Sparkle 更新**：Swift 应用包使用 Sparkle 提供检查更新和签名更新；应用版本与 DSH npm 运行时版本彼此独立。
-- **分架构构建**：支持 Apple Silicon（arm64）和 Intel（x86_64）单独构建与打包。
+- **Apple Silicon 构建**：应用、内置 Node.js 和 DMG 均为 arm64 架构。
 
 ## 运行架构
 
@@ -106,7 +105,7 @@ bash scripts/build-app.sh
 bash scripts/package-dmg.sh
 ```
 
-默认会构建并打包 arm64 与 x86_64 两个架构。只构建一个架构时：
+默认构建并打包 Apple Silicon（arm64）版本：
 
 ```bash
 DSH_BUILD_ARCH=arm64 bash scripts/build-app.sh
@@ -139,7 +138,7 @@ npm test
 - 采集提交与工作区证据：`node scripts/workflow-status.mjs`。
 - 提交要求排除文档时，暂存后检查：`node scripts/workflow-status.mjs --check-no-docs-staged`。
 - M2 隔离验收：`bash scripts/m2-acceptance.sh`；`--list` 查看范围与 GUI 开关。
-- 一次完成本地构建、打包、校验及 SHA-256：`bash scripts/release-local.sh arm64`（或 `x86_64`）；加 `--dry-run` 只查看流程。沿用 `SWIFT_DIST_DIR`；成功打包后会由原脚本清理 `.build`。此入口不运行测试、不安装、不发布。
+- 一次完成本地 arm64 构建、打包、校验及 SHA-256：`bash scripts/release-local.sh arm64`；加 `--dry-run` 只查看流程。沿用 `SWIFT_DIST_DIR`；成功打包后会由原脚本清理 `.build`。此入口不运行测试、不安装、不发布。
 
 ## 版本与更新
 
@@ -147,7 +146,7 @@ npm test
 - Swift 应用版本不等同于 DSH npm 运行时版本；后者在应用内的版本管理页单独检查并升级到 npm `latest`、`next` 或用户明确选择的 `alpha`。启动、插件操作和 Runtime 更新共享串行事务门，避免并发重启。
 - Runtime 版本目录以 npm Registry 为唯一来源；当前只接受 stable、`alpha.N` 与 `rc.N` 版本，GitHub 独有版本、beta 及任意降级暂不参与运行时选择。
 - Sparkle 公钥写入 [Info.plist](Info.plist)，Ed25519 私钥只保存在发布机器的 Keychain 中，禁止提交到仓库。
-- 当前更新 feed 位于 `appcast-swift.xml`，发布新版本时需要先构建两个架构的 DMG，再使用 Sparkle `sign_update` 生成签名并更新 feed。
+- 当前更新 feed 位于 `appcast-swift.xml`，发布新版本时需要先构建 arm64 DMG，再使用 Sparkle `sign_update` 生成签名并更新 feed。
 
 ## 已知限制
 
@@ -157,7 +156,7 @@ npm test
 - 当前只提供从已安装 Runtime 向 npm `latest`/`next`/`alpha` tag 的单向升级；默认仅通知不自动安装，`next` 和 `alpha` 只能由用户明确选择；更新失败的版本会抑制到 npm tag 变化、应用升级或用户手动重试；旧版本会保留到新 Runtime 连续两次成功启动后自动清理，暂不提供任意版本切换、卸载或降级入口。
 - App 默认使用独立的 `profiles/desktop`，终端 `dsh web` 继续使用 `profiles/web`；通用设置中切换到 `web` 后，两者会共享插件和依赖，升级或插件变更可能影响终端启动。
 - `web` Profile 下禁止 DSH Runtime 版本升级和自动更新；从 `web` 切回 `desktop` 时，应用会先停止服务，再移除 web Profile 中的 `dsh-desktop-host` 与 `@deepseek-ai/dsh-host-webserver`，避免继续污染终端环境。
-- 目前仅提供 macOS 26+、Apple Silicon 与 Intel 构建。
+- 目前仅提供 macOS 26+、Apple Silicon（arm64）构建。
 
 ## 许可证
 

@@ -5,30 +5,23 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-26.0}"
-if [ -n "${DSH_BUILD_ARCHES:-}" ]; then
-	read -r -a BUILD_ARCHES <<< "${DSH_BUILD_ARCHES}"
-elif [ -n "${DSH_BUILD_ARCH:-}" ]; then
-	BUILD_ARCHES=("${DSH_BUILD_ARCH}")
-else
-	case "$(uname -m)" in
-		arm64) BUILD_ARCHES=(x86_64 arm64) ;;
-		x86_64) BUILD_ARCHES=(arm64 x86_64) ;;
-		*)
-			echo "Unsupported build host architecture: $(uname -m)" >&2
-			exit 1
-			;;
-	esac
+HOST_ARCHITECTURE="$(uname -m)"
+if [ "${HOST_ARCHITECTURE}" != "arm64" ]; then
+	echo "Unsupported build host architecture: ${HOST_ARCHITECTURE}; DSH builds require Apple Silicon (arm64)" >&2
+	exit 1
 fi
 
-for BUILD_ARCH in "${BUILD_ARCHES[@]}"; do
-	case "${BUILD_ARCH}" in
-		arm64|x86_64) ;;
-		*)
-			echo "Unsupported build architecture: ${BUILD_ARCH}" >&2
-			exit 1
-			;;
-	esac
-done
+BUILD_ARCHES=(arm64)
+if [ -n "${DSH_BUILD_ARCHES:-}" ]; then
+	read -r -a REQUESTED_BUILD_ARCHES <<< "${DSH_BUILD_ARCHES}"
+	if [ "${#REQUESTED_BUILD_ARCHES[@]}" -ne 1 ] || [ "${REQUESTED_BUILD_ARCHES[0]}" != "arm64" ]; then
+		echo "Unsupported build architecture: ${DSH_BUILD_ARCHES}; only arm64 is supported" >&2
+		exit 1
+	fi
+elif [ -n "${DSH_BUILD_ARCH:-}" ] && [ "${DSH_BUILD_ARCH}" != "arm64" ]; then
+	echo "Unsupported build architecture: ${DSH_BUILD_ARCH}; only arm64 is supported" >&2
+	exit 1
+fi
 
 export MACOSX_DEPLOYMENT_TARGET="${DEPLOYMENT_TARGET}"
 
@@ -167,10 +160,5 @@ for BUILD_ARCH in "${BUILD_ARCHES[@]}"; do
 	echo "✅ ${BUILD_ARCH} build completed: ${APP_DIR}"
 done
 
-LEGACY_UNIVERSAL_APP="${DIST_DIR}/${APP_NAME}.app"
-if [ -d "${LEGACY_UNIVERSAL_APP}" ]; then
-	rm -rf "${LEGACY_UNIVERSAL_APP}"
-fi
-
-echo "Built architecture-specific application bundles:"
+echo "Built Apple Silicon application bundle:"
 printf '  %s\n' "${BUILT_APPS[@]}"

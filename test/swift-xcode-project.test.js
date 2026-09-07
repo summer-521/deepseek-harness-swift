@@ -143,3 +143,17 @@ test('Swift build delegates compilation to xcodebuild and keeps the app metadata
   assert.match(ABOUT_TAB_SOURCE, /AboutValueRow\(title: "版本", value: appVersionDisplay\)/)
   assert.match(ABOUT_TAB_SOURCE, /appVersionDisplay/)
 })
+
+test('Swift application build, packaging, and bundled Node are arm64-only', () => {
+  assert.equal((PROJECT_SOURCE.match(/ARCHS = arm64;/g) ?? []).length, 2)
+  for (const source of [BUILD_SOURCE, PACKAGE_SOURCE, FETCH_NODE_SOURCE]) {
+    assert.match(source, /arm64/)
+    assert.doesNotMatch(source, /x86_64|x64|Intel|universal/i)
+  }
+  assert.match(BUILD_SOURCE, /HOST_ARCHITECTURE.*uname -m/)
+  assert.match(BUILD_SOURCE, /only arm64 is supported/)
+  assert.match(PACKAGE_SOURCE, /HOST_ARCHITECTURE.*uname -m/)
+  assert.match(PACKAGE_SOURCE, /only arm64 is supported/)
+  assert.match(FETCH_NODE_SOURCE, /REQUESTED_ARCH=.*arm64/)
+  assert.match(FETCH_NODE_SOURCE, /only arm64 is supported/)
+})

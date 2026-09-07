@@ -16,27 +16,26 @@ if [ -z "${APP_VERSION}" ]; then
 	exit 1
 fi
 
+HOST_ARCHITECTURE="$(uname -m)"
+if [ "${HOST_ARCHITECTURE}" != "arm64" ]; then
+	echo "Unsupported package host architecture: ${HOST_ARCHITECTURE}; DSH packages require Apple Silicon (arm64)" >&2
+	exit 1
+fi
+
+PACKAGE_ARCHES=(arm64)
 if [ -n "${DSH_BUILD_ARCHES:-}" ]; then
-	read -r -a PACKAGE_ARCHES <<< "${DSH_BUILD_ARCHES}"
-elif [ -n "${DSH_BUILD_ARCH:-}" ]; then
-	PACKAGE_ARCHES=("${DSH_BUILD_ARCH}")
-else
-	PACKAGE_ARCHES=(arm64 x86_64)
+	read -r -a REQUESTED_PACKAGE_ARCHES <<< "${DSH_BUILD_ARCHES}"
+	if [ "${#REQUESTED_PACKAGE_ARCHES[@]}" -ne 1 ] || [ "${REQUESTED_PACKAGE_ARCHES[0]}" != "arm64" ]; then
+		echo "Unsupported package architecture: ${DSH_BUILD_ARCHES}; only arm64 is supported" >&2
+		exit 1
+	fi
+elif [ -n "${DSH_BUILD_ARCH:-}" ] && [ "${DSH_BUILD_ARCH}" != "arm64" ]; then
+	echo "Unsupported package architecture: ${DSH_BUILD_ARCH}; only arm64 is supported" >&2
+	exit 1
 fi
 
 for PACKAGE_ARCH in "${PACKAGE_ARCHES[@]}"; do
-	case "${PACKAGE_ARCH}" in
-		arm64)
-			ARTIFACT_ARCH="arm64"
-			;;
-		x86_64)
-			ARTIFACT_ARCH="x64"
-			;;
-		*)
-			echo "Unsupported package architecture: ${PACKAGE_ARCH}" >&2
-			exit 1
-			;;
-	esac
+	ARTIFACT_ARCH="arm64"
 
 	APP_DIR="${DIST_DIR}/${PACKAGE_ARCH}/${APP_NAME}.app"
 	APP_BINARY="${APP_DIR}/Contents/MacOS/${APP_NAME}"

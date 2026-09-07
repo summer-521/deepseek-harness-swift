@@ -78,7 +78,7 @@
 
 - 最低系统版本调整为 macOS 26。
 - 本地发布包改用固定自签名证书，减少替换 App 后系统权限反复失效的问题。
-- 增强 arm64、x86_64、DMG、签名和安装结果校验。
+- 增强 arm64、DMG、签名和安装结果校验。
 - 新增统一的本地构建和发布入口。
 
 ## 已知限制
@@ -89,91 +89,6 @@
 - Swift 应用包更新与 DSH npm Runtime 更新是两套独立流程。
 ]]></description>
             <enclosure url="https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.2.0/DSH-Desktop-1.2.0-arm64.dmg" length="50228145" type="application/octet-stream" sparkle:edSignature="BaSMe6nDlFUsXqk7leia5X9jNWvD6Ac3I8O9SXhmJMoo6pnwf2M0xyJAS8Q5q+u+I+tU/pjxxcuSLqL7Lb8jCg=="/>
-        </item>
-        <item>
-            <title>1.2.0</title>
-            <pubDate>Mon, 07 Sep 2026 20:19:57 +0800</pubDate>
-            <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.0</link>
-            <sparkle:version>9</sparkle:version>
-            <sparkle:shortVersionString>1.2.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>x86_64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[
-## 更新内容
-
-### 启动与故障恢复
-
-- 新增原生启动页面，显示运行环境准备、依赖检查、服务启动、认证和界面加载进度。
-- 新增启动恢复页面，在启动失败时提供重试、打开设置和安全模式等操作。
-- 支持查看诊断详情、生成脱敏 JSON 预览、复制诊断摘要和保存诊断文件。
-- 恢复窗口会根据诊断内容自动调整大小，并保持在屏幕可见范围内。
-- 对端口冲突、Runtime 缺失、依赖异常、认证失败和页面加载失败提供明确提示。
-- 支持处理未完成的插件事务，并在证据充分时提供验证、恢复或移除故障插件的操作。
-- 应用异常退出后可在下次启动继续必要的恢复和清理流程。
-- 启动和恢复过程中不会显示尚未就绪的 Web 页面，降低白屏和错误页面暴露的可能。
-
-### DSH Runtime 与 Profile
-
-- 新增 desktop 与 web Profile 切换，并在切换失败时恢复原 Profile。
-- 支持通过 npm Registry 的 stable、RC 和 alpha 通道检查及安装 Runtime。
-- Runtime 安装、切换和更新采用事务处理，验证失败时自动恢复上一版本。
-- 新版本经过连续健康启动后，才会清理保留的旧 Runtime。
-- 增强 Runtime 入口、依赖、认证、WebSocket 连接和服务代次检查。
-- 修复 Profile 切换、端口变化、LAN 会话和认证恢复相关问题。
-- 配置文件损坏或恢复记录不完整时停止普通启动，避免使用错误配置继续运行。
-
-### 插件管理
-
-- 插件安装、单独更新、批量更新和卸载统一采用事务处理。
-- 插件操作前创建受控快照，更新后执行服务重启和健康验证；失败时自动回滚。
-- 应用强制退出后，可在下次启动继续完成插件验证、恢复或清理。
-- 新增插件操作进度，区分准备、更新、验证、回滚、完成和需要处理等状态。
-- 插件列表支持搜索、异常筛选、更新状态和批量更新。
-- 更新前提前检查 npm 发布时间限制，避免完成安装事务后才提示版本暂不可用。
-- 加强插件配置与依赖检查，避免修改受管理组件、共享依赖或错误 Profile。
-- 对能够唯一定位的故障插件提供显式移除并重试操作；证据不足时仅显示诊断。
-- 支持验证并继续中断的插件事务，不会静默接受未经验证的插件状态。
-- 修复更新完成后仍显示旧更新状态、按钮失效及操作状态长时间不结束等问题。
-
-### 浏览器与局域网访问
-
-- 新增桌面浏览器访问开关，并在服务运行期间实时更新访问策略。
-- 浏览器访问使用短期、带认证的本机地址，不直接暴露内部服务凭据。
-- 新增局域网访问入口；DSH Runtime 仍只监听本机地址，由桌面 Host 提供独立认证入口。
-- 加强会话过期、端口复用、残留 socket 和跨启动代次访问检查。
-- 浏览器或 LAN 策略更新失败时自动回滚，避免配置与实际运行状态不一致。
-
-### 安全与诊断
-
-- WebView 与原生桥接消息绑定当前页面来源、启动代次和服务会话。
-- 拒绝 iframe、旧页面、错误 WebView、错误来源和未知字段发送的原生消息。
-- 诊断信息统一脱敏，不导出 Cookie、令牌、环境变量、聊天内容或 Registry 响应正文。
-- 插件故障信息只在插件类错误中显示，端口冲突等故障不会显示无关插件内容。
-- 加强状态文件的原子写入、冲突检测、损坏拦截和恢复记录校验。
-
-### 通知与系统体验
-
-- 修复窗口隐藏时任务完成通知不显示的问题。
-- 修复系统重设通知权限后，应用不再重新请求授权的问题。
-- 通知授权在主窗口正式出现后请求，避免干扰启动过程。
-- 改进主窗口交通灯、窗口拖动、双击标题栏和 Dock 恢复行为。
-- 设置、启动和恢复窗口支持系统深浅色模式。
-
-### 构建与发布
-
-- 最低系统版本调整为 macOS 26。
-- 本地发布包改用固定自签名证书，减少替换 App 后系统权限反复失效的问题。
-- 增强 arm64、x86_64、DMG、签名和安装结果校验。
-- 新增统一的本地构建和发布入口。
-
-## 已知限制
-
-- 本版本最低需要 macOS 26。
-- 从 Build 8 的 ad-hoc 签名升级后，屏幕录制等系统权限可能需要重新授权一次。
-- 自签名证书可能在钥匙串中显示为“不受信任”，但不影响本机签名完整性校验。
-- Swift 应用包更新与 DSH npm Runtime 更新是两套独立流程。
-]]></description>
-            <enclosure url="https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.2.0/DSH-Desktop-1.2.0-x64.dmg" length="51542201" type="application/octet-stream" sparkle:edSignature="CLKw6guWmlRyIVeH6/xCCnaCVe87fesuo8aJa7A/F2By7w9onXE5gJbomQhKIozQNqWb1Egcbr6nNbxkhY/cDA=="/>
         </item>
         <item>
             <title>1.0.0</title>
@@ -219,51 +134,6 @@
 - Swift 应用包更新与 DSH npm 运行时更新是两套独立流程。
 ]]></description>
             <enclosure url="https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.0.0/DSH-Desktop-1.0.0-arm64.dmg" length="53403233" type="application/octet-stream" sparkle:edSignature="UBLftKHbcxPbKCfCIdzdc5ZppnSkzC0pG8EnPXTyrpHTKbusFDoesV0VxddxkZZyadOHgAaxhuvjHcRV/EZ8DA=="/>
-        </item>
-        <item>
-            <title>1.0.0</title>
-            <pubDate>Sat, 29 Aug 2026 19:12:10 +0800</pubDate>
-            <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.0.0</link>
-            <sparkle:version>8</sparkle:version>
-            <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>x86_64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[
-## 更新内容
-
-### Swift 原生 macOS 壳
-
-- 基于 AppKit、SwiftUI 和 WKWebView 的原生 macOS 桌面壳。
-- 设置页采用接近 macOS 系统设置的布局，并跟随系统深浅色模式。
-- 主窗口支持 macOS 交通灯、窗口拖拽、Dock 恢复和独立设置窗口。
-- 菜单支持设置、重启 DSH 服务、检查更新和独立“关于 DSH”窗口。
-
-### DSH 运行时与版本管理
-
-- Swift 应用包只内置 Node.js 和 pnpm，不内置 DSH 本体。
-- 首次启动时从 npm Registry 下载并安装 DSH。
-- 支持 DSH 版本安装、切换、卸载和自动跟随 npm latest。
-- 版本安装目录、package manifest 和 bin.js 入口会进行完整校验。
-- 版本切换失败时自动恢复原版本并尝试恢复服务。
-- 版本页只显示最近 5 个官方 DSH 版本。
-
-### 插件、通知与更新
-
-- 支持 web profile 插件安装、更新、卸载和服务重启。
-- 插件列表从已安装插件的 package.json 读取描述，并对齐安装、更新、卸载和批量更新提示。
-- 插件安装前检查当前 npm 镜像，找不到包时显示明确的 404 提示。
-- 插件操作成功提示在服务重启完成后显示，并于 2 秒后自动隐藏。
-- 支持 DSH 任务完成系统通知。
-- 使用 Sparkle 提供 Swift 应用包检查更新和签名更新。
-- 改进 DSH Web 进程回收，避免应用异常退出后残留服务占用端口。
-
-## 已知限制
-
-- macOS 构建使用 ad-hoc 签名，首次打开如遇拦截，请右键选择“打开”，或前往“系统设置 → 隐私与安全性”放行。
-- 通知点击恢复隐藏主窗口等少数系统交互仍有待完善。
-- Swift 应用包更新与 DSH npm 运行时更新是两套独立流程。
-]]></description>
-            <enclosure url="https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.0.0/DSH-Desktop-1.0.0-x64.dmg" length="54631111" type="application/octet-stream" sparkle:edSignature="tKVHYWEBkSoZhJbfwUvXoK2bpZCgzxg71nuvRWISjeK3RPnAbrpFTnc6H2I+99L22+HhIjSSGRzI7ixYcah0CA=="/>
         </item>
     </channel>
 </rss>

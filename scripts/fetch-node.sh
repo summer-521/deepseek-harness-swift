@@ -3,32 +3,41 @@ set -euo pipefail
 
 NODE_VERSION="${NODE_VERSION:-v22.23.1}"
 NODE_SOURCE="${DSH_NODE_SOURCE:-auto}"
-REQUESTED_ARCH="${DSH_NODE_ARCH:-$(uname -m)}"
+REQUESTED_ARCH="${DSH_NODE_ARCH:-arm64}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DEST_DIR="${PROJECT_DIR}/assets/node"
+
+HOST_ARCHITECTURE="$(uname -m)"
+if [ "$HOST_ARCHITECTURE" != "arm64" ]; then
+  echo "Unsupported Node host architecture: $HOST_ARCHITECTURE; DSH requires Apple Silicon (arm64)" >&2
+  exit 1
+fi
+
 mkdir -p "$DEST_DIR/bin"
+
+if [ "$REQUESTED_ARCH" != "arm64" ]; then
+  echo "Unsupported Node architecture: $REQUESTED_ARCH; only arm64 is supported" >&2
+  exit 1
+fi
+
+validate_arm64_node() {
+  local node_path="$1"
+  local actual_architecture
+  actual_architecture="$(lipo -archs "$node_path" 2>/dev/null)" || {
+    echo "Unable to inspect Node architecture: $node_path" >&2
+    exit 1
+  }
+  if [ "$actual_architecture" != "arm64" ]; then
+    echo "Expected arm64 Node.js binary, found: $actual_architecture" >&2
+    exit 1
+  fi
+}
 
 prepare_pnpm() {
   bash "${SCRIPT_DIR}/fetch-pnpm.sh"
 }
-
-case "$REQUESTED_ARCH" in
-  arm64)
-    NODE_ARCHES=(arm64)
-    ;;
-  x86_64)
-    NODE_ARCHES=(x64)
-    ;;
-  universal)
-    NODE_ARCHES=(arm64 x64)
-    ;;
-  *)
-    echo "Unsupported Node architecture: $REQUESTED_ARCH" >&2
-    exit 1
-    ;;
-esac
 
 case "$NODE_SOURCE" in
   auto|official)
@@ -39,14 +48,14 @@ case "$NODE_SOURCE" in
     ;;
 esac
 
-if [ "$NODE_SOURCE" = "auto" ] && [ "$REQUESTED_ARCH" != "universal" ] \
-  && [ -f "$DEST_DIR/bin/node" ] && [ -x "$DEST_DIR/bin/node" ]; then
+if [ "$NODE_SOURCE" = "auto" ] && [ -f "$DEST_DIR/bin/node" ] && [ -x "$DEST_DIR/bin/node" ]; then
+  validate_arm64_node "$DEST_DIR/bin/node"
   echo "Bundled node already exists at $DEST_DIR/bin/node ($("$DEST_DIR/bin/node" --version))"
   prepare_pnpm
   exit 0
 fi
 
-if [ "$NODE_SOURCE" = "auto" ] && [ "$REQUESTED_ARCH" != "universal" ]; then
+if [ "$NODE_SOURCE" = "auto" ]; then
   # If system node is present, copy it for local development builds. Release
   # builds set DSH_NODE_SOURCE=official so the packaged runtime never depends
   # on the build machine's Node binary or deployment target.
@@ -55,6 +64,7 @@ if [ "$NODE_SOURCE" = "auto" ] && [ "$REQUESTED_ARCH" != "universal" ]; then
     echo "Copying system node from $SYSTEM_NODE..."
     cp "$SYSTEM_NODE" "$DEST_DIR/bin/node"
     chmod +x "$DEST_DIR/bin/node"
+    validate_arm64_node "$DEST_DIR/bin/node"
     echo "Copied system node ($("$DEST_DIR/bin/node" --version)) to $DEST_DIR/bin/node"
     prepare_pnpm
     exit 0
@@ -70,11 +80,10 @@ if ! command -v curl >/dev/null 2>&1 || ! command -v tar >/dev/null 2>&1; then
 fi
 
 download_node() {
-  local node_arch="$1"
-  local tarball="node-${NODE_VERSION}-darwin-${node_arch}.tar.gz"
+  local tarball="node-${NODE_VERSION}-darwin-arm64.tar.gz"
   local url="https://nodejs.org/dist/${NODE_VERSION}/${tarball}"
   local archive="$TMP_DIR/$tarball"
-  local extracted="$TMP_DIR/node-${NODE_VERSION}-darwin-${node_arch}/bin/node"
+  local extracted="$TMP_DIR/node-${NODE_VERSION}-darwin-arm64/bin/node"
 
   echo "Downloading official Node.js from $url..." >&2
   curl -fsSL "$url" -o "$archive"
@@ -86,26 +95,13 @@ download_node() {
   printf '%s\n' "$extracted"
 }
 
-NODE_BINARIES=()
-for node_arch in "${NODE_ARCHES[@]}"; do
-  NODE_BINARIES+=("$(download_node "$node_arch")")
-done
-
-if [ "$REQUESTED_ARCH" = "universal" ]; then
-  if ! command -v lipo >/dev/null 2>&1; then
-    echo "Universal Node builds require lipo" >&2
-    exit 1
-  fi
-  echo "Combining official Node.js arm64 and x64 binaries..."
-  lipo -create "${NODE_BINARIES[0]}" "${NODE_BINARIES[1]}" -output "$DEST_DIR/bin/node"
-else
-  cp "${NODE_BINARIES[0]}" "$DEST_DIR/bin/node"
-fi
+NODE_BINARY="$(download_node)"
+cp "$NODE_BINARY" "$DEST_DIR/bin/node"
 
 chmod +x "$DEST_DIR/bin/node"
+validate_arm64_node "$DEST_DIR/bin/node"
 
-if [ "$NODE_SOURCE" = "official" ] \
-  && { [ "$REQUESTED_ARCH" = "universal" ] || [ "$REQUESTED_ARCH" = "$(uname -m)" ]; }; then
+if [ "$NODE_SOURCE" = "official" ]; then
   if ! "$DEST_DIR/bin/node" -e '
     const required = [
       ["Promise.withResolvers", typeof Promise.withResolvers === "function"],
@@ -121,8 +117,6 @@ if [ "$NODE_SOURCE" = "official" ] \
     echo "Downloaded Node.js ${NODE_VERSION} does not satisfy the DSH runtime requirements" >&2
     exit 1
   fi
-elif [ "$NODE_SOURCE" = "official" ]; then
-  echo "Skipping runtime feature execution for cross-architecture Node.js (${REQUESTED_ARCH} on $(uname -m))."
 fi
 
 echo "Node.js ${NODE_VERSION} (${REQUESTED_ARCH}) installed to $DEST_DIR/bin/node"
