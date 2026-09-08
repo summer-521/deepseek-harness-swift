@@ -1222,6 +1222,20 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         profile: DshAppProfile? = nil,
         registry: String? = nil
     ) async throws -> [String: String] {
+        try await checkOutdatedPlugins(
+            at: profileDir,
+            profile: profile,
+            registry: registry,
+            processEnvironment: nil
+        )
+    }
+
+    private func checkOutdatedPlugins(
+        at profileDir: URL,
+        profile: DshAppProfile? = nil,
+        registry: String? = nil,
+        processEnvironment: [String: String]?
+    ) async throws -> [String: String] {
         let stateSnapshot = DshStateManager.shared.current
         let capturedRegistry = DshVersionManager.normalizedRegistry(registry ?? stateSnapshot.npmRegistry)
         let (node, pnpm) = try dshRequireNodeAndPnpm()
@@ -1243,7 +1257,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
             "--config.minimum-release-age=0"
         ]
 
-        var env = NodeRuntime.shared.buildEnvironment()
+        var env = processEnvironment ?? NodeRuntime.shared.buildEnvironment()
         env["DSH_NODE_BIN"] = node
         env["npm_config_registry"] = capturedRegistry
         proc.environment = env
@@ -1663,19 +1677,44 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                 contentsOf: preflightDirectory.appendingPathComponent("pnpm-lock.yaml")
             )) != baselineLockData
             if packageChanged || lockChanged {
+                // A batch resolver can make progress for one target while
+                // silently leaving another target behind the configured
+                // minimum-release-age gate.  The aggregate command still
+                // exits successfully and produces a manifest/lockfile diff,
+                // so the diff alone is not proof that every requested update
+                // is clear to enter P01. Ask pnpm for the residual outdated
+                // set in this same disposable tree; checking the unchanged
+                // real Profile would report every target as outdated,
+                // including the ones resolved by this preflight.
+                if pnpmArguments.first == "update" {
+                    do {
+                        let outdated = try await checkOutdatedPlugins(
+                            at: preflightDirectory,
+                            profile: profile,
+                            registry: capturedRegistry,
+                            processEnvironment: env
+                        )
+                        if outdatedLookupNames.contains(where: { outdated[$0] != nil }) {
+                            return .minimumReleaseAgeViolation
+                        }
+                    } catch {
+                        return .inconclusive
+                    }
+                }
                 return .clear
             }
 
             // No resolver artifact and no diagnostic is the pnpm status-0
-            // silent-no-op shape. A read-only outdated check against the real
-            // installed manifests tells us whether this update was expected;
-            // if the check itself is unavailable, remain conservative and
-            // let the normal transaction decide.
+            // silent-no-op shape. The same isolated-tree outdated check tells
+            // us whether the requested update was expected; if the check
+            // itself is unavailable, remain conservative and let the normal
+            // transaction decide.
             do {
                 let outdated = try await checkOutdatedPlugins(
-                    at: profileDirectory,
+                    at: preflightDirectory,
                     profile: profile,
-                    registry: capturedRegistry
+                    registry: capturedRegistry,
+                    processEnvironment: env
                 )
                 if outdatedLookupNames.contains(where: { outdated[$0] != nil }) {
                     return .minimumReleaseAgeViolation

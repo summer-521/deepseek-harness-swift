@@ -43,6 +43,7 @@ function run(binaryPath, root, scenario) {
     ].includes(scenario) ? 'minimum-release-age'
         : ['silent-update-minimum-release-age', 'silent-update-preflight'].includes(scenario) ? 'silent-minimum-release-age'
           : scenario === 'silent-no-keyword-preflight' ? 'silent-no-keyword'
+          : scenario === 'update-preflight-partial' ? 'partial-minimum-release-age'
           : '',
     },
     encoding: 'utf8',
@@ -87,6 +88,7 @@ test('P01 isolated product chain executes real manager mutations and rollback', 
       'update-all-minimum-release-age',
       'update-preflight',
       'update-preflight-confirm',
+      'update-preflight-partial',
       'install-preflight',
       'install-preflight-clear',
       'update-preflight-symlink',

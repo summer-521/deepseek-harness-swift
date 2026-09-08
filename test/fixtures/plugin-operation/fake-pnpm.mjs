@@ -82,6 +82,23 @@ if (command === 'add') {
 }
 
 if (command === 'update') {
+  if (mode === 'partial-minimum-release-age' && args.includes('--lockfile-only')) {
+    const manifest = readManifest()
+    const names = args.slice(1).filter(arg => !arg.startsWith('-') && arg !== '--latest' && arg !== '--registry')
+    const requested = names.length ? names : dependencyNames(manifest)
+    // Model pnpm resolving one requested package while silently withholding
+    // another candidate that is still inside minimum-release-age. The command
+    // succeeds and produces a resolver diff, but deliberately emits no policy
+    // keyword: the manager must inspect the requested set instead of treating
+    // any diff as proof that the whole batch cleared.
+    if (requested.includes('plugin-a') && 'plugin-a' in (manifest.dependencies || {})) {
+      manifest.dependencies['plugin-a'] = '2.0.0'
+    }
+    writeManifest(manifest)
+    fs.writeFileSync(path.join(cwd, 'pnpm-lock.yaml'), 'lockfileVersion: 9\nimporters:\n  .:\n    dependencies:\n      plugin-a:\n        specifier: 2.0.0\n')
+    process.stdout.write('preflight resolved plugin-a; plugin-b unavailable\n')
+    process.exit(0)
+  }
   if (mode === 'minimum-release-age' && !args.includes('--config.minimum-release-age=0')) {
     process.stderr.write('MINIMUM_RELEASE_AGE_VIOLATION: fixture package is too new\n')
     process.exit(42)
@@ -127,10 +144,15 @@ if (command === 'outdated') {
   const outdated = {}
   for (const name of dependencyNames(manifest)) {
     const installedManifest = path.join(packageDirectory(name), 'package.json')
-    if (!fs.existsSync(installedManifest)) continue
-    const installed = JSON.parse(fs.readFileSync(installedManifest, 'utf8'))
-    if (installed.version !== '2.0.0') {
-      outdated[name] = { current: installed.version, latest: '2.0.0' }
+    // A lockfile-only preflight intentionally has no node_modules. Model
+    // pnpm outdated reading its resolved direct dependency from the copied
+    // manifest in that case, while formal transactions still use the linked
+    // package manifest as their source of the current version.
+    const current = fs.existsSync(installedManifest)
+      ? JSON.parse(fs.readFileSync(installedManifest, 'utf8')).version
+      : manifest.dependencies[name]
+    if (current !== '2.0.0') {
+      outdated[name] = { current, latest: '2.0.0' }
     }
   }
   process.stdout.write(`${JSON.stringify(outdated)}\n`)

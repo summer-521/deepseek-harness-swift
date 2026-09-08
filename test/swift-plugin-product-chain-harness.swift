@@ -691,6 +691,53 @@ private func runUpdatePreflightConfirm() async throws {
     print("plugin product-chain update-preflight-confirm passed")
 }
 
+private func runBatchPartialPreflight() async throws {
+    let fixture = try ProductFixture()
+    try fixture.reset()
+    let manager = DshPluginManager.shared
+    let webBefore = try Data(contentsOf: fixture.web.appendingPathComponent("sentinel"))
+    let configBefore = try Data(contentsOf: fixture.globalConfig)
+
+    // The fake resolver changes only plugin-a in its disposable tree and
+    // silently withholds plugin-b while returning status 0. A package/lock
+    // diff must not be treated as proof that every requested package cleared
+    // the release-age policy.
+    let result = try await manager.preflightAllPluginUpdates(
+        packageNames: ["plugin-a", "plugin-b"],
+        profileDirectory: fixture.desktop,
+        profile: .desktop,
+        registry: "http://127.0.0.1:9"
+    )
+    try fixture.require(result == .minimumReleaseAgeViolation,
+                        "partial batch preflight must surface the blocked package")
+
+    // Preflight runs in a disposable copy. The formal update must not have
+    // started and the real Profile must remain byte-for-byte unchanged.
+    try fixture.requireData(fixture.baselineManifest, at: "package.json",
+                            "partial batch preflight must not modify package.json")
+    try fixture.requireData(fixture.baselineA, at: "node_modules/plugin-a/package.json",
+                            "partial batch preflight must not modify plugin-a")
+    try fixture.requireData(fixture.baselineB, at: "node_modules/plugin-b/package.json",
+                            "partial batch preflight must not modify plugin-b")
+    try fixture.require(!FileManager.default.fileExists(
+        atPath: fixture.desktop.appendingPathComponent("pnpm-lock.yaml").path
+    ), "partial batch preflight must not create the real lockfile")
+    try fixture.require(!FileManager.default.fileExists(
+        atPath: fixture.desktop.appendingPathComponent("pnpm-workspace.yaml").path
+    ), "partial batch preflight must not create the real workspace config")
+    try fixture.requireUnchangedOutsideDesktop(webBefore, configBefore)
+
+    let log = try String(contentsOf: fixture.fakeLog, encoding: .utf8)
+    let updateLines = log.split(separator: "\n").filter { $0.contains("\"update\"") }
+    try fixture.require(updateLines.count == 1,
+                        "partial batch preflight must invoke pnpm exactly once")
+    try fixture.require(updateLines[0].contains("--lockfile-only") &&
+                        updateLines[0].contains("--ignore-scripts") &&
+                        !updateLines[0].contains("--config.minimum-release-age=0"),
+                        "partial batch preflight must remain read-only and policy-bound")
+    print("plugin product-chain update-preflight-partial passed")
+}
+
 private func runUpdatePreflightSymlink() async throws {
     let fixture = try ProductFixture()
     try fixture.reset()
@@ -912,6 +959,7 @@ struct PluginProductChainHarness {
         case "update-all-minimum-release-age": try await runMinimumReleaseAgeUpdateFailure(action: .updateAll)
         case "update-preflight": try await runUpdatePreflight()
         case "update-preflight-confirm": try await runUpdatePreflightConfirm()
+        case "update-preflight-partial": try await runBatchPartialPreflight()
         case "install-preflight": try await runInstallPreflight()
         case "install-preflight-clear": try await runInstallPreflightClear()
         case "update-preflight-symlink": try await runUpdatePreflightSymlink()
