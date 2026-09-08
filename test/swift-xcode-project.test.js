@@ -139,9 +139,9 @@ test('Swift build delegates compilation to xcodebuild and keeps the app metadata
   assert.match(INFO_PLIST_SOURCE, /<key>SUPublicEDKey<\/key>\s*<string>[A-Za-z0-9+/=]+<\/string>/)
   assert.match(INFO_PLIST_SOURCE, /<key>SUVerifyUpdateBeforeExtraction<\/key>\s*<true\/>/)
   assert.match(BUILD_SOURCE, /SWIFT_APP_BUILD/)
-  assert.match(ABOUT_TAB_SOURCE, /CFBundleVersion/)
-  assert.match(ABOUT_TAB_SOURCE, /AboutValueRow\(title: "版本", value: appVersionDisplay\)/)
-  assert.match(ABOUT_TAB_SOURCE, /appVersionDisplay/)
+  assert.match(ABOUT_TAB_SOURCE, /CFBundleShortVersionString/)
+  assert.doesNotMatch(ABOUT_TAB_SOURCE, /CFBundleVersion|appBuild|appVersionDisplay|AboutValueRow/)
+  assert.match(ABOUT_TAB_SOURCE, /Text\("版本 \\\(appVersion\)"\)/)
 })
 
 test('Swift application build, packaging, and bundled Node are arm64-only', () => {

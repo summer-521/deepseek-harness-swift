@@ -7,9 +7,9 @@
         <language>zh-CN</language>
         <item>
             <title>1.2.0</title>
-            <pubDate>Mon, 07 Sep 2026 20:19:57 +0800</pubDate>
+            <pubDate>Tue, 08 Sep 2026 18:07:28 +0800</pubDate>
             <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.0</link>
-            <sparkle:version>9</sparkle:version>
+            <sparkle:version>10</sparkle:version>
             <sparkle:shortVersionString>1.2.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
@@ -88,7 +88,7 @@
 - 自签名证书可能在钥匙串中显示为“不受信任”，但不影响本机签名完整性校验。
 - Swift 应用包更新与 DSH npm Runtime 更新是两套独立流程。
 ]]></description>
-            <enclosure url="https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.2.0/DSH-Desktop-1.2.0-arm64.dmg" length="50228145" type="application/octet-stream" sparkle:edSignature="BaSMe6nDlFUsXqk7leia5X9jNWvD6Ac3I8O9SXhmJMoo6pnwf2M0xyJAS8Q5q+u+I+tU/pjxxcuSLqL7Lb8jCg=="/>
+            <enclosure url="https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.2.0/DSH-Desktop-1.2.0-arm64.dmg" length="50798931" type="application/octet-stream" sparkle:edSignature="PCKb/XyaeY0PSB9BX+DDrRUWxFNDul/jpLmqKVkaYIOC/cUn3/Gzc4BAmXI+jCCy5ZhbDhWGmUQt/4Q62sxFDA=="/>
         </item>
         <item>
             <title>1.0.0</title>
