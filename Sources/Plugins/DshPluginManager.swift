@@ -3274,6 +3274,46 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         return true
     }
 
+    /// True when a durable ownership proof exists and the on-disk bridge tree
+    /// is exactly the tree the recorded managed install produced, with the
+    /// manifest still declaring the recorded dependency specs. The source app
+    /// may have been deleted, moved, or rebuilt since then (routine for
+    /// development builds outside /Applications); the recorded installed
+    /// fingerprint still anchors ownership of the tree itself.
+    private func hasUntamperedInstalledBridgeProof(
+        profileDir: URL,
+        packageRoot: [String: Any]?
+    ) -> Bool {
+        let markerURL = profileDir.appendingPathComponent(Self.desktopHostOwnershipMarkerName)
+        guard let markerData = try? Data(contentsOf: markerURL),
+              let marker = try? JSONSerialization.jsonObject(with: markerData) as? [String: Any],
+              marker["schema"] as? Int == 1,
+              marker["profileDirectory"] as? String == profileDir.standardizedFileURL.path,
+              let installedFingerprint = marker["installedFingerprint"] as? String,
+              !installedFingerprint.isEmpty,
+              let recordedDependencies = marker["dependencies"] as? [String: String],
+              recordedDependencies.count == 2,
+              let recordedHostSpec = recordedDependencies[Self.desktopHostPluginName],
+              let recordedWebServerSpec = recordedDependencies["@deepseek-ai/dsh-host-webserver"],
+              let root = packageRoot,
+              let dependencies = root["dependencies"] as? [String: Any],
+              dependencies[Self.desktopHostPluginName] as? String == recordedHostSpec,
+              dependencies["@deepseek-ai/dsh-host-webserver"] as? String == recordedWebServerSpec,
+              ((root["dsh"] as? [String: Any])
+                .flatMap { $0["profile"] as? [String: Any] }
+                .flatMap { $0["bundles"] as? [String] }?
+                .contains(Self.desktopHostPluginName)) == true,
+              let onDiskFingerprint = desktopHostBundleFingerprint(
+                at: profileDir
+                    .appendingPathComponent("node_modules", isDirectory: true)
+                    .appendingPathComponent(Self.desktopHostPluginName, isDirectory: true)
+              ),
+              onDiskFingerprint == installedFingerprint else {
+            return false
+        }
+        return true
+    }
+
     private func staleAppBridgeRejectionReason(
         profileDir: URL,
         packageRoot: [String: Any]?,
@@ -3288,24 +3328,12 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
               let oldPath = normalizedFileDependencyPath(hostSpec) else {
             return "桥接声明不是 App 安装的 file: 依赖"
         }
-        if oldPath == sourcePath {
-            if let currentFingerprint = desktopHostBundleFingerprint(
-                at: URL(fileURLWithPath: sourceBundle, isDirectory: true)
-            ), hasStaleBridgeOwnershipProof(
-                profileDir: profileDir,
-                packageRoot: packageRoot,
-                sourceBundle: sourceBundle,
-                currentSourceFingerprint: currentFingerprint
-            ) {
-                return nil
-            }
-            return "已安装桥接与当前内置桥接指纹不同（可能已损坏或被手动修改）"
-        }
-        guard (try? validateDesktopHostBundle(oldPath)) != nil else {
-            return "旧桥接来源校验失败"
-        }
-        guard isAppBundledBridgeSource(oldPath) else {
-            return "旧桥接来源不在 App 包内"
+        // The recorded source app may have been deleted or replaced since the
+        // managed install (normal for development builds). The proof's
+        // installed fingerprint still proves the tree is App-managed, so the
+        // caller refreshes it from the current bundle and re-records the proof.
+        if hasUntamperedInstalledBridgeProof(profileDir: profileDir, packageRoot: root) {
+            return nil
         }
         guard let dsh = root["dsh"] as? [String: Any],
               let profile = dsh["profile"] as? [String: Any],
@@ -3325,10 +3353,39 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
               isPath(installedHostURL, inside: profileDir) else {
             return "已安装桥接路径缺失或越界"
         }
-        guard let installedFingerprint = desktopHostBundleFingerprint(at: installedHostURL),
-              installedFingerprint == desktopHostBundleFingerprint(at: oldURL) else {
-            return "已安装文件与旧桥接来源不一致（可能被手动修改过）"
+        guard let installedFingerprint = desktopHostBundleFingerprint(at: installedHostURL) else {
+            return "已安装桥接 Bundle 指纹不可读"
         }
+        if oldPath == sourcePath {
+            if let currentFingerprint = desktopHostBundleFingerprint(
+                at: URL(fileURLWithPath: sourceBundle, isDirectory: true)
+            ), hasStaleBridgeOwnershipProof(
+                profileDir: profileDir,
+                packageRoot: packageRoot,
+                sourceBundle: sourceBundle,
+                currentSourceFingerprint: currentFingerprint
+            ) {
+                return nil
+            }
+            return "已安装桥接与当前内置桥接指纹不同（可能已损坏或被手动修改）"
+        }
+        // The manifest must pin the previous source inside an App bundle's
+        // Resources tree; user directories never qualify, so this declaration
+        // is itself evidence the tree was App-placed.
+        guard isAppBundledBridgeSource(oldPath) else {
+            return "旧桥接来源不在 App 包内"
+        }
+        if let oldFingerprint = desktopHostBundleFingerprint(at: oldURL) {
+            // The previous source app is still readable, so the on-disk tree
+            // must be exactly what that managed install produced.
+            guard installedFingerprint == oldFingerprint else {
+                return "已安装文件与旧桥接来源不一致（可能被手动修改过）"
+            }
+        }
+        // The previous source app is gone or broken (deleted development
+        // builds are routine). The App-bundle declaration plus the intact
+        // manifest shape above pin App provenance; the caller replaces the
+        // tree with the current bundle's bits and re-records the proof.
         return nil
     }
 

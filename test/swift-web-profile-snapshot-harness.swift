@@ -262,6 +262,49 @@ struct WebProfileSnapshotHarness {
             "successful local refresh must not retain staging directories"
         )
 
+        // Development workflow: the previous App bundle installed the bridge
+        // and was then deleted (dist cleanups are routine). The manifest still
+        // declares the deleted App-bundle source, the installed tree carries
+        // those old bytes, and no ownership marker survived. The declaration
+        // inside an App bundle's Resources tree pins App provenance, so ensure
+        // must refresh locally from the running bundle without pnpm and
+        // without the ownership refusal.
+        try Data("controlled-old-dev-bridge\n".utf8).write(
+            to: installedHost.appendingPathComponent("index.js"), options: .atomic)
+        try fileManager.removeItem(at: ownershipMarker)
+        let devPackageURL = managedProfile.appendingPathComponent("package.json")
+        let devPackageRoot = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: devPackageURL), options: []) as! [String: Any]
+        var devDependencies = devPackageRoot["dependencies"] as! [String: Any]
+        devDependencies["dsh-desktop-host"] =
+            "file:/Users/dev/Library/Developer/Xcode/DerivedData/old/DSH.app/Contents/Resources/assets/dsh-desktop-host"
+        var devPackageUpdated = devPackageRoot
+        devPackageUpdated["dependencies"] = devDependencies
+        try JSONSerialization.data(withJSONObject: devPackageUpdated, options: [.prettyPrinted])
+            .write(to: devPackageURL, options: .atomic)
+        let devRechecked = try await manager.ensureDesktopHostPlugin(
+            registry: "https://registry.invalid",
+            profileDirectory: managedProfile,
+            profile: .web,
+            runtimeVersion: "9.9.9"
+        )
+        require(!devRechecked, "deleted-source dev bridge must be repaired locally without pnpm")
+        let devRefreshedIndex = try String(
+            contentsOf: installedHost.appendingPathComponent("index.js"), encoding: .utf8)
+        require(
+            devRefreshedIndex == "controlled-post-publish-bridge\n",
+            "deleted-source dev refresh must install the current bundled bytes")
+        require(
+            fileManager.fileExists(atPath: ownershipMarker.path),
+            "deleted-source dev refresh must re-record the ownership proof")
+        let devPackageAfter = try String(contentsOf: devPackageURL, encoding: .utf8)
+        let devPackageAfterRoot = try JSONSerialization.jsonObject(
+            with: Data(devPackageAfter.utf8), options: []) as! [String: Any]
+        let devDependenciesAfter = devPackageAfterRoot["dependencies"] as! [String: String]
+        require(
+            devDependenciesAfter["dsh-desktop-host"] == "file:\(sourceBundlePath)",
+            "deleted-source dev refresh must realign the manifest to the running bundle: \(devPackageAfter.prefix(700))")
+
         try await manager.removeDesktopHostArtifacts(
             from: .web,
             profileDirectory: managedProfile,
