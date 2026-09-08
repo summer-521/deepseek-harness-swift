@@ -535,7 +535,9 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             }
             // The caller owns runtimeOperationGate. This lower-level entry
             // point is the only legal way to perform the health start here.
-            _ = try await self.restartDshServiceDuringOperation(context: context)
+            _ = try await self.restartDshServiceWithAuthenticationRecoveryDuringOperation(
+                context: context
+            )
         }
         return DshPluginOperationHooks(
             mutate: { _ in
@@ -748,7 +750,9 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                         throw DshLaunchContextError.invalidProfileName
                     }
                     self.launchContext = context
-                    let session = try await self.restartDshServiceDuringOperation(context: context)
+                    let session = try await self.restartDshServiceWithAuthenticationRecoveryDuringOperation(
+                        context: context
+                    )
                     print("[MainWindowController] DSH service ready at \(session.originURL)")
                     SettingsViewModel.shared.refreshPlugins(for: context)
                     switch context.purpose {
@@ -1060,6 +1064,30 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             webUIReadinessGeneration &+= 1
             DshService.shared.stop()
             throw error
+        }
+    }
+
+    /// A managed restart can begin while the existing WebView is still
+    /// reacting to the previous process disappearing. If that
+    /// stale navigation wins the race, WebKit can display the old
+    /// authentication-required response even though the newly issued
+    /// bootstrap URL is valid. Retry that specific failure once so the next
+    /// launch gets a fresh Runtime generation, Renderer cookie, upstream
+    /// token, and navigation. The caller already owns runtimeOperationGate.
+    public func restartDshServiceWithAuthenticationRecoveryDuringOperation(
+        context: DshLaunchContext
+    ) async throws -> DshServiceSession {
+        var recoveryCount = 0
+        while true {
+            do {
+                return try await restartDshServiceDuringOperation(context: context)
+            } catch {
+                guard isAuthenticationRecoveryFailure(error),
+                      recoveryCount < Self.maxAutomaticAuthenticationRecoveries else {
+                    throw error
+                }
+                recoveryCount += 1
+            }
         }
     }
 

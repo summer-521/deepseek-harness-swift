@@ -205,6 +205,26 @@ test('alpha Runtime health verifies the real WebKit Remote stream and can renew 
   assert.match(UPSTREAM_COOKIE_SOURCE, /public func authenticatedCookies\(for session: DshServiceSession\)/)
 })
 
+test('managed starts and plugin health verification retry one stale WebKit authentication failure', () => {
+  assert.match(WINDOW_SOURCE, /public func restartDshServiceWithAuthenticationRecoveryDuringOperation\(/)
+  assert.match(
+    WINDOW_SOURCE,
+    /restartDshServiceWithAuthenticationRecoveryDuringOperation[\s\S]*?isAuthenticationRecoveryFailure\(error\)[\s\S]*?recoveryCount < Self\.maxAutomaticAuthenticationRecoveries/,
+  )
+  assert.match(
+    WINDOW_SOURCE,
+    /makeStartupPluginOperationHooks[\s\S]*?restartDshServiceWithAuthenticationRecoveryDuringOperation/,
+  )
+  assert.match(
+    WINDOW_SOURCE,
+    /startAndLoadDsh[\s\S]*?restartDshServiceWithAuthenticationRecoveryDuringOperation/,
+  )
+  assert.equal(
+    (SETTINGS_SOURCE.match(/restartDshServiceWithAuthenticationRecoveryDuringOperation\(context: context\)/g) ?? []).length,
+    2,
+  )
+})
+
 test('first launch bootstraps the canonical profile and installs the host before DSH starts', () => {
   assert.match(PLUGIN_SOURCE, /bootstrapWebProfileManifestIfMissing/)
   assert.match(PLUGIN_SOURCE, /ensureManagedProfileWorkspaceConfiguration/)

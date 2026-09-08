@@ -488,11 +488,11 @@ public final class SettingsViewModel: ObservableObject {
             },
             verify: { _ in
                 _ = try await MainWindowController.shared
-                    .restartDshServiceDuringOperation(context: context)
+                    .restartDshServiceWithAuthenticationRecoveryDuringOperation(context: context)
             },
             verifyRestored: { _ in
                 _ = try await MainWindowController.shared
-                    .restartDshServiceDuringOperation(context: context)
+                    .restartDshServiceWithAuthenticationRecoveryDuringOperation(context: context)
             }
         )
         let coordinator = DshPluginOperationCoordinator.shared
