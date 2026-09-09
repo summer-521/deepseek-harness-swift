@@ -201,24 +201,32 @@ public final class SettingsViewModel: ObservableObject {
     @Published public private(set) var retryablePluginOperation: DshPluginRetryRequest?
     @Published public var alertMessage: String? = nil
 
-    /// Mutating the selected Profile or Runtime is suspended while a recovery
+    /// Plugin and ordinary settings mutations are suspended while a recovery
     /// transaction is unresolved or the service is serving an isolated
-    /// recovery Profile. Read-only inspection remains available in those
-    /// states so the user can still understand the failure.
+    /// recovery Profile. A confirmed Runtime is intentionally allowed here:
+    /// its previous install is retained only until the next healthy-start
+    /// cleanup, and must not freeze unrelated controls in the meantime.
     public var pluginMutationsAllowed: Bool {
-        guard DshStateManager.shared.loadResult.isUsable else { return false }
         let state = DshStateManager.shared.current
+        guard DshStateManager.shared.loadResult.isUsable,
+              DshRuntimeMutationGate.allowsPluginMutation(state) else { return false }
         let coordinator = DshPluginOperationCoordinator.shared
-        guard state.runtimeState.phase == .idle,
-              state.runtimeState.previous == nil,
-              state.runtimeState.pending == nil,
-              state.runtimeState.transactionID == nil,
-              state.runtimeState.webProfileSnapshotID == nil,
-              state.pendingProfileSwitch == nil,
-              !MainWindowController.shared.hasUnresolvedRecovery,
+        guard !MainWindowController.shared.hasUnresolvedRecovery,
               coordinator.pendingOperation == nil,
               !coordinator.hasPersistedOperationRecord else { return false }
         return MainWindowController.shared.currentLaunchContext?.purpose != .recovery
+    }
+
+    /// A confirmed Runtime still retains its previous install until a second
+    /// healthy start. Keep that cleanup safety window from accepting another
+    /// Runtime update, which would replace the recorded previous descriptor.
+    /// Plugin and ordinary settings mutations remain available during it.
+    public var runtimeUpdateAllowed: Bool {
+        let state = DshStateManager.shared.current
+        return pluginMutationsAllowed
+            && state.appProfile == .desktop
+            && appProfile == .desktop
+            && DshRuntimeMutationGate.allowsRuntimeUpdate(state)
     }
 
     /// Plugin writes are intentionally narrower than the general settings
@@ -1407,7 +1415,7 @@ public final class SettingsViewModel: ObservableObject {
     }
 
     private func updateToChannel(_ channel: DshRuntimeChannel) {
-        guard pluginMutationsAllowed else {
+        guard runtimeUpdateAllowed else {
             alertMessage = "DSH 当前正在恢复未完成状态，请先完成恢复后再升级 Runtime。"
             return
         }
@@ -1436,7 +1444,7 @@ public final class SettingsViewModel: ObservableObject {
     /// active runtime. This remains separate from the UI so future channels
     /// can reuse the same transaction without restoring arbitrary switching.
     public func updateToVersion(_ version: String) {
-        guard pluginMutationsAllowed else {
+        guard runtimeUpdateAllowed else {
             alertMessage = "DSH 当前正在恢复未完成状态，请先完成恢复后再升级 Runtime。"
             return
         }
@@ -1838,6 +1846,7 @@ public final class SettingsViewModel: ObservableObject {
 
     private func runRuntimeUpdate(_ item: DshVersionItem, isAutomatic: Bool = false) async {
         guard pluginMutationsAllowed, !isUpdatingRuntime else { return }
+        guard runtimeUpdateAllowed else { return }
         guard DshStateManager.shared.current.appProfile == .desktop else {
             alertMessage = "web Profile 与终端共享，暂不允许升级 DSH Runtime；请切回 desktop Profile。"
             return

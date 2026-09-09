@@ -54,7 +54,10 @@ test('the app defaults to an isolated desktop Profile and exposes web as an expl
   assert.match(GENERAL_SOURCE, /终端 dsh web 共享插件和依赖/)
   assert.match(VERSIONS_VIEW_SOURCE, /runtimeUpdatesAllowed/)
   assert.match(VERSIONS_VIEW_SOURCE, /web Profile 已禁用 Runtime 更新/)
+  // The update-channel Picker is an ordinary settings mutation and remains
+  // enabled during the confirmed cleanup window.
   assert.match(VERSIONS_VIEW_SOURCE, /disabled\(!runtimeUpdatesAllowed \|\| !viewModel\.pluginMutationsAllowed\)/)
+  assert.match(VERSIONS_VIEW_SOURCE, /disabled\(viewModel\.isUpdatingRuntime \|\| !viewModel\.runtimeUpdateAllowed\)/)
   assert.match(PLUGIN_SOURCE, /profileDirectory\(for profile: DshAppProfile\)/)
   assert.match(PLUGIN_SOURCE, /public func removeDesktopHostArtifacts\([\s\S]*from profile: DshAppProfile[\s\S]*profileDirectory: URL\? = nil[\s\S]*\)/)
   assert.match(PLUGIN_SOURCE, /guard profile == \.web else/)
@@ -270,7 +273,12 @@ test('runtime update policy defaults to notify and labels failure stages', () =>
   assert.match(VERSIONS_VIEW_SOURCE, /自动更新已开启/)
   assert.match(VERSIONS_VIEW_SOURCE, /automaticUpdatesAllowed/)
   assert.match(VERSIONS_VIEW_SOURCE, /切回 stable（latest）后才可以重新启用/)
+  // Auto-follow is also a settings preference, while an actual Runtime
+  // install must use the stricter runtimeUpdateAllowed gate.
   assert.match(VERSIONS_VIEW_SOURCE, /disabled\(!automaticUpdatesAllowed \|\| !viewModel\.pluginMutationsAllowed\)/)
+  assert.match(SETTINGS_SOURCE, /public var runtimeUpdateAllowed: Bool/)
+  assert.match(SETTINGS_SOURCE, /DshRuntimeMutationGate\.allowsPluginMutation\(state\)/)
+  assert.match(SETTINGS_SOURCE, /DshRuntimeMutationGate\.allowsRuntimeUpdate\(state\)/)
   assert.match(SETTINGS_SOURCE, /runtimeChannel != \.latest[\s\S]*autoFollowLatest/)
   assert.match(VERSIONS_VIEW_SOURCE, /channelDescription/)
   assert.match(VERSIONS_VIEW_SOURCE, /runtimeChannelSelection/)

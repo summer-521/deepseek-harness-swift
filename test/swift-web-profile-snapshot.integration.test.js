@@ -127,7 +127,7 @@ fs.writeFileSync(packageFile, JSON.stringify(pkg))
     const bridgeAdds = pnpmLog.filter((entry) =>
       entry.command === 'add' && entry.args.some((value) => value.includes('dsh-desktop-host'))
     )
-    assert.equal(bridgeAdds.length, 1, 'healthy/stale bridge recheck must not invoke a second pnpm add')
+    assert.equal(bridgeAdds.length, 4, 'recovery scenarios must not invoke pnpm beyond their isolated first installs')
   } finally {
     try {
       fs.rmSync(testRoot, { recursive: true, force: true })

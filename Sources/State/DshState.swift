@@ -391,6 +391,39 @@ public enum DshRuntimeRecoveryPlanner {
     }
 }
 
+/// Runtime transaction gates used by the settings surface. A successfully
+/// updated Runtime remains in `confirmed` until a second healthy start proves
+/// that the old Runtime can be removed. That cleanup window must not disable
+/// unrelated, already-safe plugin/settings operations, but it must continue
+/// to prevent starting a second Runtime update that would overwrite the
+/// recorded previous Runtime before it is cleaned up.
+public enum DshRuntimeMutationGate {
+    public static func allowsPluginMutation(_ state: DshStateConfig) -> Bool {
+        guard state.pendingProfileSwitch == nil,
+              state.runtimeState.pending == nil else { return false }
+
+        switch state.runtimeState.phase {
+        case .idle:
+            return state.runtimeState.previous == nil
+                && state.runtimeState.webProfileSnapshotID == nil
+                && state.runtimeState.transactionID == nil
+        case .confirmed:
+            // The candidate passed its in-process startup/health gate. The
+            // previous Runtime is retained only for the second-start cleanup
+            // safety window, so plugin mutations may proceed serially.
+            return state.runtimeState.previous != nil
+                && state.runtimeState.transactionID != nil
+        case .staging, .switching, .verifying, .rollingBack:
+            return false
+        }
+    }
+
+    public static func allowsRuntimeUpdate(_ state: DshStateConfig) -> Bool {
+        guard allowsPluginMutation(state) else { return false }
+        return state.runtimeState.phase == .idle
+    }
+}
+
 /// Pure transaction transitions. Side effects such as npm installation,
 /// service restart and filesystem cleanup remain in their callers, while the
 /// persisted state shape is exercised by executable integration tests.

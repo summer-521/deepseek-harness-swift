@@ -208,7 +208,7 @@ public struct VersionsTabView: View {
                             }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
-                            .disabled(viewModel.isUpdatingRuntime || !viewModel.pluginMutationsAllowed)
+                            .disabled(viewModel.isUpdatingRuntime || !viewModel.runtimeUpdateAllowed)
                         }
 
                         Button {

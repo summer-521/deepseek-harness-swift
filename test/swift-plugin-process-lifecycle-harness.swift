@@ -57,6 +57,28 @@ struct PluginProcessLifecycleHarness {
 
         let manager = DshPluginManager.shared
         let mode = ProcessInfo.processInfo.environment["DSH_FAKE_PNPM_MODE"] ?? ""
+        if mode == "bridge-timeout" {
+            var failure: Error?
+            let started = Date()
+            do {
+                _ = try await manager.ensureDesktopHostPlugin(
+                    registry: "http://127.0.0.1:9",
+                    profileDirectory: profile,
+                    profile: .web,
+                    runtimeVersion: "9.9.9"
+                )
+            } catch {
+                failure = error
+            }
+            let elapsed = Date().timeIntervalSince(started)
+            require(failure != nil, "wedged bridge install must fail on its wall-clock timeout")
+            require(elapsed < 5.0, "profile-switch bridge install timeout must be bounded")
+            require(
+                failure?.localizedDescription.contains("超过最长运行时间") == true,
+                "bridge timeout must explain the bounded process failure: \(failure?.localizedDescription ?? "missing error")")
+            print("swift plugin process lifecycle \(mode) harness passed")
+            return
+        }
         if mode == "large-output" {
             var failure: Error?
             do {

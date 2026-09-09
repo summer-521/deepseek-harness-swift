@@ -37,6 +37,11 @@ if (mode === 'silent-delay') {
   process.stderr.write('e'.repeat(2 * 1024 * 1024))
   process.exitCode = 17
   await new Promise(resolve => setTimeout(resolve, 50))
+} else if (mode === 'bridge-timeout') {
+  // A profile-switch bridge install must have its own bounded wall clock;
+  // this models pnpm wedging without producing output.
+  setInterval(() => {}, 60_000)
+  await new Promise(() => {})
 } else {
   process.exit(0)
 }
@@ -47,8 +52,20 @@ test('Swift pnpm process lifecycle drains and bounds dynamic child output', () =
   const binaryPath = path.join(testRoot, 'harness')
   const moduleCachePath = path.join(testRoot, 'module-cache')
   const assetsRoot = path.join(testRoot, 'assets')
+  const hostRoot = path.join(assetsRoot, 'dsh-desktop-host')
   fs.mkdirSync(path.join(assetsRoot, 'bin'), { recursive: true })
   fs.mkdirSync(path.join(assetsRoot, 'node', 'bin'), { recursive: true })
+  fs.mkdirSync(hostRoot, { recursive: true })
+  fs.writeFileSync(path.join(hostRoot, 'package.json'), JSON.stringify({
+    name: 'dsh-desktop-host',
+    version: '1.0.0',
+    exports: { './webserver': './webserver.js' },
+  }))
+  for (const file of [
+    'index.js', 'client.js', 'webserver.js', 'browser-url-route.js',
+    'lan-url-route.js', 'lan-http-ingress.js', 'upstream-session-broker.js',
+    'control.js', 'access-state.js', 'cordis.patch.yml',
+  ]) fs.writeFileSync(path.join(hostRoot, file), `controlled-${file}\n`)
   fs.writeFileSync(path.join(assetsRoot, 'bin', 'pnpm'), fakePnpm, { mode: 0o755 })
   fs.writeFileSync(path.join(assetsRoot, 'node', 'bin', 'node'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
   try {
@@ -58,7 +75,7 @@ test('Swift pnpm process lifecycle drains and bounds dynamic child output', () =
     ], { encoding: 'utf8', timeout: 120000 })
     assert.equal(compile.status, 0, compile.stderr || compile.stdout)
 
-    for (const mode of ['silent-delay', 'child-holds-pipe', 'large-output']) {
+    for (const mode of ['silent-delay', 'child-holds-pipe', 'large-output', 'bridge-timeout']) {
       const root = fs.mkdtempSync(path.join(testRoot, `${mode}-`))
       try {
         const run = spawnSync(binaryPath, [], {
@@ -67,6 +84,7 @@ test('Swift pnpm process lifecycle drains and bounds dynamic child output', () =
             DSH_HOME: path.join(root, 'dsh-home'),
             DSH_TEST_APP_SUPPORT: path.join(root, 'app-support'),
             DSH_FAKE_PNPM_MODE: mode,
+            ...(mode === 'bridge-timeout' ? { DSH_TEST_PROFILE_BRIDGE_TIMEOUT: '0.5' } : {}),
           },
           encoding: 'utf8',
           timeout: 15000,

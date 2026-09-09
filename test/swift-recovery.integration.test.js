@@ -59,6 +59,29 @@ test("recovery keeps the JSON preview visible across model refresh", () => {
   assert.match(mainWindow, /DshRecoveryWindowController\.shared\.show\(viewModel: viewModel\)/);
 });
 
+test("recovery action row keeps the conditional verification action inline", () => {
+  const recoveryView = fs.readFileSync(recoveryViewPath, "utf8");
+  const actionsStart = recoveryView.indexOf("private var actions: some View");
+  const diagnosticExportStart = recoveryView.indexOf("private var diagnosticExport: some View", actionsStart);
+  assert.ok(actionsStart >= 0 && diagnosticExportStart > actionsStart);
+
+  const actions = recoveryView.slice(actionsStart, diagnosticExportStart);
+  const rowStart = actions.indexOf("HStack(spacing: 10) {");
+  const safeModeStart = actions.indexOf('Button("安全模式")', rowStart);
+  const adoptConditionStart = actions.indexOf("if viewModel.canAdoptInterruptedTransaction", safeModeStart);
+  const adoptButtonStart = actions.indexOf('Button("验证当前状态并继续")', adoptConditionStart);
+
+  assert.ok(rowStart >= 0, "recovery actions should have a shared horizontal row");
+  assert.ok(safeModeStart > rowStart, "safe mode should remain in the shared action row");
+  assert.ok(adoptConditionStart > safeModeStart, "verification should follow safe mode");
+  assert.ok(adoptButtonStart > adoptConditionStart, "verification button should remain conditional");
+  assert.doesNotMatch(
+    actions,
+    /\.help\(viewModel\.safeModeAvailabilityDescription\)\s*\}\s*\n\s*\n\s*if viewModel\.canAdoptInterruptedTransaction/,
+    "verification action must not start a separate row",
+  );
+});
+
 test("persisted recovery cleanup and corrupt-record diagnostics stay isolated", () => {
   const mainWindow = fs.readFileSync(mainWindowPath, "utf8");
   assert.match(mainWindow, /makeRecoveryRecordDiagnosticContext\(\)/);

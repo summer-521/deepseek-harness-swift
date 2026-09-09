@@ -2114,10 +2114,46 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         guard !dependenciesToRemove.isEmpty || hasStaleBridgePath || hasBridgeBundle else {
             return
         }
-        try verifyDesktopHostOwnershipProof(
-            profileDir: profileDir,
-            packageRoot: root
-        )
+        // A force-quit can land after pnpm has materialized the complete
+        // bridge tree but before the post-install proof is atomically written.
+        // Recover that one window by adopting only a tree whose bytes match
+        // the current bundled bridge and whose manifest has the managed shape.
+        // A same-name user dependency still fails closed because adoption
+        // rejects non-file declarations or any byte/path mismatch.
+        var verifiedRoot = root
+        do {
+            try verifyDesktopHostOwnershipProof(
+                profileDir: profileDir,
+                packageRoot: verifiedRoot
+            )
+        } catch let verificationError {
+            if !hasUntamperedInstalledBridgeProof(
+                profileDir: profileDir,
+                packageRoot: verifiedRoot
+            ) {
+                do {
+                    guard let sourceBundle = NodeRuntime.shared.resolveDesktopHostBundlePath(),
+                          try adoptDesktopHostOwnershipProof(
+                              profileDir: profileDir,
+                              packageRoot: verifiedRoot,
+                              sourceBundle: sourceBundle
+                          ) else {
+                        throw verificationError
+                    }
+                } catch {
+                    // Preserve the original cleanup diagnostic for an
+                    // unproven same-name dependency. Adoption is a recovery
+                    // aid, never a reason to disclose or broaden ownership.
+                    throw verificationError
+                }
+                verifiedRoot = (try? Data(contentsOf: packageURL))
+                    .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                try verifyDesktopHostOwnershipProof(
+                    profileDir: profileDir,
+                    packageRoot: verifiedRoot
+                )
+            }
+        }
 
         if !dependenciesToRemove.isEmpty {
             let (node, pnpm) = try dshRequireNodeAndPnpm(context: "无法清理 web Profile 桥接依赖")
@@ -2140,7 +2176,12 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
             proc.standardOutput = stdout
             proc.standardError = stderr
 
-            let result = try await runProcess(proc, stdout: stdout, stderr: stderr)
+            let result = try await runProcess(
+                proc,
+                stdout: stdout,
+                stderr: stderr,
+                maximumRuntime: Self.profileBridgeProcessMaximumRuntime
+            )
             guard result.status == 0 else {
                 let detail = processOutput(result)
                 throw NSError(
@@ -2402,7 +2443,8 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         _ proc: Process,
         stdout: Pipe? = nil,
         stderr: Pipe? = nil,
-        onProgressLine: (@Sendable (String) -> Void)? = nil
+        onProgressLine: (@Sendable (String) -> Void)? = nil,
+        maximumRuntime: TimeInterval? = nil
     ) async throws -> DshProcessExecutionResult {
         let collector = DshProcessOutputCollector(stdout: stdout, stderr: stderr)
         collector.progressHandler = onProgressLine
@@ -2415,7 +2457,9 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                     let processGroupID = Self.ownedProcessGroupID(for: pid)
                     collector.start()
                     var timedOut = false
-                    let deadline = Date().addingTimeInterval(Self.processMaximumRuntime)
+                    let deadline = Date().addingTimeInterval(
+                        maximumRuntime ?? Self.processMaximumRuntime
+                    )
                     while proc.isRunning {
                         let remaining = deadline.timeIntervalSinceNow
                         if remaining <= 0 {
@@ -2490,9 +2534,20 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
     }
 
     /// A silent download is not proof of an idle network connection. Keep a
-    /// generous wall-clock safety bound for a genuinely wedged process, but
-    /// never derive liveness from stdout/stderr activity.
+    /// generous wall-clock safety bound for ordinary plugin operations, but
+    /// never derive liveness from stdout/stderr activity. Profile bridge
+    /// materialization uses the shorter dedicated bound below so switching
+    /// Profiles cannot leave the UI waiting indefinitely on pnpm.
     private static let processMaximumRuntime: TimeInterval = 30 * 60
+    private static var profileBridgeProcessMaximumRuntime: TimeInterval {
+#if DSH_TESTING
+        if let raw = ProcessInfo.processInfo.environment["DSH_TEST_PROFILE_BRIDGE_TIMEOUT"],
+           let value = TimeInterval(raw), value > 0 {
+            return value
+        }
+#endif
+        return 5 * 60
+    }
 
     private static let processOutputByteLimit = 32 * 1024
     private static let processOutputCharacterLimit = 8 * 1024
@@ -2929,7 +2984,12 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
 
         let result: DshProcessExecutionResult
         do {
-            result = try await runProcess(proc, stdout: stdout, stderr: stderr)
+            result = try await runProcess(
+                proc,
+                stdout: stdout,
+                stderr: stderr,
+                maximumRuntime: Self.profileBridgeProcessMaximumRuntime
+            )
         } catch {
             throw NSError(
                 domain: "DshPluginManager",
@@ -3411,9 +3471,6 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
               let recordedHostSpec = recordedDependencies[Self.desktopHostPluginName],
               let recordedWebServerSpec = recordedDependencies["@deepseek-ai/dsh-host-webserver"],
               let root = packageRoot,
-              let dependencies = root["dependencies"] as? [String: Any],
-              dependencies[Self.desktopHostPluginName] as? String == recordedHostSpec,
-              dependencies["@deepseek-ai/dsh-host-webserver"] as? String == recordedWebServerSpec,
               ((root["dsh"] as? [String: Any])
                 .flatMap { $0["profile"] as? [String: Any] }
                 .flatMap { $0["bundles"] as? [String] }?
@@ -3425,6 +3482,36 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
               ),
               onDiskFingerprint == installedFingerprint else {
             return false
+        }
+        // A process can be terminated after pnpm removes the direct entries
+        // but before the bundle list and marker are finalized. Missing bridge
+        // entries are therefore accepted only as the absence of a conflict;
+        // any surviving same-name declaration must still match the proof.
+        guard let dependencies = root["dependencies"] as? [String: Any] else {
+            return false
+        }
+        if let hostSpec = dependencies[Self.desktopHostPluginName] as? String,
+           hostSpec != recordedHostSpec {
+            return false
+        }
+        if let webServerSpec = dependencies["@deepseek-ai/dsh-host-webserver"] as? String,
+           webServerSpec != recordedWebServerSpec {
+            return false
+        }
+        // If the internal peer is still materialized, bind it to the
+        // fingerprint recorded by the same managed install as well. A user
+        // replacement that keeps only the bridge package name must never be
+        // accepted as proof merely because the host bytes happen to match.
+        let webServerManifestURL = profileDir
+            .appendingPathComponent("node_modules", isDirectory: true)
+            .appendingPathComponent("@deepseek-ai", isDirectory: true)
+            .appendingPathComponent("dsh-host-webserver", isDirectory: true)
+            .appendingPathComponent("package.json")
+        if FileManager.default.fileExists(atPath: webServerManifestURL.path) {
+            guard let recordedWebServerFingerprint = marker["webServerManifestFingerprint"] as? String,
+                  manifestFingerprint(at: webServerManifestURL) == recordedWebServerFingerprint else {
+                return false
+            }
         }
         return true
     }

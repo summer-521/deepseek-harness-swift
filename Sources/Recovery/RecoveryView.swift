@@ -355,14 +355,13 @@ public struct DshRecoveryView: View {
                         || viewModel.adoptInterruptedTransactionInFlight
                 )
                 .help(viewModel.safeModeAvailabilityDescription)
-            }
-
-            if viewModel.canAdoptInterruptedTransaction {
-                Button("验证当前状态并继续") {
-                    isAdoptConfirmationPresented = true
+                if viewModel.canAdoptInterruptedTransaction {
+                    Button("验证当前状态并继续") {
+                        isAdoptConfirmationPresented = true
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(viewModel.isActionInFlight || viewModel.pluginRemovalInFlight || viewModel.adoptInterruptedTransactionInFlight)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(viewModel.isActionInFlight || viewModel.pluginRemovalInFlight || viewModel.adoptInterruptedTransactionInFlight)
             }
         }
     }

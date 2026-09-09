@@ -262,6 +262,100 @@ struct WebProfileSnapshotHarness {
             "successful local refresh must not retain staging directories"
         )
 
+        // Profile-switch crash window: pnpm and the atomic bridge publication
+        // completed, but the process died before the ownership marker write.
+        // Cleanup must adopt this exact current App-owned tree before removing
+        // it, without invoking another pnpm transaction.
+        let interruptedCleanupProfile = root.appendingPathComponent(
+            "profiles/interrupted-cleanup-web", isDirectory: true)
+        _ = try await manager.ensureDesktopHostPlugin(
+            registry: "https://registry.invalid",
+            profileDirectory: interruptedCleanupProfile,
+            profile: .web,
+            runtimeVersion: "9.9.9"
+        )
+        let interruptedMarker = interruptedCleanupProfile.appendingPathComponent(
+            ".dsh-desktop-host-ownership.json")
+        try fileManager.removeItem(at: interruptedMarker)
+        try await manager.removeDesktopHostArtifacts(
+            from: .web,
+            profileDirectory: interruptedCleanupProfile,
+            registry: "https://registry.invalid"
+        )
+        require(
+            !fileManager.fileExists(atPath: interruptedCleanupProfile
+                .appendingPathComponent("node_modules/dsh-desktop-host").path),
+            "post-install cleanup recovery must remove the proven bridge")
+        require(
+            !fileManager.fileExists(atPath: interruptedMarker.path),
+            "post-install cleanup recovery must remove its adopted marker")
+
+        // A later force-quit can happen after pnpm removed the direct bridge
+        // entries but before bundle/marker finalization. The retained marker
+        // and exact installed fingerprint still prove the orphaned tree is
+        // App-owned; a user replacement of either declaration would fail.
+        let interruptedAfterPnpmProfile = root.appendingPathComponent(
+            "profiles/interrupted-after-pnpm-web", isDirectory: true)
+        _ = try await manager.ensureDesktopHostPlugin(
+            registry: "https://registry.invalid",
+            profileDirectory: interruptedAfterPnpmProfile,
+            profile: .web,
+            runtimeVersion: "9.9.9"
+        )
+        let interruptedAfterPnpmMarker = interruptedAfterPnpmProfile.appendingPathComponent(
+            ".dsh-desktop-host-ownership.json")
+        let interruptedAfterPnpmPackage = interruptedAfterPnpmProfile.appendingPathComponent(
+            "package.json")
+        var interruptedAfterPnpmRoot = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: interruptedAfterPnpmPackage), options: []) as! [String: Any]
+        var interruptedAfterPnpmDependencies = interruptedAfterPnpmRoot["dependencies"] as! [String: Any]
+        interruptedAfterPnpmDependencies.removeValue(forKey: "dsh-desktop-host")
+        interruptedAfterPnpmDependencies.removeValue(forKey: "@deepseek-ai/dsh-host-webserver")
+        interruptedAfterPnpmRoot["dependencies"] = interruptedAfterPnpmDependencies
+        try JSONSerialization.data(withJSONObject: interruptedAfterPnpmRoot, options: [.sortedKeys])
+            .write(to: interruptedAfterPnpmPackage, options: .atomic)
+        try await manager.removeDesktopHostArtifacts(
+            from: .web,
+            profileDirectory: interruptedAfterPnpmProfile,
+            registry: "https://registry.invalid"
+        )
+        require(
+            !fileManager.fileExists(atPath: interruptedAfterPnpmMarker.path),
+            "post-pnpm cleanup recovery must remove its retained marker")
+        require(
+            !fileManager.fileExists(atPath: interruptedAfterPnpmProfile
+                .appendingPathComponent("node_modules/dsh-desktop-host").path),
+            "post-pnpm cleanup recovery must remove the orphaned bridge")
+
+        // App upgrades can change the bundled bridge contents before the next
+        // cleanup. The marker's installed fingerprint, manifest declarations,
+        // and profile binding remain the durable proof, so cleanup must not
+        // fail merely because the current source bytes differ.
+        let changedSourceProfile = root.appendingPathComponent(
+            "profiles/changed-source-web", isDirectory: true)
+        _ = try await manager.ensureDesktopHostPlugin(
+            registry: "https://registry.invalid",
+            profileDirectory: changedSourceProfile,
+            profile: .web,
+            runtimeVersion: "9.9.9"
+        )
+        let changedSourceMarker = changedSourceProfile.appendingPathComponent(
+            ".dsh-desktop-host-ownership.json")
+        try Data("changed-after-install\n".utf8).write(
+            to: URL(fileURLWithPath: sourceBundlePath).appendingPathComponent("index.js"),
+            options: .atomic)
+        try await manager.removeDesktopHostArtifacts(
+            from: .web,
+            profileDirectory: changedSourceProfile,
+            registry: "https://registry.invalid"
+        )
+        require(
+            !fileManager.fileExists(atPath: changedSourceMarker.path),
+            "cleanup must remove a marker whose source Bundle changed")
+        try Data("controlled-post-publish-bridge\n".utf8).write(
+            to: URL(fileURLWithPath: sourceBundlePath).appendingPathComponent("index.js"),
+            options: .atomic)
+
         // Development workflow: the previous App bundle installed the bridge
         // and was then deleted (dist cleanups are routine). The manifest still
         // declares the deleted App-bundle source, the installed tree carries
