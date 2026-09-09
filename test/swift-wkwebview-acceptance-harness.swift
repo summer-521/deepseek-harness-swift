@@ -32,9 +32,9 @@ final class F07WKWebViewDelegate: NSObject, NSApplicationDelegate, WKNavigationD
             exit(64)
         }
         steps = [
-            Step(name: "desktop", url: desktopURL, expectedProfile: "desktop", expectsFailure: false),
+            Step(name: "desktop", url: desktopURL, expectedProfile: "swift-desktop", expectsFailure: false),
             Step(name: "web", url: webURL, expectedProfile: "web", expectsFailure: false),
-            Step(name: "chat-text", url: chatTextURL, expectedProfile: "desktop", expectsFailure: false),
+            Step(name: "chat-text", url: chatTextURL, expectedProfile: "swift-desktop", expectsFailure: false),
             Step(name: "frontend-failure", url: failureURL, expectedProfile: nil, expectsFailure: true),
         ]
         super.init()

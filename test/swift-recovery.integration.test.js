@@ -31,7 +31,7 @@ test("Recovery UI exposes conservative P03 evidence and fresh execution intent",
   const resolver = fs.readFileSync(path.join(repositoryDirectory, "Sources", "Plugins", "DshPluginFailureResolver.swift"), "utf8");
   assert.match(viewModel, /DshPluginFailureResolver\(\)/);
   assert.match(viewModel, /public var isExecutable: Bool \{ true \}/);
-  assert.match(viewModel, /snapshot\.context\?\.profile == "desktop"/);
+  assert.match(viewModel, /snapshot\.context\?\.profile == Self\.desktopRuntimeProfileName/);
   assert.match(viewModel, /let generationID = snapshot\.context\?\.generationID/);
   assert.match(viewModel, /planToken: candidate\.removalPlan\.token/);
   assert.match(resolver, /已定位/);

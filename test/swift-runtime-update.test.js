@@ -65,7 +65,9 @@ test('the app defaults to an isolated desktop Profile and exposes web as an expl
   assert.match(SERVICE_SOURCE, /public func prepareForProfileMutation\(context: DshLaunchContext\) async throws/)
   assert.match(SERVICE_SOURCE, /try context\.validate\(\)[\s\S]*waitForProfileMutationPort\(context\.port\)/)
   assert.match(SERVICE_SOURCE, /terminateRecordedProcess\(record\)/)
-  assert.match(HOST_CONTROL, /SUPPORTED_PROFILES = new Set\(\["desktop", "web"\]\)/)
+  assert.match(STATE_SOURCE, /case \.desktop: return "swift-desktop"/)
+  assert.match(HOST_CONTROL, /SUPPORTED_PROFILES = new Set\(\["swift-desktop", "web"\]\)/)
+  assert.match(WINDOW_SOURCE, /migrateLegacyDesktopProfileIfNeeded/)
 })
 
 test('Profile switches are recoverable across force-quit and commit only after a healthy restart', () => {

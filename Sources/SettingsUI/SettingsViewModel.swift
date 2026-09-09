@@ -2277,7 +2277,7 @@ public final class SettingsViewModel: ObservableObject {
               plan.allowed,
               plan.requiresExplicitConfirmation,
               plan.pluginName == request.pluginName,
-              request.originalProfile == DshAppProfile.desktop.rawValue,
+              request.originalProfile == DshAppProfile.desktop.runtimeProfileName,
               context.launchID == request.launchID,
               context.profile == .desktop,
               context.originalProfile == .desktop,

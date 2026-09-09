@@ -11,7 +11,7 @@ struct DshBrowserAccessLivePolicyHarness {
 
     static func main() throws {
         let access = try DshAccessController(effectiveAccessPolicy: .loopbackOnly)
-        try access.sendBootstrap(entryPath: "/tmp/dsh-runtime.mjs", profileName: "desktop", port: 3080)
+        try access.sendBootstrap(entryPath: "/tmp/dsh-runtime.mjs", profileName: "swift-desktop", port: 3080)
 
         // A policy is not live merely because its control message was written.
         // This models the interval in which Settings has changed but Node has

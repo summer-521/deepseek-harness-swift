@@ -22,7 +22,7 @@
   "cases": [
     {
       "id": "normal-desktop",
-      "profile": "desktop",
+      "profile": "swift-desktop",
       "profileFiles": {
         "package.json": "{\"name\":\"dsh-f00-desktop\",\"private\":true,\"dependencies\":{\"@deepseek-ai/dsh-base\":\"0.1.1\",\"@deepseek-ai/dsh-web-app\":\"0.1.1\"}}\n",
         "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
@@ -58,7 +58,7 @@
     },
     {
       "id": "missing-package",
-      "profile": "desktop",
+      "profile": "swift-desktop",
       "profileFiles": {
         "package.json": "{\"name\":\"dsh-f00-missing-package\",\"private\":true,\"dependencies\":{\"@deepseek-ai/dsh-base\":\"0.1.1\",\"dsh-broken-plugin\":\"1.0.0\"}}\n",
         "pnpm-lock.yaml": "lockfileVersion: '9.0'\n"
@@ -79,7 +79,7 @@
     },
     {
       "id": "frontend-load-failure",
-      "profile": "desktop",
+      "profile": "swift-desktop",
       "profileFiles": {
         "package.json": "{\"name\":\"dsh-f00-frontend-failure\",\"private\":true,\"dependencies\":{\"@deepseek-ai/dsh-base\":\"0.1.1\",\"@deepseek-ai/dsh-web-app\":\"0.1.1\"}}\n",
         "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
@@ -101,7 +101,7 @@
     },
     {
       "id": "port-occupied",
-      "profile": "desktop",
+      "profile": "swift-desktop",
       "profileFiles": {
         "package.json": "{\"name\":\"dsh-f00-port-occupied\",\"private\":true,\"dependencies\":{\"@deepseek-ai/dsh-base\":\"0.1.1\",\"@deepseek-ai/dsh-web-app\":\"0.1.1\"}}\n",
         "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
@@ -124,7 +124,7 @@
     },
     {
       "id": "runtime-transaction-incomplete",
-      "profile": "desktop",
+      "profile": "swift-desktop",
       "profileFiles": {
         "package.json": "{\"name\":\"dsh-f00-runtime-transaction\",\"private\":true,\"dependencies\":{\"@deepseek-ai/dsh-base\":\"0.1.2-alpha.3\",\"@deepseek-ai/dsh-web-app\":\"0.1.2-alpha.3\"}}\n",
         "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",

@@ -81,7 +81,7 @@ public final class DshAccessController: @unchecked Sendable {
     }
 
     public func sendBootstrap(entryPath: String, profile: DshAppProfile, port: Int) throws {
-        try sendBootstrap(entryPath: entryPath, profileName: profile.rawValue, port: port)
+        try sendBootstrap(entryPath: entryPath, profileName: profile.runtimeProfileName, port: port)
     }
 
     public func sendBootstrap(entryPath: String, profileName: String, port: Int) throws {

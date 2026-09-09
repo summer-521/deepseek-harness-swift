@@ -261,9 +261,9 @@ test("F07 official alpha.5 real DSH.app desktop startup and native port recovery
     app = startApp(appPath, environment);
     await waitFor(app, () => app.stdout.includes("[MainWindowController] DSH service ready at"), "normal desktop startup");
     assert.match(app.stdout, /\[MainWindowController\] DSH service ready at http:\/\/127\.0\.0\.1:\d+/);
-    assert.equal(fs.existsSync(path.join(dshHome, "profiles", "desktop", "package.json")), true, "desktop profile manifest materialized");
-    assert.equal(fs.existsSync(path.join(dshHome, "profiles", "desktop", "node_modules", "dsh-desktop-host")), true, "desktop bridge installed");
-    assert.equal(fs.existsSync(path.join(dshHome, "profiles", "desktop", "node_modules", "@deepseek-ai", "dsh-host-webserver")), true, "matching alpha.5 host webserver installed");
+    assert.equal(fs.existsSync(path.join(dshHome, "profiles", "swift-desktop", "package.json")), true, "Swift desktop profile manifest materialized");
+    assert.equal(fs.existsSync(path.join(dshHome, "profiles", "swift-desktop", "node_modules", "dsh-desktop-host")), true, "desktop bridge installed");
+    assert.equal(fs.existsSync(path.join(dshHome, "profiles", "swift-desktop", "node_modules", "@deepseek-ai", "dsh-host-webserver")), true, "matching alpha.5 host webserver installed");
     await quitApp(app);
     process.stderr.write(`F07 normal app evidence pid=${app.child.pid}\n${app.stdout}`);
     assert.ok(!appIsRunning(app), `normal app did not quit\n${app.stdout}\n${app.stderr}`);

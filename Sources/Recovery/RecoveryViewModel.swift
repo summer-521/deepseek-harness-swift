@@ -147,6 +147,7 @@ public enum DshRecoveryAction: String, CaseIterable, Sendable {
 /// older generated event are ignored instead of reverting visible state.
 @MainActor
 public final class DshRecoveryViewModel: ObservableObject {
+    private static let desktopRuntimeProfileName = "swift-desktop"
     public let launchID: UUID
 
     @Published public private(set) var snapshot: DshDiagnosticSnapshot?
@@ -408,7 +409,7 @@ public final class DshRecoveryViewModel: ObservableObject {
         guard !pluginRemovalInFlight,
               actionInFlight == nil,
               let snapshot,
-              snapshot.context?.profile == "desktop",
+              snapshot.context?.profile == Self.desktopRuntimeProfileName,
               let originalProfilePath,
               Self.isDesktopProfilePath(originalProfilePath),
               let generationID = snapshot.context?.generationID,
@@ -498,7 +499,7 @@ public final class DshRecoveryViewModel: ObservableObject {
               !adoptInterruptedTransactionInFlight,
               actionInFlight == nil,
               let snapshot,
-              snapshot.context?.profile == "desktop",
+              snapshot.context?.profile == Self.desktopRuntimeProfileName,
               readAdoptableInterruptedTransaction() != nil else {
             return false
         }
@@ -559,14 +560,14 @@ public final class DshRecoveryViewModel: ObservableObject {
         let inspection: DshPluginInspectionResult?
         if let candidate = pluginInspection,
            let profile = snapshot.context?.profile,
-           profile == "desktop" {
+           profile == Self.desktopRuntimeProfileName {
             // The inspection API stores the absolute Profile directory.  A
             // desktop-only screen may still receive a stale result, so only
             // use it when its path names the desktop Profile.
             let normalizedPath = candidate.profileDirectory
                 .replacingOccurrences(of: "\\\\", with: "/")
                 .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            inspection = normalizedPath.hasSuffix("/profiles/desktop")
+            inspection = normalizedPath.hasSuffix("/profiles/swift-desktop")
                 ? candidate
                 : nil
         } else {
@@ -582,7 +583,7 @@ public final class DshRecoveryViewModel: ObservableObject {
         let normalized = path
             .replacingOccurrences(of: "\\\\", with: "/")
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        return normalized.hasSuffix("/profiles/desktop")
+        return normalized.hasSuffix("/profiles/swift-desktop")
     }
 
     /// Safe mode is deliberately an explicit capability from the future

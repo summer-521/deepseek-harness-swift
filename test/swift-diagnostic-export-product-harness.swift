@@ -10,7 +10,7 @@ struct DshDiagnosticExportProductHarness {
             launchID: launchID,
             generationID: generationID,
             runtimeVersion: "0.1.2-alpha.5",
-            profile: "desktop",
+            profile: "swift-desktop",
             startedAt: Date(timeIntervalSince1970: 100)
         )
         let homePath = FileManager.default.homeDirectoryForCurrentUser.path

@@ -69,9 +69,9 @@ function startFixtureServer() {
   const server = http.createServer((request, response) => {
     const route = new URL(request.url, "http://127.0.0.1").pathname;
     const pages = {
-      "/desktop": ["desktop", "桌面 Profile ready"],
+      "/desktop": ["swift-desktop", "桌面 Profile ready"],
       "/web": ["web", "共享 web Profile ready"],
-      "/chat-text": ["desktop", "PORT_IN_USE FRONTEND_LOAD_FAILED 这些只是聊天文本，不是启动故障"],
+      "/chat-text": ["swift-desktop", "PORT_IN_USE FRONTEND_LOAD_FAILED 这些只是聊天文本，不是启动故障"],
     };
     const page = pages[route];
     if (!page) {
@@ -170,7 +170,7 @@ test("F07 real macOS WKWebView covers desktop, web, inert chat error text, and n
   fs.mkdirSync(tempDirectory, { recursive: true });
   fs.mkdirSync(dshHome, { recursive: true });
   fs.mkdirSync(appSupport, { recursive: true });
-  const profileMarker = path.join(dshHome, "profiles", "desktop", "f07-profile-marker");
+  const profileMarker = path.join(dshHome, "profiles", "swift-desktop", "f07-profile-marker");
   const stateMarker = path.join(appSupport, "DSH", "f07-state-marker");
   fs.mkdirSync(path.dirname(profileMarker), { recursive: true });
   fs.mkdirSync(path.dirname(stateMarker), { recursive: true });
@@ -207,7 +207,7 @@ test("F07 real macOS WKWebView covers desktop, web, inert chat error text, and n
       timeout: 30000,
     });
     assert.equal(run.code, 0, `${run.stderr}\n${run.stdout}`);
-    assert.match(run.stdout, /wkwebview ready step=desktop profile=desktop/);
+    assert.match(run.stdout, /wkwebview ready step=desktop profile=swift-desktop/);
     assert.match(run.stdout, /wkwebview ready step=web profile=web/);
     assert.match(run.stdout, /wkwebview chat-text remained ready despite inert failure words/);
     assert.match(run.stdout, /wkwebview recovery-visible phase=loadingInterface code=pageLoadFailed/);

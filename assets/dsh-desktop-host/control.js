@@ -5,7 +5,7 @@ const PROTOCOL_VERSION = 1;
 const MAX_LINE_BYTES = 16 * 1024;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const SUPPORTED_PROFILES = new Set(["desktop", "web"]);
+const SUPPORTED_PROFILES = new Set(["swift-desktop", "web"]);
 // Swift's launch context may use an app-owned recovery profile label. It is
 // still only a single safe path component; arbitrary DSH_HOME paths and
 // traversal components must never reach the runtime's --profile argument.

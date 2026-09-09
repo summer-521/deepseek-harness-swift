@@ -16,7 +16,7 @@ public struct PluginsTabView: View {
     }
 
     private var pluginSectionFooter: String {
-        let base = "通过 DSH 的插件机制安装到当前 \(viewModel.appProfile.rawValue) Profile，安装或卸载成功后会自动重启 DSH 服务。"
+        let base = "通过 DSH 的插件机制安装到当前 \(viewModel.appProfile.runtimeProfileName) Profile，安装或卸载成功后会自动重启 DSH 服务。"
         guard let reason = viewModel.pluginMutationUnavailableReason else { return base }
         return "\(base) \(reason)"
     }
@@ -342,7 +342,7 @@ public struct PluginsTabView: View {
                             .foregroundStyle(.green)
                     }
                 }
-                Text(plugin.description ?? "DSH \(viewModel.appProfile.rawValue) Profile 扩展插件。")
+                Text(plugin.description ?? "DSH \(viewModel.appProfile.runtimeProfileName) Profile 扩展插件。")
                     .font(.system(size: 9.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

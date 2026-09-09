@@ -121,7 +121,7 @@ struct DshBridgeDiagnosticHarness {
             launchID: launchID,
             generationID: generationID,
             runtimeVersion: "1.2.3",
-            profile: "desktop",
+            profile: "swift-desktop",
             startedAt: Date(timeIntervalSince1970: 100)
         )
         let token = String(repeating: "a", count: 43)
@@ -129,7 +129,7 @@ struct DshBridgeDiagnosticHarness {
             launchID: launchID,
             generationID: generationID,
             runtimeVersion: "1.2.3",
-            profile: "desktop",
+            profile: "swift-desktop",
             timestamp: Date(timeIntervalSince1970: 101),
             phase: .connectionValidation,
             code: .connectionFailed,

@@ -61,8 +61,9 @@ test('generation credentials and NDJSON protocol are validated before encoding',
   assert.match(ACCESS_SOURCE, /replacingOccurrences\(of: "\/", with: "_"\)/)
   assert.match(PROTOCOL_SOURCE, /maxLineBytes\s*=\s*16\s*\*\s*1024/)
   assert.match(PROTOCOL_SOURCE, /outputFormatting\s*=\s*\[\.sortedKeys\]/)
-  assert.match(PROTOCOL_SOURCE, /DshAppProfile\(rawValue: message\.profile\)/)
-  assert.match(ACCESS_SOURCE, /profile\.rawValue/)
+  assert.match(PROTOCOL_SOURCE, /DshAppProfile\.allCases\.contains/)
+  assert.match(PROTOCOL_SOURCE, /runtimeProfileName == message\.profile/)
+  assert.match(ACCESS_SOURCE, /profile\.runtimeProfileName/)
   assert.match(ACCESS_SOURCE, /profileName: String/)
   assert.match(PROTOCOL_SOURCE, /Data\(\[0x0A\]\)/)
   assert.match(HOST_CONTROL, /MAX_LINE_BYTES\s*=\s*16\s*\*\s*1024/)
@@ -261,6 +262,17 @@ test('first launch bootstraps the canonical profile and installs the host before
   assert.match(APP_SOURCE, /restartItem\.target = self/)
 })
 
+test('the Swift shell owns a renamed profile and migrates only proven metadata', () => {
+  assert.match(STATE_SOURCE, /case \.desktop: return "swift-desktop"/)
+  assert.match(PLUGIN_SOURCE, /legacyDesktopProfileDirectory[\s\S]*profileDirectory\(forName: "desktop"\)/)
+  assert.match(PLUGIN_SOURCE, /migrateLegacyDesktopProfileIfNeeded/)
+  assert.match(PLUGIN_SOURCE, /hasUntamperedInstalledBridgeProof/)
+  assert.match(PLUGIN_SOURCE, /"node_modules",[\s\S]*"\.dsh-module-fallback"/)
+  assert.match(PLUGIN_SOURCE, /dependencies\.removeValue\(forKey: Self\.desktopHostPluginName\)/)
+  assert.match(WINDOW_SOURCE, /migratedLegacyDesktopProfile[\s\S]*if !migratedLegacyDesktopProfile/)
+  assert.doesNotMatch(HOST_CONTROL, /SUPPORTED_PROFILES = new Set\(\["desktop"/)
+})
+
 test('startup recovery shows native progress before any asynchronous profile work', () => {
   assert.match(APP_SOURCE, /MainWindowController\.shared\.beginStartupPreparation\(\)[\s\S]*recoverPendingProfileSwitch\(\)/)
   assert.match(WINDOW_SOURCE, /public func beginStartupPreparation\(\)[\s\S]*showStartupSurface\(\)[\s\S]*正在检查并恢复上次启动状态/)
@@ -269,7 +281,7 @@ test('startup recovery shows native progress before any asynchronous profile wor
 test('profile repair is scoped, lazy, and provides a manual recovery command', () => {
   assert.match(PLUGIN_SOURCE, /healthy profiles are not reinstalled/)
   assert.match(PLUGIN_SOURCE, /global pnpm configuration is never changed/)
-  assert.match(PLUGIN_SOURCE, /dsh plugin --profile desktop install --config\.minimum-release-age=0/)
+  assert.ok(PLUGIN_SOURCE.includes('dsh plugin --profile \\(targetProfile.runtimeProfileName) install --config.minimum-release-age=0'))
   assert.match(PLUGIN_SOURCE, /node_modules[\s\S]*\.modules\.yaml/)
   assert.match(PLUGIN_SOURCE, /packageManifestURL\(name: String, profileDir: URL\)/)
 })

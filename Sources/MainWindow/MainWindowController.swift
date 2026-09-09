@@ -878,11 +878,26 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         // package or snapshot mutation below.
         try await DshService.shared.prepareForProfileMutation(context: context)
 
+        // DSH 0.1.5 reserves the literal `desktop` profile for Electron.
+        // Migrate the Swift shell's previous isolated tree before the first
+        // inspection of its new App-owned profile. The legacy tree is retained
+        // so this migration cannot destroy user data or Electron state.
+        let migratedLegacyDesktopProfile: Bool
+        if context.purpose != .recovery, context.profile == .desktop {
+            migratedLegacyDesktopProfile = try DshPluginManager.shared.migrateLegacyDesktopProfileIfNeeded(
+                to: context.profileDirectory
+            )
+        } else {
+            migratedLegacyDesktopProfile = false
+        }
+
         // F03 is deliberately a read-only gate. It runs before any manifest,
         // bridge, or dependency repair write. Only a genuinely empty Profile
         // can proceed to bootstrap; existing Profiles with incomplete,
         // uncertain, unavailable, or erroneous evidence remain blocked.
-        try await inspectDependenciesBeforeMutation(for: context)
+        if !migratedLegacyDesktopProfile {
+            try await inspectDependenciesBeforeMutation(for: context)
+        }
 
         let runtimeState = stateSnapshot.runtimeState
         guard context.purpose == .recovery
@@ -2440,7 +2455,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
               let plan = recoveryViewModel.pluginRemovalPlan(for: request),
               context.profile == .desktop,
               context.originalProfile == .desktop,
-              request.originalProfile == DshAppProfile.desktop.rawValue,
+              request.originalProfile == DshAppProfile.desktop.runtimeProfileName,
               request.originalProfilePath == context.profileDirectory.standardizedFileURL.path,
               context.profileDirectory.standardizedFileURL.path
                 == DshLaunchContext.profileDirectory(for: .desktop).standardizedFileURL.path,

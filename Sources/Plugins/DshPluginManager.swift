@@ -376,6 +376,121 @@ public final class DshPluginManager {
         profileDirectory(for: .desktop).standardizedFileURL
     }
 
+    public static var legacyDesktopProfileDirectory: URL {
+        DshLaunchContext.profileDirectory(forName: "desktop").standardizedFileURL
+    }
+
+    /// Copy the Swift shell's pre-0.1.5 isolated profile to its new name.
+    /// Upstream now owns the literal `desktop` profile, so the old tree is
+    /// never launched or modified here and is deliberately retained. A staged
+    /// copy prevents a force-quit from exposing a partial destination.
+    @discardableResult
+    public func migrateLegacyDesktopProfileIfNeeded(to destination: URL) throws -> Bool {
+        let fileManager = FileManager.default
+        let source = Self.legacyDesktopProfileDirectory
+        let target = destination.standardizedFileURL
+        guard target.path == Self.canonicalDesktopProfileDirectory.path,
+              source.path != target.path,
+              !fileManager.fileExists(atPath: target.path),
+              fileManager.fileExists(atPath: source.path) else { return false }
+
+        let sourceValues = try source.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard sourceValues.isDirectory == true, sourceValues.isSymbolicLink != true else {
+            throw NSError(
+                domain: "DshPluginManager",
+                code: -40,
+                userInfo: [NSLocalizedDescriptionKey: "旧 desktop Profile 不是可安全迁移的普通目录"]
+            )
+        }
+
+        let packageURL = source.appendingPathComponent("package.json")
+        let packageRoot = (try? Data(contentsOf: packageURL))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        guard let sourceBundle = NodeRuntime.shared.resolveDesktopHostBundlePath() else {
+            throw NSError(
+                domain: "DshPluginManager",
+                code: -60,
+                userInfo: [NSLocalizedDescriptionKey: "找不到内置桌面桥接，无法验证旧 desktop Profile 的归属"]
+            )
+        }
+        let ownershipIsProven = hasUntamperedInstalledBridgeProof(
+            profileDir: source,
+            packageRoot: packageRoot
+        ) || staleAppBridgeRejectionReason(
+            profileDir: source,
+            packageRoot: packageRoot,
+            sourceBundle: sourceBundle
+        ) == nil
+        guard ownershipIsProven else {
+            throw NSError(
+                domain: "DshPluginManager",
+                code: -41,
+                userInfo: [NSLocalizedDescriptionKey: "旧 desktop Profile 无法证明由 Swift App 管理，未复制到 swift-desktop"]
+            )
+        }
+
+        let parent = target.deletingLastPathComponent()
+        try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
+        let staging = parent.appendingPathComponent(
+            ".swift-desktop-migration-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? fileManager.removeItem(at: staging) }
+        try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
+        let excluded = Set([
+            "node_modules",
+            ".dsh-module-fallback",
+            Self.desktopHostOwnershipMarkerName,
+        ])
+        for entry in try fileManager.contentsOfDirectory(
+            at: source,
+            includingPropertiesForKeys: [.isSymbolicLinkKey],
+            options: []
+        ) where !excluded.contains(entry.lastPathComponent) {
+            let values = try entry.resourceValues(forKeys: [.isSymbolicLinkKey])
+            guard values.isSymbolicLink != true else {
+                throw NSError(
+                    domain: "DshPluginManager",
+                    code: -42,
+                    userInfo: [NSLocalizedDescriptionKey: "旧 desktop Profile 含无法安全迁移的顶层符号链接"]
+                )
+            }
+            try fileManager.copyItem(
+                at: entry,
+                to: staging.appendingPathComponent(entry.lastPathComponent)
+            )
+        }
+
+        let stagedPackageURL = staging.appendingPathComponent("package.json")
+        if var stagedRoot = packageRoot {
+            stagedRoot["name"] = "dsh-profile-swift-desktop"
+            if var dependencies = stagedRoot["dependencies"] as? [String: Any] {
+                dependencies.removeValue(forKey: Self.desktopHostPluginName)
+                dependencies.removeValue(forKey: "@deepseek-ai/dsh-host-webserver")
+                stagedRoot["dependencies"] = dependencies
+            }
+            if var dsh = stagedRoot["dsh"] as? [String: Any],
+               var profile = dsh["profile"] as? [String: Any],
+               let bundles = profile["bundles"] as? [String] {
+                profile["bundles"] = bundles.filter { $0 != Self.desktopHostPluginName }
+                dsh["profile"] = profile
+                stagedRoot["dsh"] = dsh
+            }
+            let data = try JSONSerialization.data(
+                withJSONObject: stagedRoot,
+                options: [.prettyPrinted, .sortedKeys]
+            )
+            try data.write(to: stagedPackageURL, options: .atomic)
+        }
+        do {
+            try fileManager.moveItem(at: staging, to: target)
+        } catch {
+            if fileManager.fileExists(atPath: target.path) { return false }
+            throw error
+        }
+        return true
+    }
+
 
 /// Resolve both external binaries, naming the missing one on failure. The
 /// domain and `-1` code stay unchanged so existing error mapping (including
@@ -2553,14 +2668,14 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                 code: -25,
                 userInfo: [
                     NSLocalizedDescriptionKey:
-                        "拒绝自动创建 \(selectedProfile.rawValue) Profile manifest：现有 Profile 未完成初始化，请先完成只读依赖检查或恢复"
+                        "拒绝自动创建 \(selectedProfile.runtimeProfileName) Profile manifest：现有 Profile 未完成初始化，请先完成只读依赖检查或恢复"
                 ]
             )
         case .invalid:
             throw NSError(
                 domain: "DshPluginManager",
                 code: -11,
-                userInfo: [NSLocalizedDescriptionKey: "无法读取 \(selectedProfile.rawValue) Profile manifest"]
+                userInfo: [NSLocalizedDescriptionKey: "无法读取 \(selectedProfile.runtimeProfileName) Profile manifest"]
             )
         case .freshEmpty:
             break
@@ -2570,7 +2685,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         try fileManager.createDirectory(at: profileDir, withIntermediateDirectories: true)
         try ensureManagedProfileWorkspaceConfiguration(at: profileDir, profile: selectedProfile)
         let root: [String: Any] = [
-            "name": "dsh-profile-\(selectedProfile.rawValue)",
+            "name": "dsh-profile-\(selectedProfile.runtimeProfileName)",
             "private": true,
             "dependencies": [String: String](),
             "dsh": [
@@ -2935,7 +3050,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
             throw NSError(
                 domain: "DshPluginManager",
                 code: -21,
-                userInfo: [NSLocalizedDescriptionKey: "Desktop Profile 依赖修复失败（退出码 \(result.status)）。如果需要手动修复，请执行：dsh plugin --profile desktop install --config.minimum-release-age=0\(detail)"]
+                userInfo: [NSLocalizedDescriptionKey: "Swift Desktop Profile 依赖修复失败（退出码 \(result.status)）。如果需要手动修复，请执行：dsh plugin --profile \(targetProfile.runtimeProfileName) install --config.minimum-release-age=0\(detail)"]
             )
         }
 

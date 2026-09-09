@@ -63,13 +63,13 @@ struct RecoveryProfileHarness {
         defer { try? fileManager.removeItem(at: root) }
 
         try! fileManager.createDirectory(
-            at: originalHome.appendingPathComponent("profiles/desktop", isDirectory: true),
+            at: originalHome.appendingPathComponent("profiles/swift-desktop", isDirectory: true),
             withIntermediateDirectories: true
         )
         let originalManifest = Data(#"{"name":"original-user-profile","secret":"must-remain-byte-identical"}"#.utf8)
         let originalPatch = Data("original user patch must remain untouched".utf8)
-        let originalManifestURL = originalHome.appendingPathComponent("profiles/desktop/package.json")
-        let originalPatchURL = originalHome.appendingPathComponent("profiles/desktop/cordis.patch.yml")
+        let originalManifestURL = originalHome.appendingPathComponent("profiles/swift-desktop/package.json")
+        let originalPatchURL = originalHome.appendingPathComponent("profiles/swift-desktop/cordis.patch.yml")
         try! originalManifest.write(to: originalManifestURL, options: .atomic)
         try! originalPatch.write(to: originalPatchURL, options: .atomic)
         let originalManifestBefore = try! Data(contentsOf: originalManifestURL)

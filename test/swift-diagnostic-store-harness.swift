@@ -33,7 +33,7 @@ struct DiagnosticStoreHarness {
             launchID: launchID,
             generationID: generationID,
             runtimeVersion: "0.1.2-alpha.5",
-            profile: "desktop",
+            profile: "swift-desktop",
             startedAt: timestamp
         ))
         require(store.currentPhase == .preparing, "beginLaunch should enter preparing")
@@ -64,7 +64,7 @@ struct DiagnosticStoreHarness {
             launchID: launchID,
             generationID: generationID,
             runtimeVersion: "1.0",
-            profile: "desktop",
+            profile: "swift-desktop",
             startedAt: timestamp
         ))
         let shortPayload = "\(shortJSONSamples)\npath=\(homePath)/diagnostics"
@@ -159,7 +159,7 @@ struct DiagnosticStoreHarness {
             launchID: otherLaunchID,
             generationID: staleGenerationID,
             runtimeVersion: "0.1.2-alpha.5",
-            profile: "desktop",
+            profile: "swift-desktop",
             startedAt: timestamp
         ))
         require(store.diagnosticOutput(for: otherLaunchID).isEmpty, "new launch must not inherit old output")

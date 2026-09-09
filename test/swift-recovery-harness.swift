@@ -21,7 +21,7 @@ struct RecoveryHarness {
             launchID: launchID,
             generationID: generationID,
             runtimeVersion: "1.0",
-            profile: "desktop",
+            profile: "swift-desktop",
             timestamp: timestamp,
             phase: .startingService,
             code: .processExited,
@@ -42,7 +42,7 @@ struct RecoveryHarness {
                 launchID: launchID,
                 generationID: generationID,
                 runtimeVersion: "1.0",
-                profile: "desktop",
+                profile: "swift-desktop",
                 startedAt: timestamp
             ),
             phase: .startingService,
@@ -81,7 +81,7 @@ struct RecoveryHarness {
             snapshot: snapshot,
             actions: actions,
             redactor: DshSecretRedactor(secrets: [token]),
-            originalProfilePath: "/tmp/dsh/profiles/desktop"
+            originalProfilePath: "/tmp/dsh/profiles/swift-desktop"
         )
 
         requireRecovery(viewModel.phase == .startingService, "matching snapshot should expose its phase")
@@ -188,7 +188,7 @@ struct RecoveryHarness {
         )
         requireRecovery(viewModel.apply(locatedSnapshot, for: launchID), "newer plugin snapshot should be accepted")
         viewModel.setPluginInspection(DshPluginInspectionResult(
-            profileDirectory: "/tmp/dsh/profiles/desktop",
+            profileDirectory: "/tmp/dsh/profiles/swift-desktop",
             runtimeHostRoot: "/tmp/dsh/runtime",
             runtimeRootVerified: true,
             items: [DshPluginInspectionItem(

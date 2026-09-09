@@ -96,7 +96,9 @@ public struct DshLaunchContext: Codable, Sendable, Equatable {
         transactionID: String? = nil
     ) {
         let resolvedHome = (effectiveDshHome ?? Self.defaultDshHome).standardizedFileURL
-        let resolvedName = profileName ?? profileDirectory?.lastPathComponent ?? profile.rawValue
+        let resolvedName = profileName
+            ?? profileDirectory?.lastPathComponent
+            ?? profile.runtimeProfileName
         let resolvedDirectory = profileDirectory
             ?? Self.profileDirectory(forName: resolvedName, dshHome: resolvedHome)
         self.launchID = launchID
@@ -170,7 +172,7 @@ public struct DshLaunchContext: Codable, Sendable, Equatable {
     /// Resolve a DSH profile without consulting application state. This is
     /// also the single path utility used by the plugin manager.
     public static func profileDirectory(for profile: DshAppProfile) -> URL {
-        profileDirectory(forName: profile.rawValue)
+        profileDirectory(forName: profile.runtimeProfileName)
     }
 
     public static var defaultDshHome: URL {
@@ -369,7 +371,7 @@ public extension DshLaunchContext {
                 || (scalar.value >= 97 && scalar.value <= 122))
               }) else { return false }
 
-        if DshAppProfile(rawValue: name) != nil { return true }
+        if DshAppProfile.allCases.contains(where: { $0.runtimeProfileName == name }) { return true }
         let range = NSRange(name.startIndex..., in: name)
         return recoveryProfilePattern.firstMatch(in: name, range: range) != nil
     }

@@ -154,8 +154,8 @@ npm test
 - 通知点击恢复隐藏主窗口等少数系统交互仍有待完善。
 - 应用更新和 DSH npm 运行时更新是两套独立流程。
 - 当前只提供从已安装 Runtime 向 npm `latest`/`next`/`alpha` tag 的单向升级；默认仅通知不自动安装，`next` 和 `alpha` 只能由用户明确选择；更新失败的版本会抑制到 npm tag 变化、应用升级或用户手动重试；旧版本会保留到新 Runtime 连续两次成功启动后自动清理，暂不提供任意版本切换、卸载或降级入口。
-- App 默认使用独立的 `profiles/desktop`，终端 `dsh web` 继续使用 `profiles/web`；通用设置中切换到 `web` 后，两者会共享插件和依赖，升级或插件变更可能影响终端启动。
-- `web` Profile 下禁止 DSH Runtime 版本升级和自动更新；从 `web` 切回 `desktop` 时，应用会先停止服务，再移除 web Profile 中的 `dsh-desktop-host` 与 `@deepseek-ai/dsh-host-webserver`，避免继续污染终端环境。
+- App 默认使用独立的 `profiles/swift-desktop`，终端 `dsh web` 继续使用 `profiles/web`；旧版 App 的 `profiles/desktop` 会在首次启动时安全复制到新目录；通用设置中切换到 `web` 后，两者会共享插件和依赖，升级或插件变更可能影响终端启动。
+- `web` Profile 下禁止 DSH Runtime 版本升级和自动更新；从 `web` 切回 `swift-desktop` 时，应用会先停止服务，再移除 web Profile 中的 `dsh-desktop-host` 与 `@deepseek-ai/dsh-host-webserver`，避免继续污染终端环境。
 - 目前仅提供 macOS 26+、Apple Silicon（arm64）构建。
 
 ## 许可证

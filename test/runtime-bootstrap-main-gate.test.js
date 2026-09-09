@@ -42,7 +42,7 @@ export function startDesktopControl() {}
 export async function waitForDesktopBootstrap() {
   return {
     entryPath: process.env.REPRO_ENTRY,
-    profile: "desktop",
+    profile: "swift-desktop",
     host: "127.0.0.1",
     port: 3080,
   };

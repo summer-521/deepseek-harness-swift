@@ -26,7 +26,7 @@ struct DshLaunchContextHarness {
         )
         let home = DshLaunchContext.defaultDshHome
         let desktopDirectory = DshLaunchContext.profileDirectory(
-            forName: "desktop",
+            forName: "swift-desktop",
             dshHome: home
         )
         let normal = DshLaunchContext(
@@ -34,7 +34,7 @@ struct DshLaunchContextHarness {
             purpose: .normal,
             runtimeDescriptor: runtime,
             profile: .desktop,
-            profileName: "desktop",
+            profileName: "swift-desktop",
             profileDirectory: desktopDirectory,
             effectiveDshHome: home,
             effectiveAccessPolicy: DshEffectiveAccessPolicy(
@@ -47,11 +47,20 @@ struct DshLaunchContextHarness {
         expect(normal.effectiveDshHome.path == home.path, "home is captured")
         expect(normal.profileDirectory.path == desktopDirectory.path, "profile path uses captured home")
         expect(normal.effectiveAccessPolicy.networkExposure == .lan, "LAN policy is captured")
+        let defaultDesktop = DshLaunchContext(
+            runtimeDescriptor: runtime,
+            profile: .desktop,
+            effectiveDshHome: home,
+            effectiveAccessPolicy: .loopbackOnly,
+            port: 4321
+        )
+        expect(defaultDesktop.profileName == "swift-desktop", "desktop launch uses the App-owned Runtime name")
+        expect(defaultDesktop.profileDirectory.lastPathComponent == "swift-desktop", "desktop path uses the App-owned Runtime name")
 
         let mismatched = DshLaunchContext(
             runtimeDescriptor: runtime,
             profile: .desktop,
-            profileName: "desktop",
+            profileName: "swift-desktop",
             profileDirectory: DshLaunchContext.profileDirectory(forName: "web", dshHome: home),
             effectiveDshHome: home,
             effectiveAccessPolicy: .loopbackOnly,
@@ -79,7 +88,8 @@ struct DshLaunchContextHarness {
         try recovery.validate()
         expect(recovery.effectiveAccessPolicy == .loopbackOnly, "recovery is loopback-only")
         expect(recovery.isFresh(in: DshStateConfig(dshPort: 4321)), "recovery does not need a global transaction")
-        expect(DshLaunchContext.isValidProfileName("desktop"), "desktop is accepted")
+        expect(DshLaunchContext.isValidProfileName("swift-desktop"), "swift-desktop is accepted")
+        expect(!DshLaunchContext.isValidProfileName("desktop"), "upstream Electron desktop is rejected")
         expect(DshLaunchContext.isValidProfileName("web"), "web is accepted")
         expect(DshLaunchContext.isValidProfileName(recoveryName), "recovery UUID is accepted")
         for invalid in ["other", "../desktop", "/tmp/desktop", ".", "..", ".hidden", "-desktop", "桌面"] {

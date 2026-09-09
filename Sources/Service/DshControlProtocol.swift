@@ -52,7 +52,7 @@ public struct DshBootstrapMessage: Codable, Sendable {
 
     public init(
         entryPath: String,
-        profile: String = "desktop",
+        profile: String = "swift-desktop",
         host: String = "127.0.0.1",
         port: Int,
         generation: UUID,
@@ -109,7 +109,8 @@ public enum DshControlProtocol {
         // Keep the legacy enum check visible for the two user-selectable
         // Profiles, while allowing an application-owned recovery label. The
         // shared validator rejects separators and traversal spellings.
-        DshAppProfile(rawValue: name) != nil || DshLaunchContext.isValidProfileName(name)
+        DshAppProfile.allCases.contains(where: { $0.runtimeProfileName == name })
+            || DshLaunchContext.isValidProfileName(name)
     }
 
     public static func encodeGeneration(_ message: DshGenerationMessage) throws -> Data {
@@ -125,7 +126,9 @@ public enum DshControlProtocol {
     }
 
     public static func encodeBootstrap(_ message: DshBootstrapMessage) throws -> Data {
-        let knownProfile = DshAppProfile(rawValue: message.profile) != nil
+        let knownProfile = DshAppProfile.allCases.contains {
+            $0.runtimeProfileName == message.profile
+        }
         guard message.v == version,
               message.type == "bootstrap",
               message.entryPath.hasPrefix("/"),

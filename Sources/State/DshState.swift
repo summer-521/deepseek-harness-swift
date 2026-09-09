@@ -46,9 +46,20 @@ public enum DshAppProfile: String, Codable, CaseIterable, Hashable, Sendable {
     case desktop
     case web
 
+    /// The logical `.desktop` selection predates upstream's reservation of
+    /// the literal `desktop` profile for its Electron application. Keep the
+    /// persisted enum value stable, but use an App-specific name whenever a
+    /// path or Runtime launch target is constructed.
+    public var runtimeProfileName: String {
+        switch self {
+        case .desktop: return "swift-desktop"
+        case .web: return rawValue
+        }
+    }
+
     public var displayName: String {
         switch self {
-        case .desktop: return "desktop（推荐）"
+        case .desktop: return "swift-desktop（推荐）"
         case .web: return "web（与终端共享）"
         }
     }
@@ -56,9 +67,9 @@ public enum DshAppProfile: String, Codable, CaseIterable, Hashable, Sendable {
     public var terminalImpactDescription: String {
         switch self {
         case .desktop:
-            return "App 使用独立的 profiles/desktop；终端 dsh web 继续使用 profiles/web，插件和依赖互不影响。"
+            return "App 使用独立的 profiles/swift-desktop；终端 dsh web 继续使用 profiles/web，插件和依赖互不影响。"
         case .web:
-            return "App 与终端 dsh web 共用 profiles/web；插件变更可能影响终端启动，切回 desktop 时会清理 App 注入的桥接依赖。"
+            return "App 与终端 dsh web 共用 profiles/web；插件变更可能影响终端启动，切回 swift-desktop 时会清理 App 注入的桥接依赖。"
         }
     }
 }
