@@ -127,7 +127,7 @@ Xcode 工程是标准构建入口；`Package.swift` 仅作为辅助 Swift Packag
 
 ## 测试
 
-测试包括源码/工程配置检查与动态 Swift harness；需要 Node.js、macOS 和 Xcode 命令行工具，不需要安装 npm 依赖。真实 WebKit 套件需显式启用：
+测试包括源码/工程配置检查与动态 Swift harness；需要 Node.js、macOS 和 Xcode 命令行工具，不需要安装 npm 依赖：
 
 ```bash
 npm test
@@ -135,9 +135,6 @@ npm test
 
 ## 开发工作流
 
-- 采集提交与工作区证据：`node scripts/workflow-status.mjs`。
-- 提交要求排除文档时，暂存后检查：`node scripts/workflow-status.mjs --check-no-docs-staged`。
-- M2 隔离验收：`bash scripts/m2-acceptance.sh`；`--list` 查看范围与 GUI 开关。
 - 一次完成本地 arm64 构建、打包、校验及 SHA-256：`bash scripts/release-local.sh arm64`；加 `--dry-run` 只查看流程。沿用 `SWIFT_DIST_DIR`；成功打包后会由原脚本清理 `.build`。此入口不运行测试、不安装、不发布。
 
 ## 版本与更新
