@@ -6,6 +6,40 @@
         <description>Updates for the native Swift shell of DSH Desktop.</description>
         <language>zh-CN</language>
         <item>
+            <title>1.2.1</title>
+            <pubDate>Wed, 09 Sep 2026 09:56:16 +0800</pubDate>
+            <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.1</link>
+            <sparkle:version>12</sparkle:version>
+            <sparkle:shortVersionString>1.2.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[
+## 更新内容
+
+### DSH Runtime 与 Profile
+
+- 适配上游 DSH `0.1.5-alpha.1` 对 `desktop` Profile 的专属管理规则，App 改用独立的 `swift-desktop` Profile。
+- 首次启动时安全迁移由旧版 App 管理的 `desktop` Profile 配置，并重新构建依赖，避免复用旧目录中的 `node_modules`、fallback 链接和桥接所有权记录。
+- 迁移不会删除或修改旧 Profile；无法确认归属时停止迁移，避免影响上游 Electron 应用的数据。
+
+### Web 界面与附件
+
+- 修复主界面回形针附件按钮在 Swift App 内点击无响应的问题，接入 macOS 原生文件选择器。
+- 支持 WebKit 请求的多文件选择和目录选择，并将用户授权的文件 URL 直接交给 DSH Web UI。
+- 删除 App 自带的斜杠命令说明汉化选项和运行时改写，统一使用上游 DSH 提供的本地化能力。
+
+### 验证
+
+- 通过 arm64 Release 构建、应用代码签名、DMG 完整性和 Sparkle 更新签名校验。
+
+## 已知限制
+
+- 本版本最低需要 macOS 26，并且只提供 Apple Silicon（arm64）安装包。
+- Swift 应用包更新与 DSH npm Runtime 更新是两套独立流程。
+]]></description>
+            <enclosure url="https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.2.1/DSH-Desktop-1.2.1-arm64.dmg" length="50810070" type="application/octet-stream" sparkle:edSignature="euFU7f0QDP4Z0utC88UBdqi1itTRHH/CYq4pas3JTF963PGkYcx8soIrj9e7oj4ZkKJhOQbi2Z+5sCjK9sZUAg=="/>
+        </item>
+        <item>
             <title>1.2.0</title>
             <pubDate>Tue, 08 Sep 2026 18:17:20 +0800</pubDate>
             <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.0</link>
