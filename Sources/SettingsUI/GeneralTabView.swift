@@ -58,6 +58,29 @@ public struct GeneralTabView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            SettingsSection("外观", footer: themeFooter) {
+                SettingsRow(
+                    title: "界面主题",
+                    description: "选择 DSH 的配色风格。"
+                ) {
+                    Picker("", selection: Binding(
+                        get: { viewModel.externalTheme == nil ? viewModel.uiTheme : "default" },
+                        set: {
+                            guard viewModel.externalTheme == nil else { return }
+                            viewModel.uiTheme = $0
+                            viewModel.saveGeneralSettings()
+                        }
+                    )) {
+                        Text("默认").tag("default")
+                        Text("Claude Code").tag("claude")
+                    }
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+                    .frame(width: 190, alignment: .trailing)
+                    .disabled(viewModel.externalTheme != nil)
+                }
+            }
+
             SettingsSection(
                 "运行环境",
                 footer: "desktop 和 web 使用独立的插件目录。切换 Profile 会停止并重启 DSH 服务；选择 web 后，App 与终端 dsh web 共享插件和依赖，切回 desktop 时会清理 App 注入的桥接依赖。"
@@ -83,29 +106,6 @@ public struct GeneralTabView: View {
                         || viewModel.isUpdatingRuntime
                         || viewModel.isInstallingVersion
                         || viewModel.isRuntimeRecoveryPending)
-                }
-            }
-
-            SettingsSection("外观", footer: themeFooter) {
-                SettingsRow(
-                    title: "界面主题",
-                    description: "选择 DSH 的配色风格。"
-                ) {
-                    Picker("", selection: Binding(
-                        get: { viewModel.externalTheme == nil ? viewModel.uiTheme : "default" },
-                        set: {
-                            guard viewModel.externalTheme == nil else { return }
-                            viewModel.uiTheme = $0
-                            viewModel.saveGeneralSettings()
-                        }
-                    )) {
-                        Text("默认").tag("default")
-                        Text("Claude Code").tag("claude")
-                    }
-                    .pickerStyle(.segmented)
-                    .controlSize(.small)
-                    .frame(width: 190, alignment: .trailing)
-                    .disabled(viewModel.externalTheme != nil)
                 }
             }
 
