@@ -22,6 +22,7 @@ public final class DshWebShell {
     private static let shellCSS = """
     :root {
       --dsh-shell-traffic-light-safe-height: 20px;
+      --dsh-shell-traffic-light-safe-width: 72px;
       --dsh-shell-sidebar-width: 88px;
     }
     [class*="sidebarCol"] {
@@ -31,6 +32,10 @@ public final class DshWebShell {
     }
     [data-sidebar-collapsed] {
       grid-template-columns: var(--dsh-shell-sidebar-width) minmax(0px, 1fr) 0px !important;
+    }
+    [data-sidebar-right-panel="fullscreen"] {
+      left: var(--dsh-shell-traffic-light-safe-width) !important;
+      width: auto !important;
     }
     html, body { background: transparent !important; }
     [class*="frame"] {
@@ -359,6 +364,19 @@ public final class DshWebShell {
           const theme = \(serialized);
           window.__DSH_DESKTOP_UI_THEME__ = theme;
           window.dispatchEvent(new CustomEvent('dsh-desktop-ui-theme-change', { detail: { theme } }));
+        })();
+        """)
+    }
+
+    /// Publish the native traffic-light cluster width as a CSS custom property
+    /// so the fullscreen right panel can yield a left gutter for the window
+    /// buttons instead of sitting underneath them.
+    public func updateTrafficLightSafeWidth(_ width: CGFloat) {
+        evaluate("""
+        (() => {
+          const root = document.documentElement;
+          if (!root) return;
+          root.style.setProperty('--dsh-shell-traffic-light-safe-width', '\(width)px');
         })();
         """)
     }

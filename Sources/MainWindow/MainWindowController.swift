@@ -240,6 +240,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
 
     private static let trafficLightHorizontalOffset: CGFloat = 7
     private static let trafficLightVerticalOffset: CGFloat = -7
+    private static let trafficLightSafeWidthMargin: CGFloat = 8
     private static let maxAutomaticAuthenticationRecoveries = 1
     private enum RuntimeHealthError: LocalizedError {
         case nonHTTPResponse(String)
@@ -325,6 +326,19 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             frame.origin.y += Self.trafficLightVerticalOffset
             button.frame = frame
         }
+        publishTrafficLightSafeWidth(in: win)
+    }
+
+    /// The traffic-light cluster ends at the right edge of the zoom button.
+    /// Publish that edge (plus a small margin) to the page so the fullscreen
+    /// right panel can leave a left gutter for the native window buttons.
+    private func publishTrafficLightSafeWidth(in win: NSWindow) {
+        var maxRight: CGFloat = 0
+        for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            guard let button = win.standardWindowButton(type) else { continue }
+            maxRight = max(maxRight, button.frame.maxX)
+        }
+        webShell?.updateTrafficLightSafeWidth(maxRight + Self.trafficLightSafeWidthMargin)
     }
 
     public func windowDidBecomeMain(_ notification: Notification) {
