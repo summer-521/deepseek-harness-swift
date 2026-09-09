@@ -3189,10 +3189,6 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         webShell?.syncTheme(theme)
     }
 
-    public func syncTranslateCommands() {
-        webShell?.syncTranslateCommands(enabled: DshStateManager.shared.current.translateCommands)
-    }
-
     // MARK: - WKNavigationDelegate
 
     private func isLocalWebURL(_ url: URL) -> Bool {
@@ -3284,7 +3280,6 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard isCurrentWebUINavigation(navigation) else { return }
         syncUiTheme()
-        syncTranslateCommands()
         pendingWebUINavigation = nil
         beginWebUIReadinessCheck()
     }
@@ -3460,6 +3455,56 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
 
     // MARK: - WKUIDelegate
 
+    /// WebKit deliberately disables file uploads on macOS unless its UI
+    /// delegate implements this callback. The DSH attachment button is a
+    /// normal HTML `<input type="file">`, so without this bridge WebKit
+    /// treats the click exactly like a cancelled picker and the page gives
+    /// the user no visible feedback.
+    public func webView(
+        _ webView: WKWebView,
+        runOpenPanelWith parameters: WKOpenPanelParameters,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping ([URL]?) -> Void
+    ) {
+        let panel = NSOpenPanel()
+        panel.title = "上传附件"
+        panel.prompt = "选择"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = parameters.allowsDirectories
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        panel.resolvesAliases = true
+        panel.canCreateDirectories = false
+
+        // The WebView can be temporarily detached while the main window is
+        // being restored or replaced. Prefer the actual owner of the view,
+        // then fall back to this controller's window. A sheet attached to a
+        // different key window can appear behind DSH and make a working
+        // picker look like a no-op.
+        let parentWindow = webView.window ?? window
+        let finish: (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .OK else {
+                completionHandler(nil)
+                return
+            }
+
+            // Keep the URLs returned by NSOpenPanel intact. macOS grants the
+            // app the user-selected security scope for these URLs (when the
+            // app is sandboxed), and WebKit uses that grant while it reads
+            // the upload. Copying them or releasing a manually-started
+            // scope here would race the WebContent process.
+            completionHandler(panel.urls)
+        }
+
+        if let parentWindow, parentWindow.isVisible {
+            panel.beginSheetModal(for: parentWindow, completionHandler: finish)
+        } else {
+            // There is no sheet owner during a window restoration edge case.
+            // An app-modal panel still gives WebKit a valid completion path;
+            // returning nil would silently cancel the attachment instead.
+            panel.begin(completionHandler: finish)
+        }
+    }
+
     public func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                         for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         if let url = navigationAction.request.url {
@@ -3475,7 +3520,6 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     public func bridgeDidReceiveReady() {
         print("[MainWindowController] DSH Web UI ready signal received")
         syncUiTheme()
-        syncTranslateCommands()
     }
 
     public func bridgeDidReceiveTheme(colorScheme: String?, externalTheme: String?) {

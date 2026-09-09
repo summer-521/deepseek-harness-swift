@@ -209,7 +209,7 @@ window.__ModuleLoader__.load({
   factory: function (require) {
     var module = { exports: {} }
     module.exports = {
-      inject: ["theme", "sessions", "commandUi", "locale"],
+      inject: ["theme", "sessions", "locale"],
       apply: function (ctx) {
         var host = window.dshDesktop
         if (!host) return undefined
@@ -414,75 +414,6 @@ window.__ModuleLoader__.load({
           if (host.debug) host.debug("sessions-subscribe-error " + (error && error.message ? error.message : String(error)))
         }
 
-        // --- Slash command translation bridge ---
-        var offCommandUi = null
-        var offTranslateCommandsListener = null
-        var CHINESE_COMMAND_DESCRIPTIONS = {
-          compact: "压缩较早的历史会话记录",
-          export: "将当前会话日志下载为 ZIP 压缩包",
-          feedback: "记录针对当前会话的反馈",
-          goal: "设置或查看长期任务的目标",
-          permission: "切换权限预设（沙箱模式 + 审批策略）",
-          plan: "进入或退出计划模式",
-        }
-        function isTranslateCommandsEnabled() {
-          return window.__DSH_DESKTOP_TRANSLATE_COMMANDS__ !== false
-        }
-        function wrapCommandUi(commandUi) {
-          if (!commandUi || typeof commandUi.candidates !== "function") return null
-          // DSH exposes services through Cordis traceable proxies. Assigning
-          // `commandUi.candidates` on that proxy only writes to a shadow
-          // object; the slash source still calls the original service
-          // instance. Patch the prototype instead so the live instance used
-          // by the source sees the wrapper, then restore it on disposal.
-          var proto = Object.getPrototypeOf(commandUi)
-          var descriptor = proto && Object.getOwnPropertyDescriptor(proto, "candidates")
-          if (!descriptor || typeof descriptor.value !== "function") return null
-          var origCandidates = descriptor.value
-          if (origCandidates.__dshDesktopWrapped__) return null
-          var wrappedCandidates = async function (session, req) {
-            var rows = await origCandidates.call(this, session, req)
-            if (!isTranslateCommandsEnabled() || !Array.isArray(rows)) return rows
-            return rows.map(function (row) {
-              var zh = row && row.name ? CHINESE_COMMAND_DESCRIPTIONS[row.name] : null
-              return zh ? Object.assign({}, row, { description: zh }) : row
-            })
-          }
-          Object.defineProperty(wrappedCandidates, "__dshDesktopWrapped__", { value: true })
-          Object.defineProperty(proto, "candidates", Object.assign({}, descriptor, { value: wrappedCandidates }))
-          return function unwrap() {
-            if (proto.candidates === wrappedCandidates) {
-              Object.defineProperty(proto, "candidates", descriptor)
-            }
-          }
-        }
-
-        try {
-          if (ctx.commandUi) {
-            offCommandUi = wrapCommandUi(ctx.commandUi)
-          } else if (typeof ctx.inject === "function") {
-            ctx.inject(["commandUi"], function (scope) {
-              var cmd = scope.commandUi || (typeof scope.get === "function" ? scope.get("commandUi") : null)
-              offCommandUi = wrapCommandUi(cmd)
-            })
-          }
-          var onTranslateCommandsChange = function (event) {
-            if (event && event.detail && typeof event.detail.enabled === "boolean") {
-              window.__DSH_DESKTOP_TRANSLATE_COMMANDS__ = event.detail.enabled
-            }
-            var cmd = ctx.commandUi || (typeof ctx.get === "function" ? ctx.get("commandUi") : null)
-            if (cmd && cmd.directory && typeof cmd.directory.invalidateAll === "function") {
-              cmd.directory.invalidateAll()
-            }
-          }
-          window.addEventListener("dsh-desktop-translate-commands-change", onTranslateCommandsChange)
-          offTranslateCommandsListener = function () {
-            window.removeEventListener("dsh-desktop-translate-commands-change", onTranslateCommandsChange)
-          }
-        } catch (error) {
-          // Best-effort command translation bridge.
-        }
-
         // All bridge subscriptions are installed before readiness is reported.
         // The native shell still performs its own readiness check as a
         // fallback, but this signal now means the actual web UI is visible.
@@ -530,16 +461,6 @@ window.__ModuleLoader__.load({
             } catch (error) {
               // Best-effort removal of the hero glow color override.
             }
-          }
-          if (offCommandUi) {
-            try {
-              offCommandUi()
-            } catch (error) {}
-          }
-          if (offTranslateCommandsListener) {
-            try {
-              offTranslateCommandsListener()
-            } catch (error) {}
           }
           if (offSessions) {
             try {

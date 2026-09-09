@@ -26,6 +26,19 @@ test('Swift downloads open a native save panel with Downloads as the default loc
   assert.match(MAIN_WINDOW_SOURCE, /downloadDestinations\[ObjectIdentifier\(download\)\]/)
 })
 
+test('Swift WebKit file inputs open a native panel and return selected URLs', () => {
+  assert.match(MAIN_WINDOW_SOURCE, /WKUIDelegate/)
+  assert.match(MAIN_WINDOW_SOURCE, /runOpenPanelWith parameters: WKOpenPanelParameters/)
+  assert.match(MAIN_WINDOW_SOURCE, /panel\.canChooseFiles = true/)
+  assert.match(MAIN_WINDOW_SOURCE, /panel\.canChooseDirectories = parameters\.allowsDirectories/)
+  assert.match(MAIN_WINDOW_SOURCE, /panel\.allowsMultipleSelection = parameters\.allowsMultipleSelection/)
+  assert.match(MAIN_WINDOW_SOURCE, /let parentWindow = webView\.window \?\? window/)
+  assert.match(MAIN_WINDOW_SOURCE, /panel\.beginSheetModal\(for: parentWindow, completionHandler: finish\)/)
+  assert.match(MAIN_WINDOW_SOURCE, /panel\.begin\(completionHandler: finish\)/)
+  assert.match(MAIN_WINDOW_SOURCE, /completionHandler\(panel\.urls\)/)
+  assert.match(MAIN_WINDOW_SOURCE, /completionHandler\(nil\)/)
+})
+
 test('Swift downloads show their destination and reveal completed files in Finder', () => {
   assert.match(MAIN_WINDOW_SOURCE, /statusLabel\.stringValue = completed \? "下载完成" : "正在下载"/)
   assert.match(MAIN_WINDOW_SOURCE, /pathLabel\.stringValue =/)

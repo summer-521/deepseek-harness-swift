@@ -164,7 +164,6 @@ public final class SettingsViewModel: ObservableObject {
     @Published public var isOpeningBrowser: Bool = false
     @Published public var uiTheme: String = "default"
     @Published public private(set) var externalTheme: String?
-    @Published public var translateCommands: Bool = true
 
     @Published public var installedPlugins: [DshPluginItem] = []
     @Published public var outdatedPluginsMap: [String: String] = [:]
@@ -800,7 +799,6 @@ public final class SettingsViewModel: ObservableObject {
         self.uiTheme = state.uiTheme
         let settingsProfileDirectory = DshLaunchContext.profileDirectory(for: effectiveProfile)
         self.externalTheme = DshPluginManager.shared.detectExternalTheme(at: settingsProfileDirectory)
-        self.translateCommands = state.translateCommands
         self.installedVersions = DshVersionManager.shared.listInstalledVersions()
         if outdatedPluginsContext?.profile != effectiveProfile
             || outdatedPluginsContext?.registry
@@ -2419,7 +2417,6 @@ public final class SettingsViewModel: ObservableObject {
             state.appProfile = profileToPersist
             state.npmRegistry = normalizedRegistry
             state.uiTheme = uiTheme
-            state.translateCommands = translateCommands
             state.autoFollowLatest = autoFollowLatest
             state.runtimeState.updatePolicy = autoFollowLatest ? .automaticStable : .notify
             state.runtimeState.channel = runtimeChannel
@@ -2432,7 +2429,6 @@ public final class SettingsViewModel: ObservableObject {
             refreshPlugins()
         }
         MainWindowController.shared.syncUiTheme()
-        MainWindowController.shared.syncTranslateCommands()
     }
 
     /// Switch the app's DSH profile and restart the managed service. The

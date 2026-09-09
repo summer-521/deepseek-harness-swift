@@ -506,7 +506,6 @@ public struct DshStateConfig: Codable, Equatable {
     public var browserAccessEnabled: Bool
     public var networkExposure: DshNetworkExposure
     public var uiTheme: String
-    public var translateCommands: Bool
     public var cachedUserPath: String?
 
     public init(
@@ -521,7 +520,6 @@ public struct DshStateConfig: Codable, Equatable {
         browserAccessEnabled: Bool = false,
         networkExposure: DshNetworkExposure = .loopback,
         uiTheme: String = "default",
-        translateCommands: Bool = true,
         cachedUserPath: String? = nil
     ) {
         self.selectedVersion = selectedVersion
@@ -535,7 +533,6 @@ public struct DshStateConfig: Codable, Equatable {
         self.browserAccessEnabled = browserAccessEnabled
         self.networkExposure = browserAccessEnabled ? networkExposure : .loopback
         self.uiTheme = uiTheme
-        self.translateCommands = translateCommands
         self.cachedUserPath = cachedUserPath
     }
 
@@ -551,7 +548,6 @@ public struct DshStateConfig: Codable, Equatable {
         case browserAccessEnabled
         case networkExposure
         case uiTheme
-        case translateCommands
         case cachedUserPath
     }
 
@@ -586,7 +582,6 @@ public struct DshStateConfig: Codable, Equatable {
         let decodedExposure = try container.decodeIfPresent(DshNetworkExposure.self, forKey: .networkExposure) ?? .loopback
         self.networkExposure = self.browserAccessEnabled ? decodedExposure : .loopback
         self.uiTheme = try container.decodeIfPresent(String.self, forKey: .uiTheme) ?? "default"
-        self.translateCommands = try container.decodeIfPresent(Bool.self, forKey: .translateCommands) ?? true
         self.cachedUserPath = try container.decodeIfPresent(String.self, forKey: .cachedUserPath)
     }
 
@@ -603,7 +598,6 @@ public struct DshStateConfig: Codable, Equatable {
         try container.encode(browserAccessEnabled, forKey: .browserAccessEnabled)
         try container.encode(networkExposure, forKey: .networkExposure)
         try container.encode(uiTheme, forKey: .uiTheme)
-        try container.encode(translateCommands, forKey: .translateCommands)
         try container.encodeIfPresent(cachedUserPath, forKey: .cachedUserPath)
     }
 

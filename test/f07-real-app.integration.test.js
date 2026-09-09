@@ -80,7 +80,6 @@ function writeState(appSupport, port) {
     browserAccessEnabled: false,
     networkExposure: "loopback",
     uiTheme: "default",
-    translateCommands: true,
     cachedUserPath: null,
   });
 }

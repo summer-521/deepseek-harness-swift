@@ -363,16 +363,6 @@ public final class DshWebShell {
         """)
     }
 
-    public func syncTranslateCommands(enabled: Bool) {
-        evaluate("""
-        (() => {
-          const enabled = \(enabled ? "true" : "false");
-          window.__DSH_DESKTOP_TRANSLATE_COMMANDS__ = enabled;
-          window.dispatchEvent(new CustomEvent('dsh-desktop-translate-commands-change', { detail: { enabled } }));
-        })();
-        """)
-    }
-
     public func enableDeveloperTools() {
 #if DEBUG
         webView.configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")

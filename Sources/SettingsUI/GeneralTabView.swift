@@ -59,32 +59,6 @@ public struct GeneralTabView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsSection(
-                "行为",
-                footer: "这些选项会立即保存；服务相关的改动会在下次启动或重启时生效。"
-            ) {
-                SettingsRow(
-                    title: viewModel.translateCommands ? "命令说明汉化已开启" : "命令说明汉化已关闭",
-                    description: "将 /compact、/plan、/permission 等内置斜杠命令的说明提示显示为简体中文。"
-                ) {
-                    HStack(spacing: 0) {
-                        Spacer(minLength: 0)
-                        Toggle("", isOn: Binding(
-                            get: { viewModel.translateCommands },
-                            set: {
-                                viewModel.translateCommands = $0
-                                viewModel.saveGeneralSettings()
-                            }
-                        ))
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                        .fixedSize()
-                    }
-                    .frame(width: 220, alignment: .trailing)
-                }
-            }
-
-            SettingsSection(
                 "运行环境",
                 footer: "desktop 和 web 使用独立的插件目录。切换 Profile 会停止并重启 DSH 服务；选择 web 后，App 与终端 dsh web 共享插件和依赖，切回 desktop 时会清理 App 注入的桥接依赖。"
             ) {

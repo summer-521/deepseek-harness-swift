@@ -54,7 +54,6 @@ struct StatePersistenceHarness {
             require(manager.loadResult == .loaded, "legacy state must decode as loaded")
             require(manager.current.selectedVersion == "0.1.1-rc.2", "legacy selected version must survive")
             require(manager.current.dshPort == 3080, "legacy missing port must retain its compatibility default")
-            require(manager.current.translateCommands, "legacy missing translate setting must retain its compatibility default")
 
         case "corrupt":
             try! fileManager.createDirectory(
