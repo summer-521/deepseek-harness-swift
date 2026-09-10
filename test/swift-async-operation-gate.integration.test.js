@@ -31,7 +31,13 @@ test('the async operation gate honours cancellation without hanging or losing wa
     ], { encoding: 'utf8', timeout: 120000 })
     assert.equal(compile.status, 0, compile.stderr || compile.stdout)
 
-    for (const scenario of ['cancel-before-acquire-free', 'cancel-while-queued', 'fifo-order']) {
+    for (const scenario of [
+      'cancel-before-acquire-free',
+      'cancel-while-queued',
+      'fifo-order',
+      'cancel-storm',
+      'cancel-after-handoff',
+    ]) {
       const run = spawnSync(binaryPath, [scenario], { encoding: 'utf8', timeout: 30000 })
       assert.equal(
         run.status,

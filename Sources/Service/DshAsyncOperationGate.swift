@@ -4,61 +4,58 @@ import Foundation
 /// wider Runtime/Profile operation. Waiting callers suspend instead of
 /// blocking the main actor.
 final class DshAsyncOperationGate: @unchecked Sendable {
+    /// One queued acquisition. `state` is guarded by the gate lock, so a
+    /// cancellation and a hand-off can never both win: whoever changes the
+    /// state under the lock decides the outcome.
     private final class Waiter: @unchecked Sendable {
-        let continuation: CheckedContinuation<Void, Error>
-        let cancelled: CancelledFlag
+        enum State {
+            case queued
+            case handedOff
+            case cancelled
+        }
 
-        init(
-            continuation: CheckedContinuation<Void, Error>,
-            cancelled: CancelledFlag
-        ) {
+        let continuation: CheckedContinuation<Void, Error>
+        var state: State = .queued
+
+        init(continuation: CheckedContinuation<Void, Error>) {
             self.continuation = continuation
-            self.cancelled = cancelled
         }
     }
 
-    private final class CancelledFlag: @unchecked Sendable {
-        private let lock = NSLock()
-        private var value = false
-
-        func mark() {
-            lock.lock()
-            value = true
-            lock.unlock()
-        }
-
-        var isSet: Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            return value
-        }
+    /// Carries the enqueued waiter from the continuation body to the
+    /// cancellation handler; both touch it under the gate lock.
+    private final class WaiterSlot: @unchecked Sendable {
+        var waiter: Waiter?
     }
 
     private let lock = NSLock()
     private var isHeld = false
     private var waiters: [Waiter] = []
 
-    /// A waiter cancelled while queued must not run the caller's operation
-    /// once its turn arrives. The cancellation flag is set both by the waiter
-    /// itself (checked at enqueue time) and by the cancellation handler, so
-    /// the release pop can skip the waiter and resume it with
-    /// CancellationError without breaking the FIFO between live waiters.
-    /// A task that is already cancelled before it enqueues fails immediately:
-    /// queueing it would leave the gate unheld with a parked continuation that
-    /// nothing can resume (only a later, unrelated acquire+release would),
-    /// which hangs the caller instead of cancelling it.
+    /// Cancel-aware in all three directions:
+    /// - a task that is already cancelled when it arrives fails immediately;
+    ///   queueing it would leave the gate unheld with a parked continuation
+    ///   that only an unrelated acquire+release could resume;
+    /// - a waiter cancelled while queued is marked under the lock and skipped
+    ///   by the release pop, so its operation never runs and the FIFO among
+    ///   live waiters is preserved;
+    /// - a cancellation that loses the race against a hand-off is still
+    ///   observed after the resume, and the just-acquired lock is released
+    ///   before the error is reported, so a cancelled caller neither runs its
+    ///   operation nor leaks the gate.
     func acquire() async throws {
-        let cancelled = CancelledFlag()
+        let slot = WaiterSlot()
         try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
                 var resumeNow = false
                 var resumeCancelled = false
                 lock.lock()
                 if Task.isCancelled {
-                    cancelled.mark()
                     resumeCancelled = true
                 } else if isHeld {
-                    waiters.append(Waiter(continuation: continuation, cancelled: cancelled))
+                    let waiter = Waiter(continuation: continuation)
+                    slot.waiter = waiter
+                    waiters.append(waiter)
                 } else {
                     isHeld = true
                     resumeNow = true
@@ -71,18 +68,30 @@ final class DshAsyncOperationGate: @unchecked Sendable {
                 }
             }
         }, onCancel: {
-            // Marks this task's enqueued waiter (if it is still queued) so
-            // the release pop skips it; the waiter itself also sets the flag,
-            // so either ordering is safe.
-            cancelled.mark()
+            // Runs concurrently with the enqueue path; the gate lock makes the
+            // outcome unambiguous. A waiter that was already handed off is left
+            // alone: the caller owns the lock now and decides below.
+            lock.lock()
+            if let waiter = slot.waiter, waiter.state == .queued {
+                waiter.state = .cancelled
+            }
+            lock.unlock()
         })
+
+        // The hand-off and a cancellation can race between the release pop and
+        // the continuation resume. If the cancellation lost that race it is
+        // still observable here; release the lock before reporting it.
+        if Task.isCancelled {
+            release()
+            throw CancellationError()
+        }
     }
 
     func release() {
         var cancelledWaiters: [Waiter] = []
         var next: Waiter?
         lock.lock()
-        while let candidate = waiters.first, candidate.cancelled.isSet {
+        while let candidate = waiters.first, candidate.state == .cancelled {
             cancelledWaiters.append(candidate)
             waiters.removeFirst()
         }
@@ -91,6 +100,7 @@ final class DshAsyncOperationGate: @unchecked Sendable {
             next = nil
         } else {
             next = waiters.removeFirst()
+            next?.state = .handedOff
         }
         lock.unlock()
         for waiter in cancelledWaiters {

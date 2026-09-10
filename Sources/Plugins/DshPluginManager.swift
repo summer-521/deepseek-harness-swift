@@ -1147,12 +1147,22 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         return id
     }
 
+    /// Result of a web Profile snapshot restore. The restore itself succeeded
+    /// in both cases; the associated URL is the displaced pre-restore tree
+    /// that could not be removed yet and that nothing reclaims automatically
+    /// (an unreferenced displaced tree can be the only copy of a Profile, so it
+    /// is never selected by a prefix sweep). Callers surface it to the user.
+    public enum DshProfileRestoreOutcome: Equatable, Sendable {
+        case restored
+        case restoredWithDisplacedLeftover(URL)
+    }
+
     private static func restoreWebProfileSnapshotSynchronously(
         _ id: String,
         profile: DshAppProfile,
         profileDirectory: URL? = nil,
         onProgress: @escaping @Sendable (DshProfileSnapshotProgress) -> Void
-    ) throws {
+    ) throws -> URL? {
         let snapshotURL = try webProfileSnapshotURL(for: id)
         let profileURL = profileDirectory ?? Self.profileDirectory(for: profile)
         let savedProfileURL = snapshotURL.appendingPathComponent("profile", isDirectory: true)
@@ -1181,6 +1191,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
             .appendingPathComponent(".dsh-profile-restore-\(id)", isDirectory: true)
         let profileExists = fileManager.fileExists(atPath: profileURL.path)
         var displacedCurrent = false
+        var leftover: URL?
 
         do {
             if profileExists {
@@ -1209,12 +1220,17 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                 try copyDirectoryPreferClone(from: savedProfileURL, to: profileURL)
             }
 
+            // The restore itself has succeeded at this point, so a leftover
+            // that cannot be removed is reported instead of undoing the
+            // restore: the caller can tell the user which tree is retained
+            // (R12). It is deliberately never reclaimed by a prefix sweep — an
+            // unreferenced displaced tree can be the only copy of a Profile.
             if displacedCurrent {
-                try? fileManager.removeItem(at: displacedURL)
+                leftover = Self.removeDisplacedRestoreLeftover(at: displacedURL, fileManager: fileManager)
             } else if fileManager.fileExists(atPath: displacedURL.path) {
                 // Resumed restore: an earlier interrupted attempt left its
                 // displaced tree here and the snapshot is now in place.
-                try? fileManager.removeItem(at: displacedURL)
+                leftover = Self.removeDisplacedRestoreLeftover(at: displacedURL, fileManager: fileManager)
             }
         } catch {
             // Only touch the paths this attempt created (see the plugin
@@ -1237,6 +1253,27 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
             fraction: 1,
             detail: nil
         ))
+        return leftover
+    }
+
+    /// Remove a displaced pre-restore tree once the snapshot is in place.
+    /// Returns the URL when it is still there, so the caller can report it: the
+    /// canonical Profile is already restored, and an unreferenced displaced
+    /// tree is deliberately never reclaimed by a prefix sweep.
+    private static func removeDisplacedRestoreLeftover(
+        at displacedURL: URL,
+        fileManager: FileManager
+    ) -> URL? {
+        do {
+            try fileManager.removeItem(at: displacedURL)
+            return nil
+        } catch {
+            print(
+                "[DshPluginManager] Restored Profile kept a displaced leftover at \(displacedURL.path):",
+                error
+            )
+            return displacedURL
+        }
     }
 
     /// Take a complete copy of the shared web Profile before a Runtime
@@ -1260,13 +1297,16 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
     /// Restore a previously persisted Profile snapshot. Replacement is
     /// recoverable: the current Profile is moved aside until the snapshot
     /// copy succeeds, so a failed copy does not silently destroy both states.
+    /// The outcome reports a displaced leftover that could not be removed, so
+    /// callers can tell the user which tree is still on disk (R12).
+    @discardableResult
     public func restoreWebProfileSnapshot(
         _ id: String,
         profile: DshAppProfile = .web,
         profileDirectory: URL? = nil,
         onProgress: @escaping @Sendable (DshProfileSnapshotProgress) -> Void = { _ in }
-    ) async throws {
-        try await Task.detached(priority: .utility) {
+    ) async throws -> DshProfileRestoreOutcome {
+        let leftover = try await Task.detached(priority: .utility) {
             try Self.restoreWebProfileSnapshotSynchronously(
                 id,
                 profile: profile,
@@ -1274,6 +1314,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                 onProgress: onProgress
             )
         }.value
+        return leftover.map(DshProfileRestoreOutcome.restoredWithDisplacedLeftover) ?? .restored
     }
 
     /// Remove one exact, no-longer-needed Profile snapshot.
@@ -1291,6 +1332,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
     @discardableResult
     public func cleanupOrphanedWebProfileSnapshots(keeping retainedID: String?) async -> [String] {
         await Task.detached(priority: .utility) {
+            guard Self.isRealDirectory(at: Self.webProfileSnapshotDirectory) else { return [] }
             guard let entries = try? FileManager.default.contentsOfDirectory(
                 at: Self.webProfileSnapshotDirectory,
                 includingPropertiesForKeys: nil,
@@ -1300,7 +1342,9 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
             var removed: [String] = []
             for entry in entries {
                 let id = entry.lastPathComponent
-                guard UUID(uuidString: id) != nil, id != retainedID else { continue }
+                guard UUID(uuidString: id) != nil,
+                      id != retainedID,
+                      Self.isRealDirectory(at: entry) else { continue }
                 do {
                     try FileManager.default.removeItem(at: entry)
                     removed.append(id)
@@ -1329,6 +1373,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
     ) async -> [String] {
         await Task.detached(priority: .utility) {
             let fileManager = FileManager.default
+            guard Self.isRealDirectory(at: Self.pluginOperationSnapshotDirectory) else { return [] }
             guard let operationEntries = try? fileManager.contentsOfDirectory(
                 at: Self.pluginOperationSnapshotDirectory,
                 includingPropertiesForKeys: nil,
@@ -1339,7 +1384,8 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
             for operationEntry in operationEntries {
                 let operationID = operationEntry.lastPathComponent
                 guard UUID(uuidString: operationID) != nil,
-                      operationID != keepingOperationID else { continue }
+                      operationID != keepingOperationID,
+                      Self.isRealDirectory(at: operationEntry) else { continue }
                 guard let snapshotEntries = try? fileManager.contentsOfDirectory(
                     at: operationEntry,
                     includingPropertiesForKeys: nil,
@@ -1348,7 +1394,8 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
 
                 for snapshotEntry in snapshotEntries {
                     let snapshotID = snapshotEntry.lastPathComponent
-                    guard UUID(uuidString: snapshotID) != nil else { continue }
+                    guard UUID(uuidString: snapshotID) != nil,
+                          Self.isRealDirectory(at: snapshotEntry) else { continue }
                     if Self.canProveOrphanedPluginSnapshotOwnership(
                         operationID: operationID,
                         snapshotID: snapshotID,
@@ -3506,6 +3553,22 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
             return false
         }
         return attributes[.type] as? FileAttributeType == .typeSymbolicLink
+    }
+
+    /// True only for a real directory (lstat semantics: a symlink to a
+    /// directory, including a dangling one, is rejected).
+    ///
+    /// The orphan sweeps currently enumerate with
+    /// `contentsOfDirectory(at:includingPropertiesForKeys:options:)`, which
+    /// already refuses a symlinked directory, so this is a latent guard rather
+    /// than a fixed hole: it keeps the invariant explicit if a sweep is ever
+    /// switched to `contentsOfDirectory(atPath:)` or `FileManager.enumerator`
+    /// (both follow links) and removal would then delete through the link.
+    static func isRealDirectory(at url: URL) -> Bool {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
+            return false
+        }
+        return attributes[.type] as? FileAttributeType == .typeDirectory
     }
 
     /// Every directory the startup sweep may remove is app-generated with a

@@ -962,7 +962,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                     ]
                 )
             }
-            try await DshPluginManager.shared.restoreWebProfileSnapshot(
+            let restoreOutcome = try await DshPluginManager.shared.restoreWebProfileSnapshot(
                 snapshotID,
                 profile: context.profile,
                 profileDirectory: context.profileDirectory
@@ -971,6 +971,13 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                     SettingsViewModel.shared.installProgressPhase = DshMainWindowUIMessage.safe(progress.phase)
                     SettingsViewModel.shared.installProgressDetail = progress.detail.map(DshMainWindowUIMessage.safe)
                 }
+            }
+            // The Profile is restored either way; a displaced leftover is
+            // reported because nothing reclaims an unreferenced displaced tree
+            // automatically (R12).
+            if case .restoredWithDisplacedLeftover(let leftover) = restoreOutcome {
+                SettingsViewModel.shared.alertMessage =
+                    "web Profile 已恢复，但旧的 displaced 副本删除失败，仍保留在：\(DshMainWindowUIMessage.safe(leftover.path))。确认不需要后可在访达中手动删除。"
             }
         }
 

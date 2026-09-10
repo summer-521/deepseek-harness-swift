@@ -458,15 +458,24 @@ test('round-2 fixes keep their fail-closed ordering and invariants', () => {
   assert.match(STATE_SOURCE, /public static func repairIdleTransactionResidue/)
   assert.match(SETTINGS_SOURCE, /repairIdleTransactionResidue/)
 
-  // R5: an already-cancelled acquire must fail immediately instead of being
-  // queued as a waiter that nothing can resume.
+  // R5 + T10: an already-cancelled acquire fails immediately instead of being
+  // queued; a queued cancellation is decided under the gate lock; and a
+  // cancellation that loses the hand-off race still fails the acquire after
+  // releasing the lock it just received.
   assert.match(
     GATE_SOURCE,
-    /if Task\.isCancelled \{\s*\n\s*cancelled\.mark\(\)\s*\n\s*resumeCancelled = true/
+    /if Task\.isCancelled \{\s*\n\s*resumeCancelled = true/
   )
   assert.match(
     GATE_SOURCE,
     /if resumeCancelled \{\s*\n\s*continuation\.resume\(throwing: CancellationError\(\)\)/
+  )
+  assert.match(GATE_SOURCE, /case handedOff/)
+  assert.match(GATE_SOURCE, /waiter\.state = \.cancelled/)
+  assert.match(GATE_SOURCE, /next\?\.state = \.handedOff/)
+  assert.match(
+    GATE_SOURCE,
+    /if Task\.isCancelled \{\s*\n\s*release\(\)\s*\n\s*throw CancellationError\(\)/
   )
   assert.doesNotMatch(
     GATE_SOURCE,

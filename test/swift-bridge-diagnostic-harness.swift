@@ -68,6 +68,30 @@ struct DshBridgeDiagnosticHarness {
         )))
         require({ if case .success = validTheme { return true }; return false }(), "theme should be accepted")
 
+        // The desktop-host bridge (`assets/dsh-desktop-host/client.js`) sends
+        // `{colorScheme, preference, externalTheme}` and reports a missing
+        // external theme as null. The validator used to whitelist only
+        // colorScheme/externalTheme, which silently rejected every theme
+        // update and left the ready-time fallback as the only path.
+        let themeWithPreference = validator.validate(incoming(body: makeBody(
+            type: "theme", launchID: launchID, generationID: generationID,
+            payload: ["colorScheme": "dark", "preference": "dark", "externalTheme": "default"]
+        )))
+        require(
+            { if case .success = themeWithPreference { return true }; return false }(),
+            "theme with the plugin's preference field should be accepted"
+        )
+
+        let themeWithNullExternal = validator.validate(incoming(body: makeBody(
+            type: "theme", launchID: launchID, generationID: generationID,
+            payload: ["colorScheme": "light", "preference": "light", "externalTheme": NSNull()]
+        )))
+        if case .success(let message) = themeWithNullExternal {
+            require(message.type == .theme, "a null externalTheme must stay a theme message")
+        } else {
+            require(false, "a null externalTheme should be accepted")
+        }
+
         func failure(_ result: Result<DshBridgeValidatedMessage, DshBridgeMessageValidationError>, _ expected: DshBridgeMessageValidationError, _ label: String) {
             guard case .failure(let error) = result else {
                 require(false, "\(label) should be rejected")

@@ -1635,7 +1635,7 @@ public final class SettingsViewModel: ObservableObject {
             }
             if let snapshotID {
                 do {
-                    try await DshPluginManager.shared.restoreWebProfileSnapshot(
+                    let restoreOutcome = try await DshPluginManager.shared.restoreWebProfileSnapshot(
                         snapshotID,
                         profile: snapshotProfile
                     ) { progress in
@@ -1643,6 +1643,10 @@ public final class SettingsViewModel: ObservableObject {
                             self.installProgressPhase = DshSettingsUIMessage.safe(progress.phase)
                             self.installProgressDetail = progress.detail.map(DshSettingsUIMessage.safe)
                         }
+                    }
+                    if case .restoredWithDisplacedLeftover(let leftover) = restoreOutcome {
+                        self.alertMessage =
+                            "web Profile 已恢复，但旧的 displaced 副本删除失败，仍保留在：\(DshSettingsUIMessage.safe(leftover.path))。确认不需要后可在访达中手动删除。"
                     }
                 } catch {
                     let diagnostic = "\(message) 但 web Profile 恢复失败，事务仍保留待下次启动重试：\(DshSettingsUIMessage.safe(error))"
@@ -2053,6 +2057,11 @@ public final class SettingsViewModel: ObservableObject {
             try await performRuntimeUpdate(item, currentVersion: currentVersion)
             loadFromState()
             await refreshCatalog()
+            // The new Runtime is now in its confirmed cleanup window, where
+            // plugin writes and Profile switches are intentionally blocked
+            // until the next ordinary launch. Say what unblocks them instead of
+            // leaving disabled controls unexplained.
+            showPluginStatus("DSH \(item.version) 已更新；重启一次 DSH（正常启动完成）后即可继续安装/更新插件或切换 Profile")
         } catch {
             // performRuntimeUpdate includes the active/candidate versions and
             // whether rollback or cleanup also failed. Keep that diagnostic

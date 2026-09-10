@@ -146,6 +146,90 @@ private func fifoOrder() async {
             "waiters must be served in FIFO order, got \(recorder.events)")
 }
 
+/// Stress the cancellation versus hand-off race. Whichever side wins, two
+/// invariants must hold: every waiter settles exactly once (either it ran and
+/// released, or it threw), and the gate is never left held — a cancelled
+/// caller that already received the lock must release it before reporting.
+private func cancelStorm() async {
+    var badRounds = 0
+    for _ in 0..<40 {
+        let gate = DshAsyncOperationGate()
+        let recorder = Recorder()
+        try? await gate.acquire()
+
+        let waiters = (0..<4).map { _ in
+            Task {
+                do {
+                    try await gate.acquire()
+                    recorder.append("ran")
+                    gate.release()
+                } catch {
+                    recorder.append("cancelled")
+                }
+            }
+        }
+        for (index, waiter) in waiters.enumerated() where index % 2 == 0 {
+            waiter.cancel()
+        }
+        await sleep(milliseconds: 3)
+        gate.release()
+        await sleep(milliseconds: 30)
+
+        let events = recorder.events
+        if events.count != waiters.count {
+            badRounds += 1
+            continue
+        }
+        // The gate must be free again; a cancelled hand-off must not leak it.
+        do {
+            try await gate.acquire()
+            gate.release()
+        } catch {
+            badRounds += 1
+        }
+    }
+    require(badRounds == 0, "cancel/hand-off races must settle without leaking, \(badRounds) bad rounds")
+}
+
+/// Deterministic version of the hand-off race: the waiter is popped by
+/// `release()` and only then cancelled, so the cancellation loses the race
+/// inside the state machine. `acquire()` must still fail, and it must release
+/// the lock it just received — otherwise the gate stays held forever.
+private func cancelAfterHandoff() async {
+    let gate = DshAsyncOperationGate()
+    let recorder = Recorder()
+    try? await gate.acquire()
+
+    let waiter = Task {
+        do {
+            try await gate.acquire()
+            recorder.append("ran")
+            gate.release()
+        } catch {
+            recorder.append("cancelled")
+        }
+    }
+    await sleep(milliseconds: 50) // let the waiter enqueue
+    gate.release()                // hand the lock off (state becomes handedOff)
+    waiter.cancel()               // cancels after the hand-off commit
+    await sleep(milliseconds: 100)
+
+    require(recorder.events == ["cancelled"],
+            "a cancellation that loses the hand-off race must still fail the acquire, got \(recorder.events)")
+
+    // If the failed acquire forgot to release, this hangs and the watchdog
+    // reports it as a hung scenario.
+    do {
+        try await gate.acquire()
+        gate.release()
+        recorder.append("gate-free")
+    } catch {
+        recorder.append("gate-locked")
+    }
+    require(recorder.events == ["cancelled", "gate-free"],
+            "a cancelled hand-off must release the gate, got \(recorder.events)")
+}
+
 @main
 struct AsyncOperationGateHarness {
     static func main() async {
@@ -158,6 +242,10 @@ struct AsyncOperationGateHarness {
             await cancelWhileQueued()
         case "fifo-order":
             await fifoOrder()
+        case "cancel-storm":
+            await cancelStorm()
+        case "cancel-after-handoff":
+            await cancelAfterHandoff()
         default:
             fputs("FAIL: unknown scenario \(scenario)\n", stderr)
             exit(3)
