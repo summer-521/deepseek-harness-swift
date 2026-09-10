@@ -137,6 +137,18 @@ public final class DshVersionManager {
                 return selected
             }
 
+            // Never settle or rewrite a Runtime transaction that still owns
+            // usable recovery evidence. This method runs from
+            // SettingsViewModel.loadFromState during startup, i.e. before
+            // recoverPendingRuntimeUpdate, so clearing the transaction here
+            // would destroy the rollback evidence (the previous Runtime and its
+            // retained Profile snapshot) before the recovery planner can use
+            // it. Only a transaction whose evidence is already gone may be
+            // settled here.
+            guard !hasRecoverableRuntimeTransaction(state.runtimeState) else {
+                return selected
+            }
+
             let fallback = listInstalledVersions().first
             let descriptor = fallback.map { runtimeDescriptor(version: $0) }
             do {
@@ -160,6 +172,11 @@ public final class DshVersionManager {
             return fallback
         }
         guard let first = listInstalledVersions().first else { return nil }
+        // Same rule as above: a transaction with usable recovery evidence is
+        // owned by the Runtime recovery planner, not by selection repair.
+        guard !hasRecoverableRuntimeTransaction(state.runtimeState) else {
+            return state.selectedVersion
+        }
         let descriptor = runtimeDescriptor(version: first)
         do {
             try DshStateManager.shared.updateOrThrow { state in
@@ -174,6 +191,17 @@ public final class DshVersionManager {
             return state.selectedVersion
         }
         return first
+    }
+
+    /// True while a Runtime transaction still owns usable recovery evidence: a
+    /// pending candidate, or an installed previous Runtime that a rollback can
+    /// still start. Such a transaction belongs to `DshRuntimeRecoveryPlanner`;
+    /// the selection repair must never settle it.
+    private func hasRecoverableRuntimeTransaction(_ runtimeState: DshRuntimeState) -> Bool {
+        if runtimeState.pending != nil { return true }
+        guard runtimeState.phase != .idle else { return false }
+        guard let previous = runtimeState.previous else { return false }
+        return isVersionInstalled(previous.version)
     }
 
     /// Clear stale Runtime-transaction fields left behind by a transaction

@@ -229,23 +229,31 @@ public final class SettingsViewModel: ObservableObject {
             && DshRuntimeMutationGate.allowsRuntimeUpdate(state)
     }
 
-    /// Plugin writes are intentionally narrower than the general settings
-    /// mutation gate.  The web Profile is shared with `dsh web`, so Settings
-    /// may inspect it and may switch back to desktop, but it must never
-    /// install, update, or remove packages in that shared tree.
+    /// Plugin writes and Profile switches are intentionally narrower than the
+    /// general settings mutation gate. Two reasons:
+    /// - the web Profile is shared with `dsh web`, so Settings may inspect it
+    ///   and switch back to desktop, but must never install, update, or remove
+    ///   packages in that shared tree;
+    /// - a confirmed Runtime transaction still holds a rollback snapshot of the
+    ///   package tree, so plugin writes wait until the window settles (T1).
     public var pluginWritesAllowed: Bool {
         pluginMutationsAllowed
+            && DshRuntimeMutationGate.allowsProfileTreeMutation(DshStateManager.shared.current)
             && DshStateManager.shared.current.appProfile == .desktop
             && appProfile == .desktop
     }
 
     /// Keep the reason next to the disabled controls so the user can tell a
-    /// shared web Profile from a generic recovery/operation lock.
+    /// shared web Profile from a confirmed-Runtime window or a generic
+    /// recovery/operation lock.
     public var pluginMutationUnavailableReason: String? {
         guard !pluginWritesAllowed else { return nil }
         let state = DshStateManager.shared.current
         if state.appProfile == .web || appProfile == .web {
             return "当前为 web Profile：与终端 dsh web 共享插件目录，插件安装、更新和卸载已禁用；请切回 desktop Profile。"
+        }
+        if state.runtimeState.phase == .confirmed {
+            return "新 Runtime 已确认但尚未结算：重启 DSH 一次（正常启动完成）后即可继续插件操作，避免升级回退时丢掉此后改动的插件。"
         }
         if !pluginMutationsAllowed {
             return "插件写操作暂不可用，请先完成当前恢复或正在进行的操作。"
@@ -809,18 +817,11 @@ public final class SettingsViewModel: ObservableObject {
         let hasPendingRuntimeRecovery = state.runtimeState.pending != nil
         let transactionProfile = state.runtimeState.profile
         let effectiveProfile = hasPendingRuntimeRecovery ? transactionProfile : state.appProfile
-        if hasPendingRuntimeRecovery, state.appProfile != transactionProfile {
-            // This can only be encountered when an older build persisted a
-            // profile switch while rollback was pending. Repair it before any
-            // service launch so the retained snapshot is restored only to its
-            // owning Profile.
-            DshStateManager.shared.update { state in
-                guard state.runtimeState.pending != nil,
-                      state.runtimeState.profile == transactionProfile else { return }
-                state.appProfile = transactionProfile
-            }
-            self.alertMessage = "检测到未完成的 Runtime 回滚，已切回 \(transactionProfile.rawValue) Profile 以保护 Profile 数据。"
-        }
+        // A Profile/transaction mismatch written by an older build is repaired
+        // (and its failure surfaced as a startup blocker) in
+        // `recoverPendingProfileSwitch`, which owns the throwing startup chain.
+        // Here only the UI-facing effective Profile is derived, so this
+        // path can never discard a failed migration write.
         self.selectedVersion = DshVersionManager.shared.ensureSelection()
         self.appProfile = effectiveProfile
         self.isRuntimeRecoveryPending = hasPendingRuntimeRecovery
@@ -868,6 +869,24 @@ public final class SettingsViewModel: ObservableObject {
     /// Cleanup is limited to the web bridge artifacts owned by this app; user
     /// plugins and shared credentials are never removed.
     public func recoverPendingProfileSwitch() async throws {
+        // A state written by an older build can carry a Profile switch while a
+        // Runtime transaction (rollback) belongs to a different Profile. The
+        // retained snapshot belongs to the transaction's Profile, so make that
+        // Profile durable before any recovery reads the state. This repair used
+        // to live in `loadFromState` with a discarded Result; it now runs in the
+        // throwing startup chain, so a failed write blocks startup instead of
+        // being silently ignored.
+        let existing = DshStateManager.shared.current
+        if existing.runtimeState.pending != nil,
+           existing.appProfile != existing.runtimeState.profile {
+            try DshStateManager.shared.updateOrThrow { state in
+                guard state.runtimeState.pending != nil else { return }
+                state.appProfile = state.runtimeState.profile
+            }
+            self.appProfile = existing.runtimeState.profile
+            self.alertMessage = "检测到未完成的 Runtime 回滚，已切回 \(existing.runtimeState.profile.rawValue) Profile 以保护 Profile 数据。"
+        }
+
         let state = DshStateManager.shared.current
         guard let transaction = state.pendingProfileSwitch else { return }
         let capturedRegistry = DshVersionManager.normalizedRegistry(state.npmRegistry)
@@ -1592,6 +1611,10 @@ public final class SettingsViewModel: ObservableObject {
             // actually passes the normal startup health gate. MainWindowController
             // owns the single restore operation immediately before that start;
             // doing it here as well would restore the 4 GB Profile twice.
+            // Refresh the published selection now: ensureSelection no longer
+            // settles an open transaction, so the view model would otherwise
+            // keep showing the version this recovery just replaced.
+            loadFromState()
             self.alertMessage = "\(message) 已准备恢复，正在验证旧 Runtime。"
             syncRuntimeRecoveryState()
 
@@ -1631,13 +1654,13 @@ public final class SettingsViewModel: ObservableObject {
             }
             try DshStateManager.shared.updateOrThrow { state in
                 state.selectedVersion = nil
-                state.runtimeState.active = nil
-                state.runtimeState.pending = nil
-                state.runtimeState.previous = nil
-                state.runtimeState.phase = .idle
-                state.runtimeState.webProfileSnapshotID = nil
-                state.runtimeState.healthyStartCount = 0
-                state.runtimeState.lastDiagnostic = message
+                // Central transition: it also clears the transaction owner, so
+                // the mutation gates reopen in this session instead of waiting
+                // for the next decode/launch.
+                state.runtimeState = DshRuntimeTransaction.settleAbandoned(
+                    state.runtimeState,
+                    diagnostic: message
+                )
             }
             var finalMessage = message
             do {
@@ -1657,6 +1680,10 @@ public final class SettingsViewModel: ObservableObject {
                     }
                 }
             }
+            // The reset settled the transaction; refresh the published
+            // selection so the UI reflects the cleared/auto-selected Runtime
+            // instead of the version whose install just disappeared.
+            loadFromState()
             self.alertMessage = finalMessage
             syncRuntimeRecoveryState()
         }
@@ -1736,69 +1763,88 @@ public final class SettingsViewModel: ObservableObject {
         }
 
         let snapshotID = expectedSnapshotID
-        var snapshotCleanupError: Error?
+        // Commit the settled idle state BEFORE deleting the retained snapshot
+        // and the previous Runtime directory. Durable state must never keep
+        // claiming that a rollback is still available after the resources it
+        // points at are gone: the recovery surface offers "恢复到上一个
+        // Runtime" for any confirmed transaction, and the next launch would
+        // then fail with -32 on a snapshot that was already deleted, with no
+        // recovery action left. The snapshot id is retained as cleanup debt
+        // until the delete really succeeds; `previous` is unreferenced after
+        // the commit, so a failed discard is a harmless leftover that
+        // `cleanupUnreferencedVersions` collects on the next launch.
+        var didCommit = false
+        try DshStateManager.shared.updateOrThrow { state in
+            guard self.runtimeTransactionMatches(
+                state,
+                phase: .confirmed,
+                selectedVersion: expectedSelectedVersion,
+                activeVersion: expectedActiveVersion,
+                previousVersion: expectedPreviousVersion,
+                pendingVersion: expectedPendingVersion,
+                snapshotID: expectedSnapshotID,
+                transactionID: expectedTransactionID
+            ), state.runtimeState.healthyStartCount == nextCount - 1 else { return }
+            didCommit = true
+            state.runtimeState.previous = nil
+            state.runtimeState.healthyStartCount = 0
+            state.runtimeState.phase = .idle
+            state.runtimeState.transactionID = nil
+            state.runtimeState.webProfileSnapshotID = snapshotID
+            state.runtimeState.lastDiagnostic = nil
+        }
+        guard didCommit else { return }
+
+        var cleanupErrors: [String] = []
+        do {
+            try DshVersionManager.shared.discardInstalledVersion(previous.version)
+        } catch {
+            cleanupErrors.append("旧 Runtime 清理失败：\(DshSettingsUIMessage.safe(error))")
+        }
+
         if let snapshotID {
             do {
                 try await DshPluginManager.shared.deleteWebProfileSnapshot(snapshotID)
+                // Clear the retained reference only after the delete really
+                // succeeded.
+                try DshStateManager.shared.updateOrThrow { state in
+                    guard state.runtimeState.phase == .idle,
+                          state.runtimeState.webProfileSnapshotID == snapshotID else { return }
+                    state.runtimeState.webProfileSnapshotID = nil
+                    state.runtimeState.lastDiagnostic = cleanupErrors.isEmpty
+                        ? nil
+                        : cleanupErrors.joined(separator: "；")
+                }
             } catch {
-                snapshotCleanupError = error
+                cleanupErrors.append("web Profile 快照清理失败：\(DshSettingsUIMessage.safe(error))")
+                do {
+                    try DshStateManager.shared.updateOrThrow { state in
+                        guard state.runtimeState.webProfileSnapshotID == snapshotID else { return }
+                        state.runtimeState.lastDiagnostic = cleanupErrors.joined(separator: "；")
+                    }
+                } catch {
+                    // The reference stays retained; next-launch cleanup retries.
+                }
+                // One immediate in-session retry so a transient delete failure
+                // does not keep plugin mutations locked until the next launch.
+                do {
+                    try await retryRetainedWebProfileSnapshotCleanup()
+                    if DshStateManager.shared.current.runtimeState.webProfileSnapshotID == nil {
+                        cleanupErrors.removeAll { $0.hasPrefix("web Profile 快照清理失败") }
+                    }
+                } catch {
+                    // Keep the retained reference; next-launch cleanup retries.
+                }
+            }
+        } else if !cleanupErrors.isEmpty {
+            try DshStateManager.shared.updateOrThrow { state in
+                state.runtimeState.lastDiagnostic = cleanupErrors.joined(separator: "；")
             }
         }
 
-        let stateAfterSnapshotCleanup = DshStateManager.shared.current
-        guard runtimeTransactionMatches(
-            stateAfterSnapshotCleanup,
-            phase: .confirmed,
-            selectedVersion: expectedSelectedVersion,
-            activeVersion: expectedActiveVersion,
-            previousVersion: expectedPreviousVersion,
-            pendingVersion: expectedPendingVersion,
-            snapshotID: expectedSnapshotID,
-            transactionID: expectedTransactionID
-        ), stateAfterSnapshotCleanup.runtimeState.healthyStartCount == nextCount - 1 else { return }
-
-        do {
-            try DshVersionManager.shared.discardInstalledVersion(previous.version)
-            var didCommit = false
-            try DshStateManager.shared.updateOrThrow { state in
-                guard self.runtimeTransactionMatches(
-                    state,
-                    phase: .confirmed,
-                    selectedVersion: expectedSelectedVersion,
-                    activeVersion: expectedActiveVersion,
-                    previousVersion: expectedPreviousVersion,
-                    pendingVersion: expectedPendingVersion,
-                    snapshotID: expectedSnapshotID,
-                    transactionID: expectedTransactionID
-                ), state.runtimeState.healthyStartCount == nextCount - 1 else { return }
-                didCommit = true
-                state.runtimeState.previous = nil
-                state.runtimeState.healthyStartCount = 0
-                state.runtimeState.phase = .idle
-                state.runtimeState.transactionID = nil
-                state.runtimeState.webProfileSnapshotID = snapshotCleanupError == nil ? nil : snapshotID
-                state.runtimeState.lastDiagnostic = snapshotCleanupError.map {
-                    "旧 Runtime 已清理，但 web Profile 快照清理失败：\(DshSettingsUIMessage.safe($0))"
-                }
-            }
-            guard didCommit else { return }
-        } catch let error as DshStatePersistenceError {
-            throw error
-        } catch {
-            try DshStateManager.shared.updateOrThrow { state in
-                guard self.runtimeTransactionMatches(
-                    state,
-                    phase: .confirmed,
-                    selectedVersion: expectedSelectedVersion,
-                    activeVersion: expectedActiveVersion,
-                    previousVersion: expectedPreviousVersion,
-                    pendingVersion: expectedPendingVersion,
-                    snapshotID: expectedSnapshotID,
-                    transactionID: expectedTransactionID
-                ) else { return }
-                state.runtimeState.healthyStartCount = nextCount
-            }
-            self.alertMessage = "新 Runtime 已连续启动，但旧 Runtime 清理失败：\(DshSettingsUIMessage.safe(error))"
+        syncRuntimeRecoveryState()
+        if !cleanupErrors.isEmpty {
+            self.alertMessage = "新 Runtime 已连续启动，但\(cleanupErrors.joined(separator: "；"))"
         }
     }
 
@@ -2572,7 +2618,11 @@ public final class SettingsViewModel: ObservableObject {
 
     public func saveGeneralSettings() {
         let stateBeforeSave = DshStateManager.shared.current
-        let profileMutationAllowed = pluginMutationsAllowed
+        // The Profile is part of the package tree a confirmed Runtime still
+        // holds a rollback snapshot for, so it must not be persisted from this
+        // boundary either; only a settled Runtime may change it (T4).
+        let profileMutationAllowed = DshRuntimeMutationGate
+            .allowsProfileTreeMutation(stateBeforeSave)
         if !profileMutationAllowed, appProfile != stateBeforeSave.appProfile {
             // A binding or an older caller may have changed the published
             // value before reaching this persistence boundary. Restore the
@@ -2641,6 +2691,18 @@ public final class SettingsViewModel: ObservableObject {
         if state.runtimeState.pending != nil,
            profile != state.runtimeState.profile {
             alertMessage = "Runtime 回滚尚未完成，只能使用 \(state.runtimeState.profile.rawValue) Profile；为保护 Profile 数据，暂不允许切换。"
+            return
+        }
+        // A confirmed Runtime transaction still holds a rollback snapshot of
+        // the Profile tree. Switching now would strand the second healthy start
+        // (the settle is bound to the transaction's own Profile) and could make
+        // a later Runtime rollback revert Profile work done after the update.
+        // The window ends at the next ordinary launch, so the user just needs
+        // to restart once.
+        guard DshRuntimeMutationGate.allowsProfileTreeMutation(state) else {
+            alertMessage = state.runtimeState.phase == .confirmed
+                ? "新 Runtime 已确认但尚未结算：请重启 DSH 一次（正常启动完成）后再切换 Profile。"
+                : "Runtime 事务尚未完成，暂时无法切换 Profile；请先完成恢复。"
             return
         }
 

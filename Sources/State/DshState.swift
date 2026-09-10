@@ -396,10 +396,20 @@ public enum DshRuntimeRecoveryPlanner {
 
 /// Runtime transaction gates used by the settings surface. A successfully
 /// updated Runtime remains in `confirmed` until a second healthy start proves
-/// that the old Runtime can be removed. That cleanup window must not disable
-/// unrelated, already-safe plugin/settings operations, but it must continue
-/// to prevent starting a second Runtime update that would overwrite the
-/// recorded previous Runtime before it is cleaned up.
+/// that the old Runtime can be removed.
+///
+/// Two different scopes share this type on purpose:
+/// - `allowsPluginMutation` is the **general settings** gate (port, theme,
+///   Registry, channel, browser access, and read-only plugin work). It stays
+///   open during `confirmed` so an update does not freeze unrelated settings.
+/// - `allowsProfileTreeMutation` is the **Profile/package-tree** gate (plugin
+///   install/update/remove and Profile switching). It requires a settled
+///   `idle` Runtime, because a confirmed transaction keeps a full rollback
+///   snapshot of exactly that tree: a plugin change made in the window would be
+///   silently reverted by "roll back to the previous Runtime" (T1), and a
+///   Profile switch would make the second healthy start unreachable and strand
+///   the cleanup (T4). The user-visible rule is "restart once after an update,
+///   then change plugins or switch Profiles".
 public enum DshRuntimeMutationGate {
     public static func allowsPluginMutation(_ state: DshStateConfig) -> Bool {
         guard state.pendingProfileSwitch == nil,
@@ -411,14 +421,19 @@ public enum DshRuntimeMutationGate {
                 && state.runtimeState.webProfileSnapshotID == nil
                 && state.runtimeState.transactionID == nil
         case .confirmed:
-            // The candidate passed its in-process startup/health gate. The
-            // previous Runtime is retained only for the second-start cleanup
-            // safety window, so plugin mutations may proceed serially.
+            // The candidate passed its in-process startup/health gate, so
+            // ordinary settings may proceed while the cleanup window is open.
             return state.runtimeState.previous != nil
                 && state.runtimeState.transactionID != nil
         case .staging, .switching, .verifying, .rollingBack:
             return false
         }
+    }
+
+    /// Gate for mutations that change the Profile/package tree that a
+    /// confirmed Runtime transaction still holds a rollback snapshot for.
+    public static func allowsProfileTreeMutation(_ state: DshStateConfig) -> Bool {
+        allowsPluginMutation(state) && state.runtimeState.phase == .idle
     }
 
     public static func allowsRuntimeUpdate(_ state: DshStateConfig) -> Bool {
@@ -555,6 +570,32 @@ public enum DshRuntimeTransaction {
         } else {
             next.lastDiagnostic = detail
         }
+        return next
+    }
+
+    /// Final shape of an abandoned Runtime transaction the recovery planner
+    /// cannot roll back or finalize (no usable previous Runtime, no usable
+    /// candidate). Every transaction field must be cleared, including
+    /// `transactionID`: `DshRuntimeMutationGate` requires all of
+    /// previous/transactionID/webProfileSnapshotID to be empty while idle, and
+    /// a reset that leaves the owner behind keeps plugin and Runtime-update
+    /// mutations locked until the next decode or launch.
+    ///
+    /// The caller owns the Profile snapshot: this transition clears the
+    /// reference only after the reset path has restored or deleted it.
+    public static func settleAbandoned(
+        _ state: DshRuntimeState,
+        diagnostic: String
+    ) -> DshRuntimeState {
+        var next = state
+        next.active = nil
+        next.previous = nil
+        next.pending = nil
+        next.phase = .idle
+        next.webProfileSnapshotID = nil
+        next.healthyStartCount = 0
+        next.transactionID = nil
+        next.lastDiagnostic = diagnostic
         return next
     }
 }

@@ -11,6 +11,7 @@ const SETTINGS_VIEW_SOURCE = read('../Sources/SettingsUI/SettingsView.swift')
 const VERSIONS_VIEW_SOURCE = read('../Sources/SettingsUI/VersionsTabView.swift')
 const GENERAL_SOURCE = read('../Sources/SettingsUI/GeneralTabView.swift')
 const PLUGIN_SOURCE = read('../Sources/Plugins/DshPluginManager.swift')
+const COORDINATOR_SOURCE = read('../Sources/Plugins/DshPluginOperationCoordinator.swift')
 const WINDOW_SOURCE = read('../Sources/MainWindow/MainWindowController.swift')
 const UPSTREAM_COOKIE_SOURCE = read('../Sources/MainWindow/DshUpstreamCookieStore.swift')
 const SERVICE_SOURCE = read('../Sources/Service/DshService.swift')
@@ -292,6 +293,36 @@ test('runtime update policy defaults to notify and labels failure stages', () =>
   assert.match(SETTINGS_SOURCE, /runtimeChannel != \.latest[\s\S]*autoFollowLatest/)
   assert.match(VERSIONS_VIEW_SOURCE, /channelDescription/)
   assert.match(VERSIONS_VIEW_SOURCE, /runtimeChannelSelection/)
+
+  // Round-3 T1/T4: package-tree writes (plugin install/update/remove) and
+  // Profile switches require a settled Runtime, while the general settings
+  // gate above stays open during the confirmed cleanup window.
+  assert.match(STATE_SOURCE, /public static func allowsProfileTreeMutation/)
+  assert.match(
+    SETTINGS_SOURCE,
+    /public var pluginWritesAllowed: Bool \{[\s\S]{0,400}allowsProfileTreeMutation\(DshStateManager\.shared\.current\)/
+  )
+  const setAppProfile = SETTINGS_SOURCE.slice(
+    SETTINGS_SOURCE.indexOf('public func setAppProfile(_ profile: DshAppProfile)'),
+    SETTINGS_SOURCE.indexOf('public func setBrowserAccessEnabled(')
+  )
+  assert.ok(setAppProfile.length > 0, 'setAppProfile must exist')
+  assert.match(
+    setAppProfile,
+    /guard DshRuntimeMutationGate\.allowsProfileTreeMutation\(state\) else \{/,
+    'Profile switching must wait for a settled Runtime'
+  )
+  const saveGeneral = SETTINGS_SOURCE.slice(
+    SETTINGS_SOURCE.indexOf('public func saveGeneralSettings()'),
+    SETTINGS_SOURCE.indexOf('public func setAppProfile(')
+  )
+  assert.ok(saveGeneral.length > 0, 'saveGeneralSettings must exist')
+  assert.match(
+    saveGeneral,
+    /let profileMutationAllowed = DshRuntimeMutationGate[\s\S]{0,80}allowsProfileTreeMutation\(stateBeforeSave\)/,
+    'the settings persistence boundary must not persist a Profile change during confirmed cleanup'
+  )
+  assert.match(SETTINGS_SOURCE, /新 Runtime 已确认但尚未结算/)
 })
 
 test('startup recovery restores a Profile at most once and retries retained cleanup', () => {
@@ -313,10 +344,83 @@ test('healthy-start cleanup validates the persisted count before committing', ()
     SETTINGS_SOURCE.indexOf('/// Retry a snapshot deletion')
   )
   assert.ok(
-    (cleanup.match(/healthyStartCount == nextCount - 1/g) || []).length >= 2,
-    'post-cleanup and commit guards must compare against the persisted pre-commit count'
+    (cleanup.match(/healthyStartCount == nextCount - 1/g) || []).length >= 1,
+    'the commit guard must compare against the persisted pre-commit count'
   )
   assert.match(cleanup, /healthyStartCount = 0[\s\S]*phase = \.idle/)
+})
+
+test('round-3 fixes keep their ordering and fail-closed invariants', () => {
+  // T8: the confirmed settle must commit idle (retaining the snapshot id as
+  // cleanup debt) BEFORE deleting the snapshot or discarding the previous
+  // Runtime. Deleting first would leave durable state claiming a rollback is
+  // available while its resources are gone, and the new "roll back to the
+  // previous Runtime" action would then hard-block on -32.
+  const healthyStart = SETTINGS_SOURCE.slice(
+    SETTINGS_SOURCE.indexOf('public func recordHealthyRuntimeStart(for context: DshLaunchContext)'),
+    SETTINGS_SOURCE.indexOf('/// Retry a snapshot deletion')
+  )
+  assert.ok(healthyStart.length > 0, 'the healthy-start settle must exist')
+  const idleCommit = healthyStart.indexOf('state.runtimeState.phase = .idle')
+  assert.ok(idleCommit >= 0, 'the healthy-start settle must commit idle')
+  assert.ok(
+    idleCommit < healthyStart.indexOf('deleteWebProfileSnapshot('),
+    'the idle commit must precede the retained-snapshot deletion'
+  )
+  assert.ok(
+    idleCommit < healthyStart.indexOf('discardInstalledVersion('),
+    'the idle commit must precede discarding the previous Runtime'
+  )
+  assert.match(healthyStart, /webProfileSnapshotID = snapshotID/)
+  assert.match(healthyStart, /retryRetainedWebProfileSnapshotCleanup\(\)/)
+
+  // T7: resetting an abandoned transaction is one pure transition that also
+  // clears the transaction owner, so the mutation gates reopen in-session.
+  assert.match(STATE_SOURCE, /public static func settleAbandoned/)
+  assert.match(SETTINGS_SOURCE, /DshRuntimeTransaction\.settleAbandoned\(/)
+
+  // T2: selection repair must never settle a transaction that still owns
+  // usable recovery evidence.
+  assert.match(
+    VERSION_MANAGER_SOURCE,
+    /guard !hasRecoverableRuntimeTransaction\(state\.runtimeState\) else \{/
+  )
+  assert.match(VERSION_MANAGER_SOURCE, /private func hasRecoverableRuntimeTransaction\(/)
+
+  // Round-3 T5 (symlink escape through the orphan sweeps) was disproven: both
+  // sweeps enumerate with `contentsOfDirectory(at:includingPropertiesForKeys:
+  // options:)`, which refuses a symlinked directory, and removal of a link
+  // entry deletes the link, not its target. The behavioral guard lives in
+  // swift-plugin-operation-harness.swift (`snapshot-sweep-symlink-guard`).
+
+  // T6: every P01 entry point (validate/adopt/recover/restore + snapshot
+  // create) rejects a dangling Profile symlink that `fileExists` cannot see.
+  assert.ok(
+    (COORDINATOR_SOURCE.match(/DshPluginManager\.isSymbolicLink\(at:/g) || []).length >= 3,
+    'validate, adopt and recover/restore must all use the lstat symlink check'
+  )
+  assert.match(
+    PLUGIN_SOURCE,
+    /if Self\.isSymbolicLink\(at: profileURL\) \{\s*\n\s*throw DshPluginOperationError\.unsafeProfileDirectory/
+  )
+
+  // T9: the legacy Profile/transaction migration runs inside the throwing
+  // startup chain, not as a discarded write in loadFromState.
+  const loadFromState = SETTINGS_SOURCE.slice(
+    SETTINGS_SOURCE.indexOf('public func loadFromState()'),
+    SETTINGS_SOURCE.indexOf('private func syncRuntimeRecoveryState()')
+  )
+  assert.ok(loadFromState.length > 0, 'loadFromState must exist')
+  assert.doesNotMatch(
+    loadFromState,
+    /state\.appProfile = transactionProfile/,
+    'the legacy owner migration must not run as a discarded write in loadFromState'
+  )
+  const profileSwitchRecovery = SETTINGS_SOURCE.slice(
+    SETTINGS_SOURCE.indexOf('public func recoverPendingProfileSwitch() async throws {'),
+    SETTINGS_SOURCE.indexOf('public func retryPendingProfileSwitchCleanup(')
+  )
+  assert.match(profileSwitchRecovery, /updateOrThrow \{ state in[\s\S]*state\.appProfile = state\.runtimeState\.profile/)
 })
 
 test('round-2 fixes keep their fail-closed ordering and invariants', () => {

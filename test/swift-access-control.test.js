@@ -341,7 +341,9 @@ test('persisted recovery owns the launch decision and locks mutating settings', 
   assert.match(WINDOW_SOURCE, /manager\.cleanup\(/)
   assert.match(SETTINGS_SOURCE, /!MainWindowController\.shared\.hasUnresolvedRecovery/)
   assert.match(SETTINGS_SOURCE, /public func setAppProfile\(_ profile: DshAppProfile\) \{\n\s*guard pluginMutationsAllowed/)
-  assert.match(SETTINGS_SOURCE, /let profileMutationAllowed = pluginMutationsAllowed/)
+  // The settings persistence boundary must not persist a Profile change unless
+  // the Profile/package tree is safe to modify (round-3 T4).
+  assert.match(SETTINGS_SOURCE, /let profileMutationAllowed = DshRuntimeMutationGate[\s\S]{0,80}allowsProfileTreeMutation\(stateBeforeSave\)/)
   assert.match(SETTINGS_SOURCE, /private func runRuntimeUpdate\([\s\S]*guard pluginMutationsAllowed, !isUpdatingRuntime/)
 })
 

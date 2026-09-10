@@ -552,6 +552,11 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
            profileURL.resolvingSymlinksInPath().path != profileURL.standardizedFileURL.path {
             throw DshPluginOperationError.unsafeProfileDirectory
         }
+        // Dangling symlinks are invisible to `fileExists` (see the recover and
+        // restore paths for the same check).
+        if DshPluginManager.isSymbolicLink(at: profileURL) {
+            throw DshPluginOperationError.unsafeProfileDirectory
+        }
         guard try await pluginManager.hasOwnedPluginOperationSnapshot(operation.snapshot) else {
             throw DshPluginOperationError.recoveryRequired("插件事务快照已缺失或不再归属本机，无法验证当前状态。")
         }
@@ -916,6 +921,12 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
         }
         if FileManager.default.fileExists(atPath: path),
            request.profileDirectory.resolvingSymlinksInPath().path != path {
+            throw DshPluginOperationError.unsafeProfileDirectory
+        }
+        // A dangling symlink is invisible to `fileExists`; without this check a
+        // request would be accepted as "Profile absent" and only fail later,
+        // after a durable record already exists.
+        if DshPluginManager.isSymbolicLink(at: request.profileDirectory.standardizedFileURL) {
             throw DshPluginOperationError.unsafeProfileDirectory
         }
         switch request.action {

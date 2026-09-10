@@ -738,6 +738,196 @@ private func verifyStagingSweep() async throws {
             "live profile content must never be touched")
 }
 
+/// T2 regression: `ensureSelection` runs from `SettingsViewModel.loadFromState`
+/// during startup, before `recoverPendingRuntimeUpdate`. It must never settle a
+/// Runtime transaction that still owns usable recovery evidence (a pending
+/// candidate or an installed previous Runtime) — doing so would clear the
+/// previous Runtime, the transaction owner and the retained Profile snapshot
+/// before the recovery planner could roll back.
+private func verifySelectionPreservesRecoverableTransaction() async throws {
+    try resetFixture()
+    try installFakeRuntime(version: "1.0.0")
+    let stateJSON = """
+    {"appProfile":"desktop","selectedVersion":"2.0.0","runtimeState":{\
+    "phase":"verifying","profile":"desktop",\
+    "active":{"version":"2.0.0","registry":"https://registry.npmjs.org","installedAt":0},\
+    "previous":{"version":"1.0.0","registry":"https://registry.npmjs.org","installedAt":0},\
+    "pending":{"version":"2.0.0","registry":"https://registry.npmjs.org","installedAt":0},\
+    "transactionID":"tx-verifying","webProfileSnapshotID":"snapshot-verifying"}}
+    """
+    try writeAppState(stateJSON)
+    let manager = DshStateManager.shared
+    require(manager.current.runtimeState.phase == .verifying, "fixture must start verifying")
+
+    let resolved = DshVersionManager.shared.ensureSelection()
+    require(resolved == "2.0.0", "the durable candidate selection must be reported unchanged")
+
+    let after = manager.current.runtimeState
+    require(after.phase == .verifying, "an open transaction must not be reset to idle")
+    require(after.pending?.version == "2.0.0", "the pending candidate must survive selection repair")
+    require(after.previous?.version == "1.0.0", "the rollback target must survive selection repair")
+    require(after.transactionID == "tx-verifying", "the transaction owner must survive selection repair")
+    require(after.webProfileSnapshotID == "snapshot-verifying",
+            "the retained Profile snapshot must survive selection repair")
+
+    // The recovery planner must still be able to roll this transaction back.
+    guard let previous = after.previous, let pending = after.pending else {
+        require(false, "preserved transaction must keep previous and pending")
+        return
+    }
+    let plan = DshRuntimeRecoveryPlanner.plan(
+        state: manager.current,
+        installedVersions: Set(DshVersionManager.shared.listInstalledVersions())
+    )
+    require(plan == .rollback(active: previous, candidate: pending),
+            "the planner must still roll the preserved transaction back, got \(String(describing: plan))")
+}
+
+/// T2 positive control: a transaction whose recovery evidence is already gone
+/// may still be settled, so the mutation gates cannot stay locked forever.
+private func verifySelectionSettlesUnrecoverableTransaction() async throws {
+    try resetFixture()
+    let stateJSON = """
+    {"appProfile":"desktop","selectedVersion":"9.9.9","runtimeState":{\
+    "phase":"idle","profile":"desktop",\
+    "previous":{"version":"8.8.8","registry":"https://registry.npmjs.org","installedAt":0},\
+    "transactionID":"tx-abandoned"}}
+    """
+    try writeAppState(stateJSON)
+    let manager = DshStateManager.shared
+
+    _ = DshVersionManager.shared.ensureSelection()
+    let after = manager.current.runtimeState
+    require(after.phase == .idle, "an unrecoverable residue must settle to idle")
+    require(after.previous == nil, "the unusable previous Runtime must be cleared")
+    require(after.transactionID == nil, "the stale transaction owner must be cleared")
+    require(DshRuntimeMutationGate.allowsPluginMutation(manager.current),
+            "settling an unrecoverable residue must reopen plugin mutations")
+}
+
+/// T6 regression: the canonical Profile path must be rejected when it is a
+/// dangling symlink — `fileExists` is false for it, so without an explicit
+/// lstat check an operation is accepted as "Profile absent" and only fails
+/// after a durable record exists.
+private func verifyDanglingProfileSymlinkGuards() async throws {
+    try resetFixture()
+    let linkPath = profileURL().path
+    try fileManager.removeItem(at: profileURL())
+    try fileManager.createSymbolicLink(
+        atPath: linkPath,
+        withDestinationPath: "/tmp/dsh-missing-profile-target"
+    )
+    require(!fileManager.fileExists(atPath: linkPath), "fixture must be a dangling symlink")
+
+    do {
+        _ = try await DshPluginManager.shared.createPluginOperationSnapshot(
+            operationID: UUID().uuidString,
+            profile: .desktop,
+            profileDirectory: profileURL()
+        )
+        require(false, "snapshot creation must reject a dangling symlink Profile")
+    } catch DshPluginOperationError.unsafeProfileDirectory {
+        // expected
+    }
+
+    let coordinator = DshPluginOperationCoordinator(operationStoreURL: operationStoreURL())
+    do {
+        _ = try await coordinator.perform(
+            DshPluginOperationRequest(
+                action: .update,
+                profile: .desktop,
+                profileDirectory: profileURL(),
+                targetPackage: "plugin"
+            ),
+            hooks: DshPluginOperationHooks(
+                prepareForMutation: {},
+                mutate: { _ in },
+                verify: { _ in }
+            )
+        )
+        require(false, "a plugin request must reject a dangling symlink Profile")
+    } catch DshPluginOperationError.unsafeProfileDirectory {
+        // expected
+    }
+    require(coordinator.pendingOperation == nil,
+            "a rejected request must not leave a durable operation record")
+}
+
+/// T6 regression for the user-consented adopt path.
+private func setupDanglingProfileSymlinkAdopt() async throws {
+    try await setupAdoptInterrupted()
+    let linkPath = profileURL().path
+    try fileManager.removeItem(at: profileURL())
+    try fileManager.createSymbolicLink(
+        atPath: linkPath,
+        withDestinationPath: "/tmp/dsh-missing-profile-target"
+    )
+}
+
+private func recoverDanglingProfileSymlinkAdopt() async throws {
+    let operationID = try readOperationState().operationID
+    let coordinator = DshPluginOperationCoordinator(operationStoreURL: operationStoreURL())
+    do {
+        _ = try await coordinator.adoptInterruptedTransaction(
+            operationID: operationID,
+            hooks: DshPluginOperationHooks(
+                mutate: { _ in },
+                verify: { _ in }
+            )
+        )
+        require(false, "adopt must reject a dangling symlink Profile")
+    } catch DshPluginOperationError.unsafeProfileDirectory {
+        // expected
+    }
+}
+
+/// Sweep characterization + hardening guard (round-3 T5): the orphan sweeps
+/// enumerate with `FileManager.contentsOfDirectory(at:...)`, which refuses a
+/// symlinked directory (only the `atPath:` variant follows links, and the
+/// removals apply to link entries themselves), so a symlinked snapshot root
+/// must never lead to a deletion outside the app-owned tree. The scenario also
+/// pins the positive control: a genuine orphan is still removed.
+private func verifySnapshotSweepSymlinkGuard() async throws {
+    try resetFixture()
+    let manager = DshPluginManager.shared
+    let appSupport = DshStateManager.appSupportDirectory
+    let webRoot = appSupport.appendingPathComponent("dsh-runtime-profile-snapshots", isDirectory: true)
+    let pluginRoot = appSupport.appendingPathComponent(
+        "dsh-plugin-operation-snapshots",
+        isDirectory: true
+    )
+    let outside = appSupport.appendingPathComponent("outside-root", isDirectory: true)
+
+    // Positive control: a genuine orphan is still removed.
+    let orphan = try await manager.createPluginOperationSnapshot(
+        operationID: UUID().uuidString,
+        profile: .desktop,
+        profileDirectory: profileURL()
+    )
+    let orphanURL = snapshotDirectoryURL(orphan)
+    require(fileManager.fileExists(atPath: orphanURL.path), "orphan fixture must exist")
+    let removedOrphan = await manager.cleanupOrphanedPluginOperationSnapshots(keeping: nil)
+    require(removedOrphan.contains("\(orphan.operationID)/\(orphan.snapshotID)"),
+            "the sweep must still remove a genuine orphan, got \(removedOrphan)")
+    require(!fileManager.fileExists(atPath: orphanURL.path), "the orphan must be gone")
+
+    // Guard: symlinked roots must be skipped entirely.
+    let externalSnapshot = UUID().uuidString
+    let externalDir = outside.appendingPathComponent(externalSnapshot, isDirectory: true)
+    try fileManager.createDirectory(at: externalDir, withIntermediateDirectories: true)
+    try? fileManager.removeItem(at: webRoot)
+    try? fileManager.removeItem(at: pluginRoot)
+    try fileManager.createSymbolicLink(at: webRoot, withDestinationURL: outside)
+    try fileManager.createSymbolicLink(at: pluginRoot, withDestinationURL: outside)
+
+    let removedWeb = await manager.cleanupOrphanedWebProfileSnapshots(keeping: nil)
+    require(removedWeb.isEmpty, "a symlinked web snapshot root must not be swept, got \(removedWeb)")
+    let removedPlugin = await manager.cleanupOrphanedPluginOperationSnapshots(keeping: nil)
+    require(removedPlugin.isEmpty, "a symlinked P01 snapshot root must not be swept, got \(removedPlugin)")
+    require(fileManager.fileExists(atPath: externalDir.path),
+            "a directory outside the app-owned root must never be deleted")
+}
+
 /// Simulate the narrow force-quit window after restoration and snapshot
 /// deletion but before the durable operation record is removed. Recovery must
 /// use the baseline digest and the persisted owner reference to finish
@@ -1232,6 +1422,14 @@ struct PluginOperationHarness {
         case "recovery-required-missing-profile-recover": try await recoverRecoveryRequiredMissingProfile()
         case "m2-rollback-selection": try await verifyInterruptedRollbackSurvivesSelectionSync()
         case "staging-sweep": try await verifyStagingSweep()
+        case "selection-preserves-open-transaction":
+            try await verifySelectionPreservesRecoverableTransaction()
+        case "selection-settles-unrecoverable":
+            try await verifySelectionSettlesUnrecoverableTransaction()
+        case "dangling-profile-symlink-guards": try await verifyDanglingProfileSymlinkGuards()
+        case "dangling-profile-symlink-adopt-setup": try await setupDanglingProfileSymlinkAdopt()
+        case "dangling-profile-symlink-adopt-recover": try await recoverDanglingProfileSymlinkAdopt()
+        case "snapshot-sweep-symlink-guard": try await verifySnapshotSweepSymlinkGuard()
         case "restoring-cleanup-setup": try await setupRestoringAfterSnapshotDeletion()
         case "restoring-cleanup-recover": try await recoverRestoringAfterSnapshotDeletion()
         case "committed": try await runCommittedRetention()

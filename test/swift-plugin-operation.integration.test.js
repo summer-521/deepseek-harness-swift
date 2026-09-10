@@ -125,6 +125,15 @@ test('P01 restart and rollback matrix stays fail-closed', () => {
     )
     runSingle(binaryPath, 'm2-rollback-selection')
     runSingle(binaryPath, 'staging-sweep')
+    runSingle(binaryPath, 'selection-preserves-open-transaction')
+    runSingle(binaryPath, 'selection-settles-unrecoverable')
+    runSingle(binaryPath, 'dangling-profile-symlink-guards')
+    runSingle(binaryPath, 'snapshot-sweep-symlink-guard')
+    runAcrossRestart(
+      binaryPath,
+      'dangling-profile-symlink-adopt-setup',
+      'dangling-profile-symlink-adopt-recover',
+    )
     runAcrossRestart(binaryPath, 'restoring-cleanup-setup', 'restoring-cleanup-recover')
     runAcrossRestart(binaryPath, 'missing-snapshot-setup', 'missing-snapshot-recover')
     runAcrossRestart(binaryPath, 'ownership-mismatch-setup', 'ownership-mismatch-recover')

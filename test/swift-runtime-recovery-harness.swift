@@ -226,6 +226,37 @@ struct RuntimeRecoveryHarness {
         require(DshRuntimeTransaction.repairIdleTransactionResidue(openRollback) == nil,
                 "an open transaction must never be repaired away")
 
+        // T7: resetting an abandoned transaction must clear every field,
+        // including the transaction owner. Leaving the owner behind keeps
+        // `DshRuntimeMutationGate` closed for the rest of the session because
+        // its idle branch requires previous/transactionID/snapshot to be empty.
+        var resetCandidate = DshRuntimeState(updatePolicy: .notify, channel: .latest)
+        resetCandidate.phase = .verifying
+        resetCandidate.active = candidate
+        resetCandidate.previous = active
+        resetCandidate.pending = candidate
+        resetCandidate.transactionID = "tx-reset"
+        resetCandidate.webProfileSnapshotID = "snapshot-reset"
+        resetCandidate.healthyStartCount = 1
+        let settledReset = DshRuntimeTransaction.settleAbandoned(
+            resetCandidate,
+            diagnostic: "reset diagnostic"
+        )
+        require(settledReset.phase == .idle, "reset settle must be idle")
+        require(settledReset.active == nil && settledReset.previous == nil && settledReset.pending == nil,
+                "reset settle must clear every runtime reference")
+        require(settledReset.webProfileSnapshotID == nil,
+                "reset settle must clear the snapshot reference")
+        require(settledReset.transactionID == nil,
+                "reset settle must clear the transaction owner")
+        require(settledReset.healthyStartCount == 0,
+                "reset settle must clear the healthy-start count")
+        require(settledReset.lastDiagnostic == "reset diagnostic",
+                "reset settle must record the diagnostic")
+        require(DshRuntimeMutationGate.allowsPluginMutation(
+            DshStateConfig(appProfile: .desktop, runtimeState: settledReset)
+        ), "a settled reset must reopen plugin/Runtime mutations in the same session")
+
         print("runtime recovery integration harness passed")
     }
 }

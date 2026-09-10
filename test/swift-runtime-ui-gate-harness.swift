@@ -50,12 +50,24 @@ struct RuntimeUIGateHarness {
             !DshRuntimeMutationGate.allowsRuntimeUpdate(afterSuccessfulUpdate),
             "a second Runtime update must remain blocked until the previous Runtime is cleaned")
 
+        // T1/T4: package-tree writes and Profile switches must wait for the
+        // confirmed window to settle. The confirmed transaction keeps a full
+        // rollback snapshot of that tree, so a plugin change made now would be
+        // silently reverted by "roll back to the previous Runtime", and a
+        // Profile switch would strand the second healthy start.
+        require(
+            !DshRuntimeMutationGate.allowsProfileTreeMutation(afterSuccessfulUpdate),
+            "plugin/Profile-tree mutations must wait until the confirmed window settles")
+
         // Switching the update channel is a settings mutation, not a second
         // Runtime install. It must remain usable without restarting the app.
         afterSuccessfulUpdate.runtimeState.channel = .alpha
         require(
             DshRuntimeMutationGate.allowsPluginMutation(afterSuccessfulUpdate),
             "channel picker state must remain editable during confirmed cleanup")
+        require(
+            !DshRuntimeMutationGate.allowsProfileTreeMutation(afterSuccessfulUpdate),
+            "ordinary settings must stay editable while package-tree writes stay blocked")
 
         // Once the second healthy start has committed cleanup, both gates are
         // open again and the old transaction owner is gone.
@@ -65,6 +77,9 @@ struct RuntimeUIGateHarness {
         require(
             DshRuntimeMutationGate.allowsPluginMutation(afterSuccessfulUpdate),
             "idle Runtime must allow plugin/settings mutations")
+        require(
+            DshRuntimeMutationGate.allowsProfileTreeMutation(afterSuccessfulUpdate),
+            "a settled idle Runtime must allow package-tree mutations and Profile switches")
         require(
             DshRuntimeMutationGate.allowsRuntimeUpdate(afterSuccessfulUpdate),
             "idle Runtime must allow the next Runtime update")

@@ -825,6 +825,12 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
            profileURL.resolvingSymlinksInPath().path != profileURL.path {
             throw DshPluginOperationError.unsafeProfileDirectory
         }
+        // A dangling symlink at the canonical path is invisible to
+        // `fileExists`; snapshotting it as "Profile absent" would let an
+        // operation start against a Profile that the later restore refuses.
+        if Self.isSymbolicLink(at: profileURL) {
+            throw DshPluginOperationError.unsafeProfileDirectory
+        }
         let snapshotID = UUID().uuidString
         let snapshotURL = try pluginOperationSnapshotURL(
             operationID: operationID,
