@@ -1635,6 +1635,14 @@ public final class SettingsViewModel: ObservableObject {
             }
             if let snapshotID {
                 do {
+                    beginProfileRestoreCleanup(
+                        profile: snapshotProfile,
+                        snapshotID: snapshotID,
+                        displacedPath: DshPluginManager.displacedProfileRestoreURL(
+                            profileDirectory: DshLaunchContext.profileDirectory(for: snapshotProfile),
+                            snapshotID: snapshotID
+                        )
+                    )
                     let restoreOutcome = try await DshPluginManager.shared.restoreWebProfileSnapshot(
                         snapshotID,
                         profile: snapshotProfile
@@ -1644,7 +1652,8 @@ public final class SettingsViewModel: ObservableObject {
                             self.installProgressDetail = progress.detail.map(DshSettingsUIMessage.safe)
                         }
                     }
-                    if case .restoredWithDisplacedLeftover(let leftover) = restoreOutcome {
+                    finishProfileRestoreCleanup(leftover: restoreOutcome.displacedLeftover)
+                    if let leftover = restoreOutcome.displacedLeftover {
                         self.alertMessage =
                             "web Profile 已恢复，但旧的 displaced 副本删除失败，仍保留在：\(DshSettingsUIMessage.safe(leftover.path))。确认不需要后可在访达中手动删除。"
                     }
@@ -1879,6 +1888,82 @@ public final class SettingsViewModel: ObservableObject {
             throw error
         } catch {
             alertMessage = "web Profile 快照清理仍失败，将在下次启动继续重试：\(DshSettingsUIMessage.safe(error))"
+        }
+    }
+
+    /// Record the cleanup debt before a Profile snapshot restore can move the
+    /// live Profile aside. `completed` stays false until the restore returns,
+    /// so a crash in the middle never looks like a finished restore. The record
+    /// is bookkeeping for disk reclamation, not a data-integrity gate, so a
+    /// failed write is logged instead of blocking the restore: the outcome
+    /// still reports a retained leftover to the user.
+    public func beginProfileRestoreCleanup(
+        profile: DshAppProfile,
+        snapshotID: String,
+        displacedPath: URL
+    ) {
+        do {
+            try DshStateManager.shared.updateOrThrow { state in
+                state.pendingProfileRestoreCleanup = DshProfileRestoreCleanup(
+                    profile: profile,
+                    snapshotID: snapshotID,
+                    displacedPath: displacedPath,
+                    completed: false
+                )
+            }
+        } catch {
+            print("[SettingsViewModel] Failed to record Profile restore cleanup debt:", error)
+        }
+    }
+
+    /// Settle the debt once the restore returned. A restore that removed its
+    /// displaced tree clears the record; a retained leftover keeps it with the
+    /// durable completion proof, so the next startup may reclaim it.
+    public func finishProfileRestoreCleanup(leftover: URL?) {
+        do {
+            try DshStateManager.shared.updateOrThrow { state in
+                guard var cleanup = state.pendingProfileRestoreCleanup else { return }
+                if let leftover {
+                    cleanup.completed = true
+                    cleanup.displacedPath = leftover.standardizedFileURL.path
+                    state.pendingProfileRestoreCleanup = cleanup
+                } else {
+                    state.pendingProfileRestoreCleanup = nil
+                }
+            }
+        } catch {
+            print("[SettingsViewModel] Failed to settle Profile restore cleanup debt:", error)
+        }
+    }
+
+    /// Startup pass for a displaced Profile tree that a restore could not
+    /// remove. It is reclaimed only with the durable completion proof *and* a
+    /// canonical Profile back in place: without either, the displaced tree can
+    /// be the only complete copy of the user's Profile, so it is kept and
+    /// reported instead.
+    public func retryPendingProfileRestoreCleanup() async throws {
+        let state = DshStateManager.shared.current
+        guard let cleanup = state.pendingProfileRestoreCleanup else { return }
+        let canonicalProfileExists = FileManager.default.fileExists(
+            atPath: DshLaunchContext.profileDirectory(for: cleanup.profile).path
+        )
+        guard DshProfileRestoreCleanup.mayReclaim(
+            cleanup,
+            canonicalProfileExists: canonicalProfileExists
+        ) else {
+            alertMessage = "检测到未确认完成的 Profile 恢复遗留副本（\(cleanup.displacedPath)）：在恢复确认完成前不会自动删除；如确认不再需要，可手动删除。"
+            return
+        }
+        let reclaimed = await DshPluginManager.shared.removeDisplacedProfileTree(
+            at: URL(fileURLWithPath: cleanup.displacedPath, isDirectory: true)
+        )
+        guard reclaimed else {
+            alertMessage = "Profile 恢复遗留副本删除失败，仍保留在：\(cleanup.displacedPath)。确认不需要后可在访达中手动删除。"
+            return
+        }
+        try DshStateManager.shared.updateOrThrow { state in
+            guard state.pendingProfileRestoreCleanup == cleanup else { return }
+            state.pendingProfileRestoreCleanup = nil
         }
     }
 

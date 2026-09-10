@@ -1155,6 +1155,12 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
     public enum DshProfileRestoreOutcome: Equatable, Sendable {
         case restored
         case restoredWithDisplacedLeftover(URL)
+
+        /// The retained displaced tree, when the restore could not remove it.
+        public var displacedLeftover: URL? {
+            if case .restoredWithDisplacedLeftover(let url) = self { return url }
+            return nil
+        }
     }
 
     private static func restoreWebProfileSnapshotSynchronously(
@@ -1186,9 +1192,12 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         // when Application Support and DSH_HOME are on different volumes:
         // moving the current Profile must remain same-volume and atomic. The
         // name is deterministic per snapshot so a resumed restore (the live
-        // Profile was already moved aside) can clean the leftover.
-        let displacedURL = profileURL.deletingLastPathComponent()
-            .appendingPathComponent(".dsh-profile-restore-\(id)", isDirectory: true)
+        // Profile was already moved aside) can clean the leftover. The same
+        // helper builds the cleanup-debt path, so the two cannot disagree.
+        let displacedURL = Self.displacedProfileRestoreURL(
+            profileDirectory: profileURL,
+            snapshotID: id
+        )
         let profileExists = fileManager.fileExists(atPath: profileURL.path)
         var displacedCurrent = false
         var leftover: URL?
@@ -1274,6 +1283,32 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
             )
             return displacedURL
         }
+    }
+
+    /// Deterministic displaced path for a Profile snapshot restore. Shared with
+    /// the cleanup-debt record so the two can never disagree.
+    static func displacedProfileRestoreURL(profileDirectory: URL, snapshotID: String) -> URL {
+        profileDirectory.standardizedFileURL.deletingLastPathComponent()
+            .appendingPathComponent(".dsh-profile-restore-\(snapshotID)", isDirectory: true)
+    }
+
+    /// Remove one displaced Profile tree recorded as cleanup debt. Used by the
+    /// startup reclamation pass; the caller owns the decision (a durable
+    /// "restore completed" proof plus a canonical Profile in place) and the
+    /// record lifecycle.
+    @discardableResult
+    public func removeDisplacedProfileTree(at url: URL) async -> Bool {
+        await Task.detached(priority: .utility) {
+            let fileManager = FileManager.default
+            guard fileManager.fileExists(atPath: url.path) else { return true }
+            do {
+                try fileManager.removeItem(at: url)
+                return true
+            } catch {
+                print("[DshPluginManager] Failed to reclaim displaced Profile tree \(url.path):", error)
+                return false
+            }
+        }.value
     }
 
     /// Take a complete copy of the shared web Profile before a Runtime

@@ -257,6 +257,51 @@ struct RuntimeRecoveryHarness {
             DshStateConfig(appProfile: .desktop, runtimeState: settledReset)
         ), "a settled reset must reopen plugin/Runtime mutations in the same session")
 
+        // R12: a displaced Profile tree is only reclaimed with the durable
+        // completion proof AND a canonical Profile in place. Anything else can
+        // be the only complete copy of the user's Profile.
+        let displaced = URL(
+            fileURLWithPath: "/tmp/profiles/.dsh-profile-restore-snapshot-r12",
+            isDirectory: true
+        )
+        let unproven = DshProfileRestoreCleanup(
+            profile: .web,
+            snapshotID: "snapshot-r12",
+            displacedPath: displaced,
+            completed: false
+        )
+        require(!DshProfileRestoreCleanup.mayReclaim(unproven, canonicalProfileExists: true),
+                "an unproven restore must never be reclaimed")
+        require(!DshProfileRestoreCleanup.mayReclaim(unproven, canonicalProfileExists: false),
+                "an unproven restore must never be reclaimed")
+
+        var proven = unproven
+        proven.completed = true
+        require(DshProfileRestoreCleanup.mayReclaim(proven, canonicalProfileExists: true),
+                "a proven restore with a canonical Profile may be reclaimed")
+        require(!DshProfileRestoreCleanup.mayReclaim(proven, canonicalProfileExists: false),
+                "a missing canonical Profile must keep the displaced tree")
+
+        // The debt round-trips through the state file, and a state written
+        // before this field existed still decodes.
+        var stateWithCleanup = DshStateConfig(appProfile: .web)
+        stateWithCleanup.pendingProfileRestoreCleanup = proven
+        let encodedState = try! JSONEncoder().encode(stateWithCleanup)
+        let decodedState = try! JSONDecoder().decode(DshStateConfig.self, from: encodedState)
+        let restoredCleanup = decodedState.pendingProfileRestoreCleanup
+        require(restoredCleanup?.completed == true, "the completion proof must round-trip")
+        require(restoredCleanup?.snapshotID == "snapshot-r12", "the snapshot id must round-trip")
+        require(restoredCleanup?.profile == .web, "the owning Profile must round-trip")
+        require(restoredCleanup?.displacedPath == displaced.standardizedFileURL.path,
+                "the displaced path must round-trip")
+
+        let legacyState = try! JSONDecoder().decode(
+            DshStateConfig.self,
+            from: Data(#"{"appProfile":"desktop"}"#.utf8)
+        )
+        require(legacyState.pendingProfileRestoreCleanup == nil,
+                "a state file without the cleanup field must decode")
+
         print("runtime recovery integration harness passed")
     }
 }

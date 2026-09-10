@@ -325,6 +325,55 @@ test('runtime update policy defaults to notify and labels failure stages', () =>
   assert.match(SETTINGS_SOURCE, /新 Runtime 已确认但尚未结算/)
 })
 
+test('R12 keeps displaced Profile trees behind a durable completion proof', () => {
+  // State shape: the debt record and its decision rule.
+  assert.match(STATE_SOURCE, /public struct DshProfileRestoreCleanup/)
+  assert.match(STATE_SOURCE, /public var pendingProfileRestoreCleanup: DshProfileRestoreCleanup\?/)
+  assert.match(STATE_SOURCE, /public static func mayReclaim\(/)
+  assert.match(STATE_SOURCE, /cleanup\.completed && canonicalProfileExists/)
+
+  // The debt is recorded before a restore can displace the live Profile, and
+  // settled afterwards with the proof the restore itself cannot write.
+  const begin = SETTINGS_SOURCE.indexOf('public func beginProfileRestoreCleanup(')
+  const finish = SETTINGS_SOURCE.indexOf('public func finishProfileRestoreCleanup(')
+  const retry = SETTINGS_SOURCE.indexOf('public func retryPendingProfileRestoreCleanup()')
+  assert.ok(begin > 0 && finish > begin && retry > finish, 'the cleanup lifecycle must exist')
+
+  const beginBody = SETTINGS_SOURCE.slice(begin, finish)
+  assert.match(beginBody, /completed: false/, 'the debt starts unproven')
+  const finishBody = SETTINGS_SOURCE.slice(finish, retry)
+  assert.match(finishBody, /cleanup\.completed = true/, 'the proof is written after the restore')
+  assert.match(finishBody, /state\.pendingProfileRestoreCleanup = nil/, 'a clean restore clears the debt')
+
+  const retryBody = SETTINGS_SOURCE.slice(retry, SETTINGS_SOURCE.indexOf('/// Finish a rollback that was left pending'))
+  assert.ok(
+    retryBody.indexOf('mayReclaim(') < retryBody.indexOf('removeDisplacedProfileTree('),
+    'the reclamation pass must require the proof before deleting anything'
+  )
+  assert.ok(
+    retryBody.indexOf('removeDisplacedProfileTree(') < retryBody.indexOf('state.pendingProfileRestoreCleanup = nil'),
+    'the debt is cleared only after the tree is really gone'
+  )
+  assert.match(retryBody, /guard reclaimed else/, 'a failed reclamation keeps the debt and reports it')
+
+  // Both restore call sites own the record lifecycle.
+  assert.ok(
+    (SETTINGS_SOURCE.match(/beginProfileRestoreCleanup\(/g) || []).length >= 2,
+    'the reset path and the debt helper itself must call begin'
+  )
+  assert.match(WINDOW_SOURCE, /beginProfileRestoreCleanup\(/)
+  assert.match(WINDOW_SOURCE, /finishProfileRestoreCleanup\(/)
+  assert.match(SETTINGS_SOURCE, /finishProfileRestoreCleanup\(leftover: restoreOutcome\.displacedLeftover\)/)
+
+  // The startup pass runs after the retained-snapshot cleanup and before the
+  // first launch.
+  assert.match(APP_SOURCE, /retryRetainedWebProfileSnapshotCleanup\(\)[\s\S]{0,400}retryPendingProfileRestoreCleanup\(\)/)
+  assert.ok(
+    APP_SOURCE.indexOf('retryPendingProfileRestoreCleanup') < APP_SOURCE.indexOf('MainWindowController.shared.launch'),
+    'the reclamation pass must run before the launch decision'
+  )
+})
+
 test('startup recovery restores a Profile at most once and retries retained cleanup', () => {
   assert.match(APP_SOURCE, /await SettingsViewModel\.shared\.recoverPendingRuntimeUpdate\(\)/)
   assert.match(APP_SOURCE, /await SettingsViewModel\.shared\.retryRetainedWebProfileSnapshotCleanup\(\)/)

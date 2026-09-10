@@ -78,6 +78,54 @@ public enum DshAppProfile: String, Codable, CaseIterable, Hashable, Sendable {
 /// app may be terminated while pnpm or Node is materializing the target tree;
 /// on the next launch this record tells startup which Profile was known to be
 /// healthy and must be restored.
+/// Durable cleanup debt for a Profile snapshot restore.
+///
+/// A restore moves the live Profile aside before copying the snapshot in, so a
+/// failed removal of the displaced tree leaves a complete copy of the previous
+/// Profile on disk. That tree must never be reclaimed by a prefix sweep: after a
+/// crash *during* the copy it can be the only complete copy of the user's
+/// Profile.
+///
+/// `completed` is the durable proof that the copy finished. It is written by
+/// the caller only after the restore returned successfully, and a startup pass
+/// may delete the leftover only when that proof exists *and* a canonical
+/// Profile is back in place. A record without the proof is kept and reported,
+/// never acted on — the worst case is a leftover the user removes by hand.
+public struct DshProfileRestoreCleanup: Codable, Equatable, Sendable {
+    public var profile: DshAppProfile
+    public var snapshotID: String
+    /// Absolute path of the displaced tree (`.dsh-profile-restore-<snapshotID>`
+    /// beside the Profile directory).
+    public var displacedPath: String
+    /// True only once the restore actually completed.
+    public var completed: Bool
+    public var createdAt: Date
+
+    public init(
+        profile: DshAppProfile,
+        snapshotID: String,
+        displacedPath: URL,
+        completed: Bool,
+        createdAt: Date = Date()
+    ) {
+        self.profile = profile
+        self.snapshotID = snapshotID
+        self.displacedPath = displacedPath.standardizedFileURL.path
+        self.completed = completed
+        self.createdAt = createdAt
+    }
+
+    /// A displaced tree may only be reclaimed when the restore provably
+    /// finished and a canonical Profile is in place; otherwise it can be the
+    /// only complete copy of the user's Profile.
+    public static func mayReclaim(
+        _ cleanup: DshProfileRestoreCleanup,
+        canonicalProfileExists: Bool
+    ) -> Bool {
+        cleanup.completed && canonicalProfileExists
+    }
+}
+
 public struct DshProfileSwitchTransaction: Codable, Equatable, Sendable {
     public var from: DshAppProfile
     public var to: DshAppProfile
@@ -618,6 +666,10 @@ public struct DshStateConfig: Codable, Equatable {
     public var networkExposure: DshNetworkExposure
     public var uiTheme: String
     public var cachedUserPath: String?
+    /// Cleanup debt for a Profile snapshot restore whose displaced tree could
+    /// not be removed. Kept until a startup pass can prove the restore
+    /// finished; never reclaimed on a prefix match alone.
+    public var pendingProfileRestoreCleanup: DshProfileRestoreCleanup?
 
     public init(
         selectedVersion: String? = nil,
@@ -631,7 +683,8 @@ public struct DshStateConfig: Codable, Equatable {
         browserAccessEnabled: Bool = false,
         networkExposure: DshNetworkExposure = .loopback,
         uiTheme: String = "default",
-        cachedUserPath: String? = nil
+        cachedUserPath: String? = nil,
+        pendingProfileRestoreCleanup: DshProfileRestoreCleanup? = nil
     ) {
         self.selectedVersion = selectedVersion
         self.appProfile = appProfile
@@ -645,6 +698,7 @@ public struct DshStateConfig: Codable, Equatable {
         self.networkExposure = browserAccessEnabled ? networkExposure : .loopback
         self.uiTheme = uiTheme
         self.cachedUserPath = cachedUserPath
+        self.pendingProfileRestoreCleanup = pendingProfileRestoreCleanup
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -660,6 +714,7 @@ public struct DshStateConfig: Codable, Equatable {
         case networkExposure
         case uiTheme
         case cachedUserPath
+        case pendingProfileRestoreCleanup
     }
 
     public init(from decoder: Decoder) throws {
@@ -694,6 +749,10 @@ public struct DshStateConfig: Codable, Equatable {
         self.networkExposure = self.browserAccessEnabled ? decodedExposure : .loopback
         self.uiTheme = try container.decodeIfPresent(String.self, forKey: .uiTheme) ?? "default"
         self.cachedUserPath = try container.decodeIfPresent(String.self, forKey: .cachedUserPath)
+        self.pendingProfileRestoreCleanup = try container.decodeIfPresent(
+            DshProfileRestoreCleanup.self,
+            forKey: .pendingProfileRestoreCleanup
+        )
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -710,6 +769,10 @@ public struct DshStateConfig: Codable, Equatable {
         try container.encode(networkExposure, forKey: .networkExposure)
         try container.encode(uiTheme, forKey: .uiTheme)
         try container.encodeIfPresent(cachedUserPath, forKey: .cachedUserPath)
+        try container.encodeIfPresent(
+            pendingProfileRestoreCleanup,
+            forKey: .pendingProfileRestoreCleanup
+        )
     }
 
     public static let `default` = DshStateConfig()

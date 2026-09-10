@@ -138,6 +138,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     try await SettingsViewModel.shared.recoverPendingProfileSwitch()
                     try await SettingsViewModel.shared.recoverPendingRuntimeUpdate()
                     try await SettingsViewModel.shared.retryRetainedWebProfileSnapshotCleanup()
+                    // A displaced Profile tree is only reclaimed when the
+                    // restore provably finished and the canonical Profile is
+                    // back; otherwise it is kept and reported (R12).
+                    try await SettingsViewModel.shared.retryPendingProfileRestoreCleanup()
 
                     // P01 recovery runs inside this already-held Runtime /
                     // Profile gate. Its health hooks call
