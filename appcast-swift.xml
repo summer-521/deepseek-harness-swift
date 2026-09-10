@@ -6,6 +6,51 @@
         <description>Updates for the native Swift shell of DSH Desktop.</description>
         <language>zh-CN</language>
         <item>
+            <title>1.2.3</title>
+            <pubDate>Thu, 10 Sep 2026 17:32:48 +0800</pubDate>
+            <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.3</link>
+            <sparkle:version>14</sparkle:version>
+            <sparkle:shortVersionString>1.2.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[
+## 更新内容
+
+### 事务可靠性与崩溃恢复
+
+- 修复 Runtime 更新或 Profile 切换在状态写入失败时“界面显示成功、下次启动却回退”的问题。
+- 修复更新或回退过程中被强制退出后，状态记录指向已删除的快照、导致后续每次启动都被快照缺失阻断的问题。
+- 修复未完成的 Runtime 回退（候选已清空）会被状态同步误判为已完成、从而跳过 Profile 恢复并永久锁住插件与 Runtime 更新的问题。
+- 修复空闲状态中残留的事务字段会让插件与更新入口永久置灰的问题。
+- 修复 Runtime 选择修复会提前结算“仍有可用回滚证据”的事务、导致无法回退到上一版本的问题。
+
+### Profile 恢复与遗留副本
+
+- Profile 快照恢复完成后若旧的副本删除失败，现在会明确提示路径，并在下次启动自动回收。
+- 修复“恢复重试会先删掉唯一完整副本”的数据风险。
+
+### Profile 切换与 Runtime 回退
+
+- 恢复界面新增“恢复到上一个 Runtime”：更新后的新 Runtime 如果普通启动失败，可以一键回退到上一个版本。
+- 插件操作失败且没有留下需要人工处理的恢复记录时，会自动把服务重新拉起，不再停在一个无法使用的页面。
+
+### 插件与 Profile 的门禁
+
+- Runtime 更新完成到下次启动之间插件安装/更新/卸载与 Profile 切换保持禁用，普通设置不受影响；重启一次 DSH 后恢复。
+- Runtime 更新在插件操作进行中不会再排队插队，避免实际执行顺序与用户点击顺序相反。
+
+### 单实例保护
+
+- 同一份应用数据同一时间只允许一个 DSH 实例。
+
+## 已知限制
+
+- 最低需要 macOS 26，只提供 Apple Silicon（arm64）安装包。
+- Swift 应用包更新与 DSH npm Runtime 更新是两套独立流程。
+]]></description>
+            <enclosure url="https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.2.3/DSH-Desktop-1.2.3-arm64.dmg" length="50946607" type="application/octet-stream" sparkle:edSignature="TEfwJkuWFKDRVpVnQYAKTUBTvBqfcb578rfiJQ6O/BWpiLrZB60VJpxLdH3KuAII72iwR2Uc6PQGX4aGlDlkCg=="/>
+        </item>
+        <item>
             <title>1.2.2</title>
             <pubDate>Thu, 10 Sep 2026 09:43:16 +0800</pubDate>
             <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.2</link>
