@@ -934,10 +934,15 @@ public final class SettingsViewModel: ObservableObject {
         // this also keeps the Profile picker and plugin list consistent before
         // MainWindowController starts the service.
         loadFromState()
+        // A crash before the durable health proof landed looks identical to a
+        // switch that never succeeded, so the recovery returns to the source
+        // Profile. Tell the user the switch may actually have completed
+        // already, instead of leaving a silent revert (M7, accepted).
+        let retryHint = targetWasHealthy ? "" : "若刚才的切换其实已成功，请重新切换一次。"
         if let cleanupError {
-            alertMessage = "检测到未完成的 Profile 切换，已恢复 \(restoreProfile.rawValue)，但 web 桥接清理失败，将在下次启动重试：\(DshSettingsUIMessage.safe(cleanupError))"
+            alertMessage = "检测到未完成的 Profile 切换，已恢复 \(restoreProfile.rawValue)，但 web 桥接清理失败，将在下次启动重试：\(DshSettingsUIMessage.safe(cleanupError))\(retryHint)"
         } else {
-            alertMessage = "检测到未完成的 Profile 切换，已恢复 \(restoreProfile.rawValue)。"
+            alertMessage = "检测到未完成的 Profile 切换，已恢复 \(restoreProfile.rawValue)。\(retryHint)"
         }
     }
 
@@ -2780,9 +2785,19 @@ public final class SettingsViewModel: ObservableObject {
                     }
 
                     // Commit only after the target Profile has passed the
-                    // complete startup and health gate. This closes the small
-                    // window where a successful restart could be followed by
-                    // a force-quit before the UI task resumes.
+                    // complete startup and health gate, so a force-quit before
+                    // the UI task resumes still lands on a settled state.
+                    //
+                    // The residual window between "the health gate returned"
+                    // and the durable proof written just below is a few
+                    // synchronous statements wide (milliseconds) and cannot be
+                    // closed: the proof may only be recorded after the fact,
+                    // and writing it before the gate would record a genuinely
+                    // failed restart as healthy, which could leave the app on a
+                    // Profile that does not start. A kill inside that window
+                    // makes the next launch treat the switch as unfinished and
+                    // restore the source Profile with an explicit alert: safe,
+                    // but the completed switch is lost (M7, accepted).
                     try DshStateManager.shared.updateOrThrow { state in
                         guard let pending = state.pendingProfileSwitch,
                               pending.from == transaction.from,

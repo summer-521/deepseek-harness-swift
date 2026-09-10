@@ -22,6 +22,11 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<!-- One instance per user session: LaunchServices stops a same-bundle second
+	     launch before our own flock check runs (which still covers other builds
+	     and open -n). See Sources/Service/DshInstanceLock.swift. -->
+	<key>LSMultipleInstancesProhibited</key>
+	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>

@@ -22,7 +22,80 @@ private enum DshStartupRecoveryError: Error {
 
 @MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Held for the process lifetime; the kernel releases it on exit.
+    private var instanceLock: DshInstanceLock?
+
+    /// Explain why this launch stops instead of silently exiting: the user
+    /// almost always started a second copy by accident, and the data risk is
+    /// not obvious.
+    private func presentAlreadyRunningInstanceAlert(_ holder: DshInstanceLock.Holder?) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "DSH 已在运行"
+        var details: [String] = []
+        if let holder {
+            details.append("占用者：进程 \(holder.pid)，DSH \(holder.appVersion)")
+            details.append("DSH_HOME：\(holder.dshHome)")
+            details.append("占用开始：\(Self.holderTimestampFormatter.string(from: holder.acquiredAt))")
+        } else {
+            details.append("另一个 DSH 实例正在使用同一份应用数据。")
+        }
+        alert.informativeText = """
+        检测到另一个 DSH 实例正在使用同一份应用数据：
+        \(details.joined(separator: "\n"))
+
+        同时运行两个实例会互相覆盖状态、并发修改同一份 Profile，并可能删除对方的事务回滚点，因此本次启动已停止。
+
+        如果那个实例已经无响应，请先在“活动监视器”中结束它，然后重新打开 DSH。
+        """
+        alert.addButton(withTitle: "退出")
+        alert.addButton(withTitle: "复制诊断信息")
+        let response = alert.runModal()
+        if response == .alertSecondButtonReturn {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(
+                (details + ["应用数据：\(DshStateManager.appSupportDirectory.path)"]).joined(separator: "\n"),
+                forType: .string
+            )
+        }
+    }
+
+    private static let holderTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .medium
+        return formatter
+    }()
+
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        // Before anything reads or writes durable state: exactly one instance
+        // may own this Application Support root. A second instance would
+        // overwrite `dsh-state.json` (whole-file last-writer-wins), race the
+        // same Profile tree and port, and its startup sweeps could delete the
+        // peer's only rollback snapshot. The kernel releases the `flock` on
+        // exit, crash or SIGKILL, so a leftover lock file is harmless.
+        switch DshInstanceLock.acquire(
+            at: DshStateManager.appSupportDirectory,
+            holder: DshInstanceLock.Holder(
+                pid: ProcessInfo.processInfo.processIdentifier,
+                appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
+                dshHome: DshLaunchContext.defaultDshHome.path,
+                acquiredAt: Date()
+            )
+        ) {
+        case .acquired(let instanceLock):
+            self.instanceLock = instanceLock
+        case .heldBy(let holder):
+            presentAlreadyRunningInstanceAlert(holder)
+            NSApp.terminate(nil)
+            return
+        case .unavailable(let detail):
+            // Fail open: a broken lock file (permissions, read-only volume,
+            // unsupported flock) must not make the app impossible to start.
+            // The double-instance risk is recorded so it stays diagnosable.
+            print("[AppDelegate] Instance lock unavailable, continuing without cross-process protection:", detail)
+        }
         // Keep one updater for the whole app. Sparkle starts its automatic
         // checker from the Info.plist settings and the same controller backs
         // the menu item and About settings row.
