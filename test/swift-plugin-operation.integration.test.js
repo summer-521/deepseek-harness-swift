@@ -117,6 +117,14 @@ test('P01 restart and rollback matrix stays fail-closed', () => {
     ])
     runAcrossRestart(binaryPath, 'restoring-setup', 'restoring-recover')
     runAcrossRestart(binaryPath, 'resuming-restore-setup', 'resuming-restore-recover')
+    runAcrossRestart(binaryPath, 'stale-staging-restore-setup', 'stale-staging-restore-recover')
+    runAcrossRestart(
+      binaryPath,
+      'recovery-required-missing-profile-setup',
+      'recovery-required-missing-profile-recover',
+    )
+    runSingle(binaryPath, 'm2-rollback-selection')
+    runSingle(binaryPath, 'staging-sweep')
     runAcrossRestart(binaryPath, 'restoring-cleanup-setup', 'restoring-cleanup-recover')
     runAcrossRestart(binaryPath, 'missing-snapshot-setup', 'missing-snapshot-recover')
     runAcrossRestart(binaryPath, 'ownership-mismatch-setup', 'ownership-mismatch-recover')

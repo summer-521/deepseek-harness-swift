@@ -523,6 +523,40 @@ public enum DshRuntimeTransaction {
         next.transactionID = nil
         return next
     }
+
+    /// Repair an "idle residue": a state that already settled to `idle` but
+    /// still carries transaction bookkeeping (`previous`/`transactionID`).
+    ///
+    /// The mutation gates require both to be empty while idle
+    /// (`DshRuntimeMutationGate`), and no transaction transition clears them
+    /// once the phase is idle, so such a residue locks every plugin and
+    /// Runtime-update operation forever. It could be produced when a state
+    /// writer mistook an open transaction for a settled one (for example an
+    /// interrupted user-initiated rollback, whose `pending` is already nil).
+    ///
+    /// Only the transaction bookkeeping is cleared. A retained
+    /// `webProfileSnapshotID` is deliberately preserved: it still references a
+    /// real snapshot that `retryRetainedWebProfileSnapshotCleanup` must delete
+    /// on this or the next launch, and dropping the reference would turn that
+    /// snapshot into an untracked multi-GB leak.
+    ///
+    /// Returns nil when the state is not a settled idle residue, so callers can
+    /// treat "no repair" and "repaired" distinctly.
+    public static func repairIdleTransactionResidue(_ state: DshRuntimeState) -> DshRuntimeState? {
+        guard state.phase == .idle, state.pending == nil else { return nil }
+        guard state.previous != nil || state.transactionID != nil else { return nil }
+        var next = state
+        next.previous = nil
+        next.transactionID = nil
+        next.healthyStartCount = 0
+        let detail = "检测到已结算的 DSH Runtime 事务残留，已自动清理事务引用。"
+        if let existing = next.lastDiagnostic, !existing.isEmpty {
+            next.lastDiagnostic = existing + " " + detail
+        } else {
+            next.lastDiagnostic = detail
+        }
+        return next
+    }
 }
 
 /// Persistent configuration and state model for DSH Desktop.

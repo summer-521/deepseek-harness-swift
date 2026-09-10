@@ -2139,9 +2139,22 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         let state = DshStateManager.shared.current
         let availability = runtimeRollbackAvailability(for: context)
         guard request.launchID == context.launchID,
-              availability.available,
-              state.runtimeState.transactionID == context.transactionID,
-              let previous = state.runtimeState.previous else {
+              availability.available else {
+            recoveryViewModel?.finishAction(request, message: "暂不能回退到上一个 Runtime：\(availability.reason)")
+            return
+        }
+        // Availability is computed from the live state; the presented context
+        // must also belong to the same launch. Report that separately instead
+        // of reusing the "available" reason (which would contradict the
+        // refusal).
+        guard state.runtimeState.transactionID == context.transactionID else {
+            recoveryViewModel?.finishAction(
+                request,
+                message: "暂不能回退到上一个 Runtime：当前界面属于另一次启动，请重试或重启应用。"
+            )
+            return
+        }
+        guard let previous = state.runtimeState.previous else {
             recoveryViewModel?.finishAction(request, message: "暂不能回退到上一个 Runtime：\(availability.reason)")
             return
         }

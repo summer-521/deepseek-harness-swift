@@ -60,6 +60,7 @@
 		E00000000000000000000050 /* RecoveryWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000074 /* RecoveryWindowController.swift */; };
 		E00000000000000000000051 /* StartupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000075 /* StartupView.swift */; };
 		E00000000000000000000052 /* StartupWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000076 /* StartupWindowController.swift */; };
+		E00000000000000000000053 /* DshAsyncOperationGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000078 /* DshAsyncOperationGate.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -118,6 +119,7 @@
 		D00000000000000000000074 /* RecoveryWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryWindowController.swift; sourceTree = "<group>"; };
 		D00000000000000000000075 /* StartupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartupView.swift; sourceTree = "<group>"; };
 		D00000000000000000000076 /* StartupWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartupWindowController.swift; sourceTree = "<group>"; };
+		D00000000000000000000078 /* DshAsyncOperationGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshAsyncOperationGate.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -204,6 +206,7 @@
 				D00000000000000000000014 /* NodeRuntime.swift */,
 				D00000000000000000000059 /* DshLaunchContext.swift */,
 				D00000000000000000000016 /* DshService.swift */,
+				D00000000000000000000078 /* DshAsyncOperationGate.swift */,
 				D00000000000000000000051 /* DshControlProtocol.swift */,
 				D00000000000000000000052 /* DshAccessController.swift */,
 				D00000000000000000000055 /* DshWebEndpoint.swift */,
@@ -436,6 +439,7 @@
 				E00000000000000000000005 /* NodeRuntime.swift in Sources */,
 				E00000000000000000000006 /* DshSemanticVersion.swift in Sources */,
 				E00000000000000000000007 /* DshService.swift in Sources */,
+				E00000000000000000000053 /* DshAsyncOperationGate.swift in Sources */,
 				E00000000000000000000008 /* DshVersionManager.swift in Sources */,
 				E00000000000000000000009 /* DshPluginManager.swift in Sources */,
 				E00000000000000000000010 /* NotificationManager.swift in Sources */,

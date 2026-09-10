@@ -131,6 +131,29 @@ private func marker(_ value: String) throws {
         .write(to: profileURL().appendingPathComponent("marker"), options: .atomic)
 }
 
+/// Write the persisted app state before anything touches
+/// `DshStateManager.shared`, so the process starts from this fixture.
+private func writeAppState(_ json: String) throws {
+    let url = DshStateManager.appSupportDirectory.appendingPathComponent("dsh-state.json")
+    try Data(json.utf8).write(to: url, options: .atomic)
+}
+
+/// Install a minimal Runtime tree that `DshVersionManager` recognises as an
+/// installed version (manifest plus the declared bin entry).
+private func installFakeRuntime(version: String) throws {
+    let packageRoot = DshStateManager.versionsDirectory
+        .appendingPathComponent(version, isDirectory: true)
+        .appendingPathComponent("node_modules", isDirectory: true)
+        .appendingPathComponent("@deepseek-ai", isDirectory: true)
+        .appendingPathComponent("dsh", isDirectory: true)
+    try fileManager.createDirectory(at: packageRoot, withIntermediateDirectories: true)
+    let manifest = #"{"name":"@deepseek-ai/dsh","version":"\#(version)","bin":{"dsh":"bin.js"}}"#
+    try Data(manifest.utf8)
+        .write(to: packageRoot.appendingPathComponent("package.json"), options: .atomic)
+    try Data("#!/usr/bin/env node\n".utf8)
+        .write(to: packageRoot.appendingPathComponent("bin.js"), options: .atomic)
+}
+
 private func requireContents(_ expected: String, at url: URL, _ message: String) throws {
     let actual = try String(contentsOf: url, encoding: .utf8)
     require(actual == expected, message)
@@ -525,6 +548,194 @@ private func recoverResumingInterruptedRestore() async throws {
             "resumed restore must reclaim the displaced tree it left behind")
     let second = try await coordinator.recoverPendingOperation()
     require(second == nil, "resumed recovery must be idempotent")
+}
+
+/// R1 regression: an interrupted user-initiated rollback persists
+/// `.rollingBack` with `pending == nil`. `ensureSelection()` (reached from
+/// `SettingsViewModel.loadFromState()` during startup) must not rewrite that
+/// shape to `idle`: doing so would skip the Profile restore, let the retained
+/// snapshot be deleted without ever being applied, and lock every plugin /
+/// Runtime-update mutation behind a `previous` that nothing clears while idle.
+private func verifyInterruptedRollbackSurvivesSelectionSync() async throws {
+    try resetFixture()
+    try installFakeRuntime(version: "1.0.0")
+    let stateJSON = """
+    {"appProfile":"desktop","selectedVersion":"1.0.0","runtimeState":{\
+    "phase":"rollingBack","profile":"desktop",\
+    "active":{"version":"1.0.1","registry":"https://registry.npmjs.org","installedAt":0},\
+    "previous":{"version":"1.0.0","registry":"https://registry.npmjs.org","installedAt":0},\
+    "transactionID":"tx-m2-rollback","webProfileSnapshotID":"snapshot-m2"}}
+    """
+    try writeAppState(stateJSON)
+    let manager = DshStateManager.shared
+    require(manager.current.runtimeState.phase == .rollingBack,
+            "fixture must start in the interrupted-rollback phase")
+
+    let resolved = DshVersionManager.shared.ensureSelection()
+    require(resolved == "1.0.0", "selection must keep the rollback target")
+
+    let after = manager.current.runtimeState
+    require(after.phase == .rollingBack,
+            "an interrupted rollback must not be rewritten to idle")
+    require(after.previous?.version == "1.0.0",
+            "an interrupted rollback must keep its previous Runtime")
+    require(after.transactionID == "tx-m2-rollback",
+            "an interrupted rollback must keep its transaction owner")
+    require(after.webProfileSnapshotID == "snapshot-m2",
+            "an interrupted rollback must keep its retained snapshot reference")
+    require(!DshRuntimeMutationGate.allowsPluginMutation(manager.current),
+            "the open rollback must still deny plugin mutations")
+}
+
+/// R3 regression: a resumed restore must be staged. A stale staging directory
+/// from an earlier interrupted attempt is disposable and must not block or
+/// corrupt the resumed swap.
+private func setupRestoreWithStaleStaging() async throws {
+    try resetFixture()
+    let manager = DshPluginManager.shared
+    let operationID = UUID().uuidString
+    let snapshot = try await manager.createPluginOperationSnapshot(
+        operationID: operationID,
+        profile: .desktop,
+        profileDirectory: profileURL()
+    )
+    try marker("mutated-before-interrupted-restore")
+    let mutationDigest = try await manager.pluginProfileDigest(at: profileURL())
+    let state = DshPluginOperationState(
+        operationID: operationID,
+        profile: .desktop,
+        targetPackage: "plugin",
+        action: .update,
+        snapshot: snapshot,
+        phase: .restoring,
+        mutationDigest: mutationDigest
+    )
+    try writeOperationState(state)
+    let parent = profileURL().deletingLastPathComponent()
+    try fileManager.moveItem(
+        at: profileURL(),
+        to: parent.appendingPathComponent(".dsh-plugin-restore-\(operationID)", isDirectory: true)
+    )
+    let staging = parent.appendingPathComponent(
+        ".dsh-plugin-restore-staging-\(operationID)",
+        isDirectory: true
+    )
+    try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
+    try Data("half-written".utf8)
+        .write(to: staging.appendingPathComponent("marker"), options: .atomic)
+}
+
+private func recoverRestoreWithStaleStaging() async throws {
+    let coordinator = DshPluginOperationCoordinator(operationStoreURL: operationStoreURL())
+    let result = try await coordinator.recoverPendingOperation()
+    require(result?.wasRestored == true, "a stale staging directory must not block the resume")
+    try requireContents("baseline", at: profileURL().appendingPathComponent("marker"),
+                        "resumed restore must install the verified baseline")
+    let leftovers = (try? fileManager.contentsOfDirectory(
+        atPath: profileURL().deletingLastPathComponent().path
+    ))?.filter { $0.hasPrefix(".dsh-plugin-restore-") } ?? []
+    require(leftovers.isEmpty,
+            "a completed resume must leave no displaced or staging directory behind")
+}
+
+/// R3 regression: a restore that already failed once (recoveryRequired, but a
+/// mutation digest exists) with the canonical Profile absent must resume
+/// instead of dead-ending as `externalModification`. This is what a full disk
+/// or a force-quit during the resumed copy leaves behind.
+private func setupRecoveryRequiredMissingProfile() async throws {
+    try resetFixture()
+    let manager = DshPluginManager.shared
+    let operationID = UUID().uuidString
+    let snapshot = try await manager.createPluginOperationSnapshot(
+        operationID: operationID,
+        profile: .desktop,
+        profileDirectory: profileURL()
+    )
+    try marker("mutated-before-interrupted-restore")
+    let mutationDigest = try await manager.pluginProfileDigest(at: profileURL())
+    let state = DshPluginOperationState(
+        operationID: operationID,
+        profile: .desktop,
+        targetPackage: "plugin",
+        action: .update,
+        snapshot: snapshot,
+        phase: .recoveryRequired,
+        mutationDigest: mutationDigest
+    )
+    try writeOperationState(state)
+    try fileManager.moveItem(
+        at: profileURL(),
+        to: profileURL().deletingLastPathComponent()
+            .appendingPathComponent(".dsh-plugin-restore-\(operationID)", isDirectory: true)
+    )
+}
+
+private func recoverRecoveryRequiredMissingProfile() async throws {
+    let coordinator = DshPluginOperationCoordinator(operationStoreURL: operationStoreURL())
+    let result = try await coordinator.recoverPendingOperation()
+    require(result?.wasRestored == true,
+            "an absent Profile with a mutation digest must resume, not report external modification")
+    try requireContents("baseline", at: profileURL().appendingPathComponent("marker"),
+                        "resumed restore must put the baseline back")
+    require(coordinator.pendingOperation == nil, "resumed recovery must clear the record")
+}
+
+/// R2 regression: the startup sweep must actually see the dot-prefixed
+/// leftovers it targets, and must never select a directory whose name is not
+/// exactly app-generated (fixed prefix + UUID).
+private func verifyStagingSweep() async throws {
+    try resetFixture()
+    let profilesRoot = DshLaunchContext.defaultDshHome
+        .appendingPathComponent("profiles", isDirectory: true)
+    let desktop = DshLaunchContext.profileDirectory(for: .desktop)
+    let nodeModules = desktop.appendingPathComponent("node_modules", isDirectory: true)
+    try fileManager.createDirectory(at: nodeModules, withIntermediateDirectories: true)
+
+    let migration = UUID().uuidString
+    let displaced = UUID().uuidString
+    let staging = UUID().uuidString
+    let bridgeStaging = UUID().uuidString
+    let bridgePrevious = UUID().uuidString
+    let leftovers = [
+        profilesRoot.appendingPathComponent(".swift-desktop-migration-\(migration)", isDirectory: true),
+        profilesRoot.appendingPathComponent(".dsh-plugin-restore-\(displaced)", isDirectory: true),
+        profilesRoot.appendingPathComponent(".dsh-plugin-restore-staging-\(staging)", isDirectory: true),
+        desktop.appendingPathComponent(".dsh-desktop-host-staging-\(bridgeStaging)", isDirectory: true),
+        nodeModules.appendingPathComponent(".dsh-desktop-host-previous-\(bridgePrevious)", isDirectory: true),
+    ]
+    for url in leftovers {
+        try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+    }
+    // Decoys: same prefixes but not app-generated names, plus live entries.
+    let decoyPrefixes = [
+        profilesRoot.appendingPathComponent(".swift-desktop-migration-notes", isDirectory: true),
+        profilesRoot.appendingPathComponent(".dsh-plugin-restore-manual-backup", isDirectory: true),
+        desktop.appendingPathComponent(".dsh-desktop-host-staging-user-copy", isDirectory: true),
+    ]
+    for url in decoyPrefixes {
+        try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+    }
+    let livePackage = nodeModules.appendingPathComponent("real-plugin", isDirectory: true)
+    try fileManager.createDirectory(at: livePackage, withIntermediateDirectories: true)
+
+    let removed = await DshPluginManager.shared.cleanupOrphanedStagingDirectories()
+    require(Set(removed) == Set([
+        ".swift-desktop-migration-\(migration)",
+        ".dsh-plugin-restore-\(displaced)",
+        ".dsh-plugin-restore-staging-\(staging)",
+        ".dsh-desktop-host-staging-\(bridgeStaging)",
+        ".dsh-desktop-host-previous-\(bridgePrevious)",
+    ]), "the sweep must remove every app-generated leftover, got \(removed.sorted())")
+    for url in leftovers {
+        require(!fileManager.fileExists(atPath: url.path),
+                "leftover \(url.lastPathComponent) must be removed")
+    }
+    for url in decoyPrefixes {
+        require(fileManager.fileExists(atPath: url.path),
+                "a directory that is not app-generated must be kept: \(url.lastPathComponent)")
+    }
+    require(fileManager.fileExists(atPath: livePackage.path),
+            "live profile content must never be touched")
 }
 
 /// Simulate the narrow force-quit window after restoration and snapshot
@@ -1015,6 +1226,12 @@ struct PluginOperationHarness {
         case "restoring-recover": try await recoverRestoringIdempotently()
         case "resuming-restore-setup": try await setupResumingInterruptedRestore()
         case "resuming-restore-recover": try await recoverResumingInterruptedRestore()
+        case "stale-staging-restore-setup": try await setupRestoreWithStaleStaging()
+        case "stale-staging-restore-recover": try await recoverRestoreWithStaleStaging()
+        case "recovery-required-missing-profile-setup": try await setupRecoveryRequiredMissingProfile()
+        case "recovery-required-missing-profile-recover": try await recoverRecoveryRequiredMissingProfile()
+        case "m2-rollback-selection": try await verifyInterruptedRollbackSurvivesSelectionSync()
+        case "staging-sweep": try await verifyStagingSweep()
         case "restoring-cleanup-setup": try await setupRestoringAfterSnapshotDeletion()
         case "restoring-cleanup-recover": try await recoverRestoringAfterSnapshotDeletion()
         case "committed": try await runCommittedRetention()

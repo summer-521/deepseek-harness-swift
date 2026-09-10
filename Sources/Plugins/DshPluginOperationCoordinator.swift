@@ -291,6 +291,11 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
            profileURL.resolvingSymlinksInPath().path != profileURL.standardizedFileURL.path {
             throw DshPluginOperationError.unsafeProfileDirectory
         }
+        // A dangling symlink is invisible to `fileExists`, which would let the
+        // resume branch treat it as an absent Profile.
+        if DshPluginManager.isSymbolicLink(at: profileURL) {
+            throw DshPluginOperationError.unsafeProfileDirectory
+        }
         switch operation.phase {
         case .prepared:
             guard try await pluginManager.pluginProfileDigest(at: profileURL) == operation.snapshot.baselineDigest else {
@@ -344,11 +349,22 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
             // Profile absent. That is the one shape where continuing the
             // restore is provably safe: the displaced tree is ours, the
             // snapshot is app-owned, and re-running the restore copies from
-            // the snapshot and verifies the baseline. recoveryRequired stays
-            // fail-closed — it means an earlier decision already required
-            // explicit user attention.
+            // the snapshot and verifies the baseline. The copy itself is
+            // staged and installed atomically, so an interrupted attempt can
+            // only leave the canonical path absent — never a half-written
+            // tree that no digest could classify.
+            //
+            // A `.recoveryRequired` record is normally fail-closed, but when it
+            // still carries a mutation digest (a restore was already chosen as
+            // the safe outcome) and the canonical Profile is absent — for
+            // example the resumed restore itself failed on a full disk —
+            // refusing forever would be a dead end with no recovery action.
+            // Re-running the same restore stays idempotent and still verifies
+            // the baseline before the record is cleared.
             let profileExists = FileManager.default.fileExists(atPath: profileURL.path)
-            if operation.phase == .restoring, !profileExists {
+            let phaseAllowsResume = operation.phase == .restoring
+                || (operation.phase == .recoveryRequired && operation.mutationDigest != nil)
+            if phaseAllowsResume, !profileExists {
                 do {
                     let restored = try await restore(
                         operation,

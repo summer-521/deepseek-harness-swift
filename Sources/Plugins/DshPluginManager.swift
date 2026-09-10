@@ -914,6 +914,9 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
            profileURL.resolvingSymlinksInPath().path != profileURL.path {
             throw DshPluginOperationError.unsafeProfileDirectory
         }
+        if Self.isSymbolicLink(at: profileURL) {
+            throw DshPluginOperationError.unsafeProfileDirectory
+        }
         // A missing Profile is the signature of an interrupted restore: the
         // live tree was moved aside and the process died before the snapshot
         // copy completed. Nothing can be compared in that state, so the
@@ -934,6 +937,15 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         // name would strand the live tree in an untracked directory.
         let displacedURL = profileURL.deletingLastPathComponent()
             .appendingPathComponent(".dsh-plugin-restore-\(reference.operationID)", isDirectory: true)
+        // The snapshot is copied into a same-volume staging directory and only
+        // moved onto the canonical path after its digest matches the recorded
+        // baseline. Copying straight onto the canonical path is not atomic: a
+        // force-quit or I/O failure mid-copy leaves a partially written tree
+        // there, and that shape is indistinguishable from an external edit
+        // (its digest matches neither the baseline nor the mutation digest),
+        // so the restore would dead-end as a false `externalModification`.
+        let stagingURL = profileURL.deletingLastPathComponent()
+            .appendingPathComponent(".dsh-plugin-restore-staging-\(reference.operationID)", isDirectory: true)
         var displacedCurrent = false
         do {
             if fileManager.fileExists(atPath: profileURL.path) {
@@ -959,7 +971,25 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                     at: profileURL.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
-                try copyDirectoryPreferClone(from: savedProfileURL, to: profileURL)
+                // A staging leftover can only come from an attempt that never
+                // reached the atomic install below, so it is disposable.
+                if fileManager.fileExists(atPath: stagingURL.path) {
+                    try? fileManager.removeItem(at: stagingURL)
+                }
+                try copyDirectoryPreferClone(from: savedProfileURL, to: stagingURL)
+                guard try pluginProfileDigestSynchronously(at: stagingURL) == reference.baselineDigest else {
+                    throw NSError(
+                        domain: "DshPluginManager",
+                        code: -48,
+                        userInfo: [NSLocalizedDescriptionKey: "插件事务快照恢复后校验失败"]
+                    )
+                }
+                // Same-volume atomic hand-off: the canonical path is either
+                // absent or the verified baseline, never a partial copy.
+                if fileManager.fileExists(atPath: profileURL.path) {
+                    try fileManager.removeItem(at: profileURL)
+                }
+                try fileManager.moveItem(at: stagingURL, to: profileURL)
             }
             guard try pluginProfileDigestSynchronously(at: profileURL) == reference.baselineDigest else {
                 throw NSError(
@@ -977,18 +1007,15 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                 try? fileManager.removeItem(at: displacedURL)
             }
         } catch {
-            // Only touch the paths this attempt created. When the Profile was
-            // displaced (displacedCurrent), profileURL holds the partial copy
-            // and the original lives at displacedURL — put it back. When the
-            // Profile was missing and the copy started (resume), profileURL
-            // is also only a partial copy and can be removed. A Profile that
-            // was never touched must stay untouched: deleting it would
-            // destroy the live tree over a failed move.
+            // Only touch the paths this attempt created. The canonical path is
+            // never a partial copy any more, so it is only removed when this
+            // attempt displaced the live tree and must put the original back.
+            // A Profile that was never touched must stay untouched: deleting
+            // it would destroy the live tree over a failed move.
+            try? fileManager.removeItem(at: stagingURL)
             if displacedCurrent {
                 try? fileManager.removeItem(at: profileURL)
                 try? fileManager.moveItem(at: displacedURL, to: profileURL)
-            } else if !profileExists {
-                try? fileManager.removeItem(at: profileURL)
             }
             throw error
         }
@@ -996,10 +1023,14 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
 
     /// Restore only when the current tree still matches the last digest
     /// observed by this operation.  A changed tree is an external conflict,
-    /// not permission to overwrite newer user changes.
+    /// not permission to overwrite newer user changes. The expected digest is
+    /// intentionally required: a default of nil would let a future caller skip
+    /// the compare-before-overwrite gate by omission. Callers resuming a
+    /// provably interrupted swap pass nil deliberately, after re-checking that
+    /// the canonical Profile is absent.
     public func restorePluginOperationSnapshot(
         _ reference: DshPluginOperationSnapshotReference,
-        expectedCurrentDigest: String? = nil
+        expectedCurrentDigest: String?
     ) async throws {
         try await Task.detached(priority: .utility) {
             try Self.restorePluginOperationSnapshotSynchronously(
@@ -3382,13 +3413,18 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
     /// - `.dsh-desktop-host-staging-*` inside a managed profile and
     ///   `.dsh-desktop-host-previous-*` under its node_modules (the App
     ///   bundle is the authoritative bridge source and refresh is idempotent);
-    /// - `.dsh-plugin-restore-<operationID>` under profiles/ only while the
-    ///   desktop Profile exists again (the interrupted swap completed; the
-    ///   leftover is the displaced pre-restore tree). Never touched while the
-    ///   Profile is absent — there the displaced tree is the only copy.
-    /// Everything else, including `.dsh-profile-restore-*` (whose target
-    /// profile cannot be derived from the snapshot id), is left for the
-    /// recovery surface. Each removal is best-effort and never fails startup.
+    /// - `.dsh-plugin-restore-<operationID>` and
+    ///   `.dsh-plugin-restore-staging-<operationID>` under profiles/ only
+    ///   while the desktop Profile exists again (the interrupted swap
+    ///   completed; the leftover is the displaced pre-restore tree). Never
+    ///   touched while the Profile is absent — there the displaced tree is the
+    ///   only copy.
+    /// Every candidate must carry the exact app-generated name (fixed prefix
+    /// plus UUID), so a user-created directory that merely shares the prefix
+    /// is never selected. Everything else, including `.dsh-profile-restore-*`
+    /// (whose target profile cannot be derived from the snapshot id), is left
+    /// for the recovery surface. Each removal is best-effort and never fails
+    /// startup.
     @discardableResult
     public func cleanupOrphanedStagingDirectories() async -> [String] {
         await Task.detached(priority: .utility) {
@@ -3399,17 +3435,22 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                 atPath: DshLaunchContext.profileDirectory(for: .desktop).path
             )
             var removed: [String] = []
+            // Hidden entries must be requested explicitly: every leftover this
+            // sweep targets is dot-prefixed, so `.skipsHiddenFiles` (used
+            // before) filtered all of them out and silently turned the whole
+            // sweep into a no-op.
             guard let entries = try? fileManager.contentsOfDirectory(
                 at: profilesRoot,
                 includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
+                options: []
             ) else { return [] }
 
             for entry in entries {
                 let name = entry.lastPathComponent
                 if name.hasPrefix(".swift-desktop-migration-") {
+                    guard Self.isAppGeneratedStagingName(name) else { continue }
                     Self.removeOrphanedStagingEntry(entry, name, &removed)
-                } else if name.hasPrefix(".dsh-plugin-restore-"), desktopExists {
+                } else if Self.isDisplacedPluginRestoreName(name), desktopExists {
                     Self.removeOrphanedStagingEntry(entry, name, &removed)
                 }
             }
@@ -3421,11 +3462,12 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                       let contents = try? fileManager.contentsOfDirectory(
                           at: profileDir,
                           includingPropertiesForKeys: nil,
-                          options: [.skipsHiddenFiles]
+                          options: []
                       ) else { continue }
                 for entry in contents {
                     let name = entry.lastPathComponent
-                    if name.hasPrefix(".dsh-desktop-host-staging-") {
+                    if name.hasPrefix(".dsh-desktop-host-staging-"),
+                       Self.isAppGeneratedStagingName(name) {
                         Self.removeOrphanedStagingEntry(entry, name, &removed)
                     }
                 }
@@ -3433,11 +3475,12 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                 if let entries = try? fileManager.contentsOfDirectory(
                     at: nodeModules,
                     includingPropertiesForKeys: nil,
-                    options: [.skipsHiddenFiles]
+                    options: []
                 ) {
                     for entry in entries {
                         let name = entry.lastPathComponent
-                        if name.hasPrefix(".dsh-desktop-host-previous-") {
+                        if name.hasPrefix(".dsh-desktop-host-previous-"),
+                           Self.isAppGeneratedStagingName(name) {
                             Self.removeOrphanedStagingEntry(entry, name, &removed)
                         }
                     }
@@ -3445,6 +3488,43 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
             }
             return removed
         }.value
+    }
+
+    /// True when the path itself is a symbolic link, including a dangling one.
+    /// `fileExists` is false for a dangling link and
+    /// `resolvingSymlinksInPath()` may return the unresolved path for it, so
+    /// both checks together can treat a link as an absent Profile and copy
+    /// over it.
+    static func isSymbolicLink(at url: URL) -> Bool {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
+            return false
+        }
+        return attributes[.type] as? FileAttributeType == .typeSymbolicLink
+    }
+
+    /// Every directory the startup sweep may remove is app-generated with a
+    /// fixed prefix followed by a UUID. Validating the suffix keeps a
+    /// user-created directory that merely shares the prefix out of the sweep.
+    static func isAppGeneratedStagingName(_ name: String) -> Bool {
+        let prefixes = [
+            ".swift-desktop-migration-",
+            ".dsh-desktop-host-staging-",
+            ".dsh-desktop-host-previous-",
+            ".dsh-plugin-restore-staging-",
+            ".dsh-plugin-restore-",
+        ]
+        for prefix in prefixes where name.hasPrefix(prefix) {
+            return UUID(uuidString: String(name.dropFirst(prefix.count))) != nil
+        }
+        return false
+    }
+
+    /// A displaced (or staged) P01 restore directory. The `staging` prefix is
+    /// checked first because it also starts with the displaced prefix.
+    static func isDisplacedPluginRestoreName(_ name: String) -> Bool {
+        (name.hasPrefix(".dsh-plugin-restore-")
+            || name.hasPrefix(".dsh-plugin-restore-staging-"))
+            && isAppGeneratedStagingName(name)
     }
 
     private static func removeOrphanedStagingEntry(

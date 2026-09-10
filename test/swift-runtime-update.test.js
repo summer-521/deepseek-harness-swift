@@ -14,6 +14,7 @@ const PLUGIN_SOURCE = read('../Sources/Plugins/DshPluginManager.swift')
 const WINDOW_SOURCE = read('../Sources/MainWindow/MainWindowController.swift')
 const UPSTREAM_COOKIE_SOURCE = read('../Sources/MainWindow/DshUpstreamCookieStore.swift')
 const SERVICE_SOURCE = read('../Sources/Service/DshService.swift')
+const GATE_SOURCE = read('../Sources/Service/DshAsyncOperationGate.swift')
 const PROCESS_IO_SOURCE = read('../Sources/Service/DshProcessIO.swift')
 const HOST_CONTROL = read('../assets/dsh-desktop-host/control.js')
 const APP_SOURCE = read('../Sources/AppDelegate.swift')
@@ -249,7 +250,7 @@ test('runtime confirmation waits for the rendered Web UI after navigation', () =
   assert.match(WINDOW_SOURCE, /匿名 loopback/)
   assert.match(WINDOW_SOURCE, /verifyBrowserAccessBoundary/)
   assert.match(WINDOW_SOURCE, /verifyLANAccessBoundary/)
-  assert.match(SERVICE_SOURCE, /final class DshAsyncOperationGate/)
+  assert.match(GATE_SOURCE, /final class DshAsyncOperationGate/)
   assert.match(SERVICE_SOURCE, /startOperationGate\.acquire\(\)/)
   assert.match(WINDOW_SOURCE, /DshAsyncOperationGate/)
   assert.match(WINDOW_SOURCE, /restartDshServiceDuringOperation/)
@@ -316,4 +317,73 @@ test('healthy-start cleanup validates the persisted count before committing', ()
     'post-cleanup and commit guards must compare against the persisted pre-commit count'
   )
   assert.match(cleanup, /healthyStartCount = 0[\s\S]*phase = \.idle/)
+})
+
+test('round-2 fixes keep their fail-closed ordering and invariants', () => {
+  // R4: the recovered-rollback settle must commit the settled state before
+  // deleting the retained web Profile snapshot; otherwise a kill in between
+  // leaves durable state referencing a deleted snapshot and every later
+  // launch fails with -32 without any recovery action.
+  const finalize = SETTINGS_SOURCE.slice(
+    SETTINGS_SOURCE.indexOf(
+      'public func finalizeRecoveredRuntimeAfterSuccessfulStart(for context: DshLaunchContext)'
+    ),
+    SETTINGS_SOURCE.indexOf('private func runRuntimeUpdate(')
+  )
+  assert.ok(finalize.length > 0, 'the recovered-rollback settle must exist')
+  assert.ok(
+    finalize.indexOf('DshRuntimeTransaction.finishRollback(') <
+      finalize.indexOf('deleteWebProfileSnapshot('),
+    'the rollback commit must precede the retained-snapshot deletion'
+  )
+  assert.match(finalize, /retainedWebProfileSnapshotID: snapshotID/)
+  assert.match(finalize, /retryRetainedWebProfileSnapshotCleanup\(\)/)
+
+  // R1: only a settled (`idle`) or confirmed-cleanup state may re-sync
+  // `active`. The previous `pending == nil || phase == .idle || ...`
+  // disjunction collapsed an interrupted user-initiated rollback (which has
+  // previous/transactionID but no pending) to idle.
+  assert.doesNotMatch(
+    VERSION_MANAGER_SOURCE,
+    /pending == nil \|\| state\.runtimeState\.phase == \.idle/
+  )
+  assert.match(
+    VERSION_MANAGER_SOURCE,
+    /guard state\.runtimeState\.pending == nil,\s*\n\s*phase == \.idle \|\| phase == \.confirmed else \{ return \}/
+  )
+  assert.match(STATE_SOURCE, /public static func repairIdleTransactionResidue/)
+  assert.match(SETTINGS_SOURCE, /repairIdleTransactionResidue/)
+
+  // R5: an already-cancelled acquire must fail immediately instead of being
+  // queued as a waiter that nothing can resume.
+  assert.match(
+    GATE_SOURCE,
+    /if Task\.isCancelled \{\s*\n\s*cancelled\.mark\(\)\s*\n\s*resumeCancelled = true/
+  )
+  assert.match(
+    GATE_SOURCE,
+    /if resumeCancelled \{\s*\n\s*continuation\.resume\(throwing: CancellationError\(\)\)/
+  )
+  assert.doesNotMatch(
+    GATE_SOURCE,
+    /Task\.isCancelled \{\s*\n\s*cancelled\.mark\(\)\s*\n\s*waiters\.append/
+  )
+
+  // R10: the automatic service restore after a failed plugin operation must
+  // treat a corrupt durable record as "do not restart".
+  assert.match(
+    SETTINGS_SOURCE,
+    /guard !DshPluginOperationCoordinator\.shared\.hasPersistedOperationRecord/
+  )
+
+  // R2: the staging sweep must enumerate hidden entries (every target is
+  // dot-prefixed) and validate the app-generated UUID suffix.
+  const sweep = PLUGIN_SOURCE.slice(
+    PLUGIN_SOURCE.indexOf('public func cleanupOrphanedStagingDirectories()'),
+    PLUGIN_SOURCE.indexOf('static func isAppGeneratedStagingName')
+  )
+  assert.ok(sweep.length > 0, 'the staging sweep must exist')
+  assert.doesNotMatch(sweep, /options: \[\.skipsHiddenFiles\]/)
+  assert.match(sweep, /options: \[\]/)
+  assert.match(PLUGIN_SOURCE, /static func isAppGeneratedStagingName/)
 })

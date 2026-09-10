@@ -188,6 +188,44 @@ struct RuntimeRecoveryHarness {
         require(confirmedRollback.webProfileSnapshotID == "snapshot-id",
                 "a failed snapshot cleanup must retain the snapshot id for the startup retry")
 
+        // R1: a settled idle state that still carries transaction bookkeeping
+        // locks the mutation gates forever, because no transition clears
+        // `previous` while idle. The repair must clear only the bookkeeping and
+        // must keep a retained snapshot reference (that snapshot still has to
+        // be deleted by the cleanup path).
+        var idleResidue = DshRuntimeState(updatePolicy: .notify, channel: .latest)
+        idleResidue.phase = .idle
+        idleResidue.previous = active
+        idleResidue.transactionID = "stale-owner"
+        idleResidue.webProfileSnapshotID = "retained-snapshot"
+        require(!DshRuntimeMutationGate.allowsPluginMutation(
+            DshStateConfig(appProfile: .desktop, runtimeState: idleResidue)
+        ), "an idle residue must be treated as locked before repair")
+
+        let repairedResidue = DshRuntimeTransaction.repairIdleTransactionResidue(idleResidue)
+        require(repairedResidue != nil, "an idle residue must be repairable")
+        require(repairedResidue?.previous == nil, "repair must clear the stale previous runtime")
+        require(repairedResidue?.transactionID == nil, "repair must clear the stale transaction owner")
+        require(repairedResidue?.phase == .idle, "repair must keep the settled idle phase")
+        require(repairedResidue?.webProfileSnapshotID == "retained-snapshot",
+                "repair must keep the retained snapshot reference for cleanup")
+        require(repairedResidue?.lastDiagnostic?.isEmpty == false,
+                "repair must record a diagnostic")
+
+        var repairedState = DshStateConfig(appProfile: .desktop, runtimeState: repairedResidue!)
+        repairedState.runtimeState.webProfileSnapshotID = nil
+        require(DshRuntimeMutationGate.allowsPluginMutation(repairedState),
+                "a repaired idle state must reopen plugin mutations")
+
+        // A settled idle state without residue, and any open transaction, must
+        // not be rewritten by the repair.
+        let cleanIdle = DshRuntimeState(updatePolicy: .notify, channel: .latest)
+        require(DshRuntimeTransaction.repairIdleTransactionResidue(cleanIdle) == nil,
+                "a clean idle state must not be rewritten")
+        var openRollback = DshRuntimeTransaction.beginRollback(confirmed)
+        require(DshRuntimeTransaction.repairIdleTransactionResidue(openRollback) == nil,
+                "an open transaction must never be repaired away")
+
         print("runtime recovery integration harness passed")
     }
 }

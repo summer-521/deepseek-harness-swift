@@ -139,24 +139,39 @@ public final class DshVersionManager {
 
             let fallback = listInstalledVersions().first
             let descriptor = fallback.map { runtimeDescriptor(version: $0) }
-            DshStateManager.shared.update { state in
-                Self.settleAbandonedTransactionIfNeeded(in: &state, diagnosticPrefix: nil)
-                state.selectedVersion = fallback
-                state.runtimeState.active = descriptor
-                state.runtimeState.phase = .idle
-                state.runtimeState.lastDiagnostic = fallback.map {
-                    "原先选择的 DSH Runtime \(selected) 不可运行，已自动切换到 \($0)。"
-                } ?? "原先选择的 DSH Runtime \(selected) 不可运行，请重新安装 Runtime。"
+            do {
+                try DshStateManager.shared.updateOrThrow { state in
+                    Self.settleAbandonedTransactionIfNeeded(in: &state, diagnosticPrefix: nil)
+                    state.selectedVersion = fallback
+                    state.runtimeState.active = descriptor
+                    state.runtimeState.phase = .idle
+                    state.runtimeState.lastDiagnostic = fallback.map {
+                        "原先选择的 DSH Runtime \(selected) 不可运行，已自动切换到 \($0)。"
+                    } ?? "原先选择的 DSH Runtime \(selected) 不可运行，请重新安装 Runtime。"
+                }
+            } catch {
+                // The settle and the fallback selection were never persisted.
+                // Report the durable selection instead of publishing a switch
+                // the disk refused: a dropped state write must not look like a
+                // successful repair (a later load retries this path).
+                print("[DshVersionManager] Failed to persist the fallback Runtime selection:", error)
+                return selected
             }
             return fallback
         }
         guard let first = listInstalledVersions().first else { return nil }
         let descriptor = runtimeDescriptor(version: first)
-        DshStateManager.shared.update { state in
-            Self.settleAbandonedTransactionIfNeeded(in: &state, diagnosticPrefix: nil)
-            state.selectedVersion = first
-            state.runtimeState.active = descriptor
-            state.runtimeState.phase = .idle
+        do {
+            try DshStateManager.shared.updateOrThrow { state in
+                Self.settleAbandonedTransactionIfNeeded(in: &state, diagnosticPrefix: nil)
+                state.selectedVersion = first
+                state.runtimeState.active = descriptor
+                state.runtimeState.phase = .idle
+            }
+        } catch {
+            // Nothing was persisted, so there is no selection to report.
+            print("[DshVersionManager] Failed to persist the initial Runtime selection:", error)
+            return state.selectedVersion
         }
         return first
     }
@@ -715,14 +730,32 @@ public final class DshVersionManager {
 
     private func syncActiveRuntimeState(for version: String) {
         let state = DshStateManager.shared.current
-        guard state.runtimeState.pending == nil || state.runtimeState.phase == .idle || state.runtimeState.phase == .confirmed else {
-            return
-        }
+        // Only a settled (`idle`) or confirmed-cleanup state may have `active`
+        // re-synced. A still-open transaction must never be rewritten here:
+        // an interrupted user-initiated rollback keeps `previous` and
+        // `transactionID` while its `pending` candidate is already nil, and
+        // the previous `pending == nil || phase == .idle || phase == .confirmed`
+        // disjunction collapsed exactly that shape to `idle`. The launch then
+        // skipped the Profile restore, the retained snapshot was deleted
+        // without being applied, and the leftover `previous` locked every
+        // plugin/update mutation forever.
+        let phase = state.runtimeState.phase
+        guard state.runtimeState.pending == nil,
+              phase == .idle || phase == .confirmed else { return }
         guard state.runtimeState.active?.version != version else { return }
         let descriptor = runtimeDescriptor(version: version, registry: state.runtimeState.active?.registry ?? state.npmRegistry)
-        DshStateManager.shared.update { state in
-            state.runtimeState.active = descriptor
-            state.runtimeState.phase = .idle
+        // A confirmed cleanup window keeps its phase: re-syncing `active` must
+        // not consume the second-healthy-start bookkeeping.
+        let settledPhase: DshRuntimeTransactionPhase = phase == .confirmed ? .confirmed : .idle
+        do {
+            try DshStateManager.shared.updateOrThrow { state in
+                state.runtimeState.active = descriptor
+                state.runtimeState.phase = settledPhase
+            }
+        } catch {
+            // Best-effort repair; the durable state is unchanged, so report
+            // the failure instead of pretending the sync happened.
+            print("[DshVersionManager] Failed to sync the active Runtime state:", error)
         }
     }
 

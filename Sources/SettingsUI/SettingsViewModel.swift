@@ -768,10 +768,19 @@ public final class SettingsViewModel: ObservableObject {
     /// stays usable. Operations with a durable record stay down until the
     /// user resolves them on the recovery surface.
     private func restoreServiceAfterFailedPluginOperationIfNeeded() {
-        guard DshPluginOperationCoordinator.shared.pendingOperation == nil,
+        // Use the explicit durable-record probe, not `pendingOperation`: the
+        // latter collapses a corrupt record into nil, and a corrupt record must
+        // keep the automatic restart suppressed (fail-closed).
+        guard !DshPluginOperationCoordinator.shared.hasPersistedOperationRecord,
               !MainWindowController.shared.hasUnresolvedRecovery,
               !DshService.shared.isServiceRunning else { return }
         Task { @MainActor in
+            // Re-check inside the task: the guard above is evaluated before the
+            // task runs, and a queued retry may have created a durable record in
+            // the meantime.
+            guard !DshPluginOperationCoordinator.shared.hasPersistedOperationRecord,
+                  !MainWindowController.shared.hasUnresolvedRecovery,
+                  !DshService.shared.isServiceRunning else { return }
             do {
                 _ = try await MainWindowController.shared.restartDshService()
                 showPluginStatus("插件操作失败，DSH 服务已自动恢复")
@@ -1141,6 +1150,11 @@ public final class SettingsViewModel: ObservableObject {
                     }
                 }
             }
+        } catch is CancellationError {
+            // The owning SwiftUI task was cancelled (the settings panel went
+            // away). This is not an operation failure and must not be reported
+            // as one.
+            pluginInspectionResult = nil
         } catch {
             pluginInspectionResult = nil
             pluginInspectionMessage = "无法完成插件一致性检查：\(DshSettingsUIMessage.safe(error))"
@@ -1213,6 +1227,10 @@ public final class SettingsViewModel: ObservableObject {
                 profile: checked.0.profile,
                 registry: checked.1
             )
+        } catch is CancellationError {
+            // The owning SwiftUI task was cancelled (the settings panel went
+            // away). Report nothing: this is not a plugin-update failure.
+            guard requestGeneration == pluginUpdateRequestGeneration else { return }
         } catch {
             guard requestGeneration == pluginUpdateRequestGeneration else { return }
             invalidateOutdatedPlugins(refreshList: true)
@@ -1517,6 +1535,29 @@ public final class SettingsViewModel: ObservableObject {
     /// active runtime before the next service launch. A confirmed transaction
     /// is simply finalized; all earlier phases are treated as unconfirmed.
     public func recoverPendingRuntimeUpdate() async throws {
+        // Repair a settled idle state that still carries transaction
+        // bookkeeping before any launch decision reads it. Nothing else clears
+        // `previous`/`transactionID` while idle, so a residue would keep every
+        // plugin/update mutation locked forever; a retained web Profile
+        // snapshot id is preserved for the cleanup that runs right after this.
+        // The read-only pre-check keeps the common (clean) path from writing
+        // state at all.
+        if DshRuntimeTransaction.repairIdleTransactionResidue(
+            DshStateManager.shared.current.runtimeState
+        ) != nil {
+            var didRepairIdleResidue = false
+            try DshStateManager.shared.updateOrThrow { state in
+                guard let repaired = DshRuntimeTransaction.repairIdleTransactionResidue(
+                    state.runtimeState
+                ) else { return }
+                state.runtimeState = repaired
+                didRepairIdleResidue = true
+            }
+            if didRepairIdleResidue {
+                syncRuntimeRecoveryState()
+            }
+        }
+
         let state = DshStateManager.shared.current
         let installedVersions = Set(DshVersionManager.shared.listInstalledVersions())
         guard let action = DshRuntimeRecoveryPlanner.plan(
@@ -1823,16 +1864,6 @@ public final class SettingsViewModel: ObservableObject {
             }
         }
 
-        var retainedSnapshotID: String?
-        if let snapshotID {
-            do {
-                try await DshPluginManager.shared.deleteWebProfileSnapshot(snapshotID)
-            } catch {
-                retainedSnapshotID = snapshotID
-                cleanupErrors.append("web Profile 快照清理失败：\(DshSettingsUIMessage.safe(error))")
-            }
-        }
-
         let stateBeforeCommit = DshStateManager.shared.current
         guard runtimeTransactionMatches(
             stateBeforeCommit,
@@ -1845,7 +1876,14 @@ public final class SettingsViewModel: ObservableObject {
             transactionID: expectedTransactionID
         ) else { return }
 
-        let diagnostic = cleanupErrors.isEmpty ? nil : cleanupErrors.joined(separator: "；")
+        // Commit the settled rollback state BEFORE deleting the retained web
+        // Profile snapshot, exactly like the update-failure rollback path.
+        // Durable state must never point at an already deleted snapshot: the
+        // next launch restores the snapshot for any `.rollingBack` state that
+        // still references one, so a kill between "delete" and "commit" would
+        // make every subsequent launch fail with -32 and leave no recovery
+        // action. The id is retained until the delete really succeeds, and a
+        // failed delete keeps it for the next-launch retry.
         var didCommit = false
         try DshStateManager.shared.updateOrThrow { state in
             guard self.runtimeTransactionMatches(
@@ -1862,12 +1900,59 @@ public final class SettingsViewModel: ObservableObject {
             state.runtimeState = DshRuntimeTransaction.finishRollback(
                 state.runtimeState,
                 active: active,
-                retainedWebProfileSnapshotID: retainedSnapshotID
+                retainedWebProfileSnapshotID: snapshotID
             )
-            state.runtimeState.lastDiagnostic = diagnostic
+            if let candidateToDiscard {
+                // Suppress automatic re-follow of the Runtime this rollback
+                // just rejected; otherwise `followLatestIfEnabled` would
+                // download and restart into the same version again.
+                state.runtimeState.dismissedVersion = candidateToDiscard.version
+                state.runtimeState.dismissedAppVersion = currentAppVersion
+            }
+            state.runtimeState.lastDiagnostic = cleanupErrors.isEmpty
+                ? nil
+                : cleanupErrors.joined(separator: "；")
         }
         guard didCommit else { return }
         syncRuntimeRecoveryState()
+
+        if let snapshotID {
+            do {
+                try await DshPluginManager.shared.deleteWebProfileSnapshot(snapshotID)
+                // Clear the retained reference only after the delete really
+                // succeeded.
+                try DshStateManager.shared.updateOrThrow { state in
+                    guard state.runtimeState.phase == .idle,
+                          state.runtimeState.webProfileSnapshotID == snapshotID else { return }
+                    state.runtimeState.webProfileSnapshotID = nil
+                    state.runtimeState.lastDiagnostic = cleanupErrors.isEmpty
+                        ? nil
+                        : cleanupErrors.joined(separator: "；")
+                }
+            } catch {
+                cleanupErrors.append("web Profile 快照清理失败：\(DshSettingsUIMessage.safe(error))")
+                do {
+                    try DshStateManager.shared.updateOrThrow { state in
+                        guard state.runtimeState.webProfileSnapshotID == snapshotID else { return }
+                        state.runtimeState.lastDiagnostic = cleanupErrors.joined(separator: "；")
+                    }
+                } catch {
+                    // The reference stays retained; next-launch cleanup retries.
+                }
+                // One immediate in-session retry so a transient delete failure
+                // does not keep plugin mutations locked until the next launch.
+                do {
+                    try await retryRetainedWebProfileSnapshotCleanup()
+                    if DshStateManager.shared.current.runtimeState.webProfileSnapshotID == nil {
+                        cleanupErrors.removeAll { $0.hasPrefix("web Profile 快照清理失败") }
+                    }
+                } catch {
+                    // Keep the retained reference; next-launch cleanup retries.
+                }
+            }
+        }
+
+        let diagnostic = cleanupErrors.isEmpty ? nil : cleanupErrors.joined(separator: "；")
         if let diagnostic {
             alertMessage = "已恢复到 \(active.version)，但\(diagnostic)"
         }
@@ -2128,6 +2213,11 @@ public final class SettingsViewModel: ObservableObject {
                     // the next launch (the startup retry in AppDelegate).
                     do {
                         try await retryRetainedWebProfileSnapshotCleanup()
+                        // The retry may have succeeded; do not report a
+                        // cleanup failure that no longer exists in state.
+                        if DshStateManager.shared.current.runtimeState.webProfileSnapshotID == nil {
+                            cleanupErrors.removeAll { $0.hasPrefix("web Profile 快照清理失败") }
+                        }
                     } catch {
                         // Keep the retained reference; next-launch cleanup
                         // will retry again.
