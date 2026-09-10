@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.1"><img alt="Swift 原生版 v1.2.1" src="https://img.shields.io/badge/Swift%20Native-v1.2.1-171513.svg?style=flat-square" /></a>
+  <a href="https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.2"><img alt="Swift 原生版 v1.2.2" src="https://img.shields.io/badge/Swift%20Native-v1.2.2-171513.svg?style=flat-square" /></a>
   <a href="LICENSE"><img alt="许可证：MIT" src="https://img.shields.io/badge/License-MIT-171513.svg?style=flat-square" /></a>
   <img alt="macOS 26+" src="https://img.shields.io/badge/macOS-26%2B-171513.svg?style=flat-square" />
   <img alt="Apple Silicon arm64" src="https://img.shields.io/badge/arch-arm64-171513.svg?style=flat-square" />
@@ -24,11 +24,11 @@ DSH Swift Native Shell 是 DSH Desktop 的独立 Swift 原生 macOS 实现。它
 
 ## 下载
 
-当前 Swift 原生版安装包发布在 [DSH Desktop Releases](https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.1)。
+当前 Swift 原生版安装包发布在 [DSH Desktop Releases](https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.2)。
 
 | 平台 | 架构 | 安装包 | 下载 |
 | --- | --- | --- | --- |
-| macOS | Apple Silicon | DMG | [下载 arm64](https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.2.1/DSH-Desktop-1.2.1-arm64.dmg) |
+| macOS | Apple Silicon | DMG | [下载 arm64](https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.2.2/DSH-Desktop-1.2.2-arm64.dmg) |
 
 ## 界面预览
 

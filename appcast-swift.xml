@@ -6,6 +6,48 @@
         <description>Updates for the native Swift shell of DSH Desktop.</description>
         <language>zh-CN</language>
         <item>
+            <title>1.2.2</title>
+            <pubDate>Thu, 10 Sep 2026 09:43:16 +0800</pubDate>
+            <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.2</link>
+            <sparkle:version>13</sparkle:version>
+            <sparkle:shortVersionString>1.2.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[
+## 更新内容
+
+### Profile 切换与认证恢复
+
+- 修复切换 Profile 后可能无法启动，并提示“DSH 上游认证已失效”的问题。
+- WebView 改用临时网站数据存储，避免旧 Runtime 或旧 Profile 的认证状态残留。
+- 认证失败自动重试前会清理 WebKit 的临时 Cookie、缓存和网络状态。
+- DSH 首次认证请求强制绕过本地缓存，避免复用已经失效的认证响应。
+- Profile 切换及失败回滚均支持一次有界认证恢复。
+- 修复应用异常退出后，Profile 桥接事务可能无法继续或回滚的问题。
+- 支持安全识别并恢复已经安装完成、但尚未来得及写入所有权凭据的桥接组件。
+
+### Runtime 与插件操作
+
+- 修复 Runtime 更新成功后、旧 Runtime 等待下次启动清理期间，插件和普通设置被错误锁定的问题。
+- Runtime 处于已确认状态时，可以继续进行插件操作和普通设置修改。
+- 旧 Runtime 尚未完成清理时，仍会阻止再次升级 Runtime，避免覆盖回滚信息。
+- 为 Profile 桥接依赖的安装和清理增加独立的 5 分钟超时，避免切换 Profile 时长时间卡住。
+
+### 窗口与恢复界面
+
+- 修复右侧面板全屏展开时遮挡 macOS 窗口关闭、最小化和缩放按钮的问题。
+- 全屏面板会根据系统窗口按钮的实际位置自动保留左侧空间。
+- 设置页面中的“外观”区域已移动到“运行环境”上方。
+- 调整中断事务恢复操作的按钮布局，并在恢复期间禁用可能产生冲突的操作。
+
+## 已知限制
+
+- 本版本最低需要 macOS 26，并且只提供 Apple Silicon（arm64）安装包。
+- Swift 应用包更新与 DSH npm Runtime 更新是两套独立流程。
+]]></description>
+            <enclosure url="https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.2.2/DSH-Desktop-1.2.2-arm64.dmg" length="50812432" type="application/octet-stream" sparkle:edSignature="0NnHGa1zZdeY7gu2J/PW3SVgNzYD2dOtVSAcEr2UjfIWfvMHJXdHg3RZDxSfmh6/gB8JM28MQjeNEqs9hOffAQ=="/>
+        </item>
+        <item>
             <title>1.2.1</title>
             <pubDate>Wed, 09 Sep 2026 09:56:16 +0800</pubDate>
             <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.1</link>
