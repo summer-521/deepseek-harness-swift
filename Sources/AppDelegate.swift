@@ -88,6 +88,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     _ = await DshPluginManager.shared.cleanupOrphanedWebProfileSnapshots(
                         keeping: DshStateManager.shared.current.runtimeState.webProfileSnapshotID
                     )
+                    // Runs after P01 recovery so a resolved record's snapshots
+                    // are not swept; only unreferenced/partial trees are
+                    // removed, and only with ownership or structural proof.
+                    _ = await DshPluginManager.shared.cleanupOrphanedPluginOperationSnapshots(
+                        keeping: DshPluginOperationCoordinator.shared.pendingOperation?.operationID
+                    )
                 }
             } catch {
                 // Keep M1's original MainWindow startup classification for

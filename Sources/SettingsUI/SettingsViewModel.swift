@@ -761,6 +761,26 @@ public final class SettingsViewModel: ObservableObject {
         pluginOperationDetail = "\(actionDescription)：\(safeError)"
     }
 
+    /// After a failed plugin operation that left no durable recovery record,
+    /// the pre-mutation service stop may not have been undone (snapshot
+    /// capacity, stale Profile digest and similar failures happen after the
+    /// stop but before any record exists). Bring the service back so the app
+    /// stays usable. Operations with a durable record stay down until the
+    /// user resolves them on the recovery surface.
+    private func restoreServiceAfterFailedPluginOperationIfNeeded() {
+        guard DshPluginOperationCoordinator.shared.pendingOperation == nil,
+              !MainWindowController.shared.hasUnresolvedRecovery,
+              !DshService.shared.isServiceRunning else { return }
+        Task { @MainActor in
+            do {
+                try await MainWindowController.shared.restartDshService()
+                showPluginStatus("插件操作失败，DSH 服务已自动恢复")
+            } catch {
+                self.alertMessage = "插件操作失败后尝试恢复 DSH 服务失败：\(DshSettingsUIMessage.safe(error))"
+            }
+        }
+    }
+
     private init() {
         if let savedPanel = UserDefaults.standard.object(forKey: Self.selectedPanelDefaultsKey) as? Int,
            SettingsPanel(rawValue: savedPanel) != nil {
@@ -1315,6 +1335,7 @@ public final class SettingsViewModel: ObservableObject {
                     actionDescription: "插件 \(name) 更新",
                     error: error
                 )
+                self.restoreServiceAfterFailedPluginOperationIfNeeded()
             }
         }
         return true
@@ -1398,6 +1419,7 @@ public final class SettingsViewModel: ObservableObject {
                     actionDescription: "全部插件更新",
                     error: error
                 )
+                self.restoreServiceAfterFailedPluginOperationIfNeeded()
             }
         }
         return true
@@ -2305,6 +2327,7 @@ public final class SettingsViewModel: ObservableObject {
                     actionDescription: "插件 \(trimmedSpec) 安装",
                     error: error
                 )
+                self.restoreServiceAfterFailedPluginOperationIfNeeded()
             }
         }
         return true
@@ -2435,6 +2458,7 @@ public final class SettingsViewModel: ObservableObject {
                     actionDescription: "插件 \(name) 卸载",
                     error: error
                 )
+                self.restoreServiceAfterFailedPluginOperationIfNeeded()
             }
         }
         return true

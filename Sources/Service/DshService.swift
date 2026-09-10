@@ -577,4 +577,13 @@ public final class DshService: @unchecked Sendable {
         defer { lock.unlock() }
         return process
     }
+
+    /// Whether this app currently supervises a managed DSH child. Used by
+    /// failure recovery to decide whether an aborted operation left the
+    /// service stopped (and therefore must be brought back).
+    public var isServiceRunning: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return process?.process.isRunning == true
+    }
 }

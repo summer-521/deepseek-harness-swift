@@ -1275,6 +1275,92 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         }.value
     }
 
+    /// Remove P01 snapshot trees that are no longer referenced by a durable
+    /// plugin-operation record. Deletion is deliberately conservative:
+    /// - both path components must be UUIDs (operationID/snapshotID);
+    /// - a directory must either prove ownership via snapshot.json (ownerID,
+    ///   both IDs, profile and canonical path all matching the enclosing
+    ///   names), or be a structurally app-created partial from the create
+    ///   window (a `profile/` subtree or the missing-profile marker with no
+    ///   metadata yet, which is unreferenced by definition);
+    /// - the operation directory of `keepingOperationID` is never touched —
+    ///   the coordinator owns its lifecycle;
+    /// - anything unrecognized is left in place for the recovery surface.
+    @discardableResult
+    public func cleanupOrphanedPluginOperationSnapshots(
+        keeping keepingOperationID: String?
+    ) async -> [String] {
+        await Task.detached(priority: .utility) {
+            let fileManager = FileManager.default
+            guard let operationEntries = try? fileManager.contentsOfDirectory(
+                at: Self.pluginOperationSnapshotDirectory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ) else { return [] }
+
+            var removed: [String] = []
+            for operationEntry in operationEntries {
+                let operationID = operationEntry.lastPathComponent
+                guard UUID(uuidString: operationID) != nil,
+                      operationID != keepingOperationID else { continue }
+                guard let snapshotEntries = try? fileManager.contentsOfDirectory(
+                    at: operationEntry,
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                ) else { continue }
+
+                for snapshotEntry in snapshotEntries {
+                    let snapshotID = snapshotEntry.lastPathComponent
+                    guard UUID(uuidString: snapshotID) != nil else { continue }
+                    if Self.canProveOrphanedPluginSnapshotOwnership(
+                        operationID: operationID,
+                        snapshotID: snapshotID,
+                        at: snapshotEntry
+                    ) {
+                        do {
+                            try fileManager.removeItem(at: snapshotEntry)
+                            removed.append("\(operationID)/\(snapshotID)")
+                        } catch {
+                            print("[DshPluginManager] Failed to remove orphaned plugin snapshot \(operationID)/\(snapshotID):", error)
+                        }
+                    }
+                }
+                // Drop now-empty operation directories.
+                if (try? fileManager.contentsOfDirectory(atPath: operationEntry.path))?.isEmpty == true {
+                    try? fileManager.removeItem(at: operationEntry)
+                }
+            }
+            return removed
+        }.value
+    }
+
+    /// Ownership check used by orphan cleanup. Proven ownership means the
+    /// persisted snapshot.json fully matches the enclosing UUID names, the
+    /// app owner and the canonical desktop path. The create crash/kill window
+    /// can also leave a structure without metadata; that partial is recognized
+    /// only by its exact app-created shape (a `profile/` subtree or the
+    /// missing-profile marker) and removed because it is unreferenced.
+    private static func canProveOrphanedPluginSnapshotOwnership(
+        operationID: String,
+        snapshotID: String,
+        at snapshotURL: URL
+    ) -> Bool {
+        let fileManager = FileManager.default
+        if let reference = try? readPluginSnapshotMetadata(at: snapshotURL) {
+            return reference.snapshotID == snapshotID
+                && reference.operationID == operationID
+                && reference.profile == .desktop
+                && reference.profileDirectory == Self.canonicalDesktopProfileDirectory.path
+                && reference.ownerID == DshPluginOperationSnapshotReference.owner
+        }
+        // No (readable) metadata: only the app's own create shapes count.
+        return fileManager.fileExists(
+            atPath: snapshotURL.appendingPathComponent("profile", isDirectory: true).path
+        ) || fileManager.fileExists(
+            atPath: snapshotURL.appendingPathComponent(Self.missingProfileMarkerName).path
+        )
+    }
+
     /// List all installed plugins in the selected DSH profile.
     public func listPlugins(outdatedMap: [String: String] = [:]) -> [DshPluginItem] {
         listPlugins(at: Self.activeProfileDirectory, outdatedMap: outdatedMap)

@@ -349,7 +349,7 @@ public final class DshBridgeMessageValidator: @unchecked Sendable {
 
             let allowed: Set<String>
             switch type {
-            case .theme: allowed = ["colorScheme", "externalTheme"]
+            case .theme: allowed = ["colorScheme", "preference", "externalTheme"]
             case .locale: allowed = ["language"]
             default: allowed = []
             }
@@ -357,6 +357,12 @@ public final class DshBridgeMessageValidator: @unchecked Sendable {
                 return .failure(.unsupportedPayloadField(key))
             }
             for (key, value) in object {
+                if type == .theme, key == "externalTheme", value is NSNull {
+                    // The desktop-host bridge reports a missing external
+                    // theme as null; accept the plugin's contract (same
+                    // policy as the nullable notify fields).
+                    continue
+                }
                 guard let string = value as? String else { return .failure(.invalidPayload) }
                 guard Data(string.utf8).count <= Self.maximumStringBytes else {
                     return .failure(.payloadValueTooLong(key))

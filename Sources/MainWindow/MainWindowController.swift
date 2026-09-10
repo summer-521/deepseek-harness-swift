@@ -926,14 +926,6 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             migratedLegacyDesktopProfile = false
         }
 
-        // F03 is deliberately a read-only gate. It runs before any manifest,
-        // bridge, or dependency repair write. Only a genuinely empty Profile
-        // can proceed to bootstrap; existing Profiles with incomplete,
-        // uncertain, unavailable, or erroneous evidence remain blocked.
-        if !migratedLegacyDesktopProfile {
-            try await inspectDependenciesBeforeMutation(for: context)
-        }
-
         let runtimeState = stateSnapshot.runtimeState
         guard context.purpose == .recovery
             || runtimeState.profile == context.profile
@@ -944,6 +936,11 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                 userInfo: [NSLocalizedDescriptionKey: "Runtime 事务所属 Profile 与启动上下文不一致。"]
             )
         }
+        // A rollback restores the baseline Profile (web snapshot) BEFORE the
+        // read-only F03 gate: the tree on disk may still carry the
+        // candidate's bridge/dependency shape from the interrupted update,
+        // and inspecting that polluted tree first would block the rollback on
+        // exactly what the restore is about to remove.
         if context.purpose != .recovery,
            runtimeState.phase == .rollingBack,
            let snapshotID = runtimeState.webProfileSnapshotID {
@@ -971,6 +968,15 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                 }
             }
         }
+
+        // F03 is deliberately a read-only gate. It runs before any manifest,
+        // bridge, or dependency repair write. Only a genuinely empty Profile
+        // can proceed to bootstrap; existing Profiles with incomplete,
+        // uncertain, unavailable, or erroneous evidence remain blocked.
+        if !migratedLegacyDesktopProfile {
+            try await inspectDependenciesBeforeMutation(for: context)
+        }
+
         if context.purpose != .recovery,
            [.switching, .verifying].contains(runtimeState.phase),
            runtimeState.pending != nil,
