@@ -355,6 +355,18 @@ public struct DshRecoveryView: View {
                         || viewModel.adoptInterruptedTransactionInFlight
                 )
                 .help(viewModel.safeModeAvailabilityDescription)
+
+                Button("恢复到上一个 Runtime") {
+                    _ = viewModel.requestRuntimeRollback()
+                }
+                .buttonStyle(.bordered)
+                .disabled(
+                    !viewModel.isRuntimeRollbackAvailable
+                        || viewModel.isActionInFlight
+                        || viewModel.pluginRemovalInFlight
+                        || viewModel.adoptInterruptedTransactionInFlight
+                )
+                .help(viewModel.runtimeRollbackAvailabilityDescription)
                 if viewModel.canAdoptInterruptedTransaction {
                     Button("验证当前状态并继续") {
                         isAdoptConfirmationPresented = true

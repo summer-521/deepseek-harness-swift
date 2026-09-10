@@ -140,6 +140,7 @@ public final class DshVersionManager {
             let fallback = listInstalledVersions().first
             let descriptor = fallback.map { runtimeDescriptor(version: $0) }
             DshStateManager.shared.update { state in
+                Self.settleAbandonedTransactionIfNeeded(in: &state, diagnosticPrefix: nil)
                 state.selectedVersion = fallback
                 state.runtimeState.active = descriptor
                 state.runtimeState.phase = .idle
@@ -152,10 +153,46 @@ public final class DshVersionManager {
         guard let first = listInstalledVersions().first else { return nil }
         let descriptor = runtimeDescriptor(version: first)
         DshStateManager.shared.update { state in
+            Self.settleAbandonedTransactionIfNeeded(in: &state, diagnosticPrefix: nil)
             state.selectedVersion = first
             state.runtimeState.active = descriptor
+            state.runtimeState.phase = .idle
         }
         return first
+    }
+
+    /// Clear stale Runtime-transaction fields left behind by a transaction
+    /// whose version directories no longer exist. The mutation gates require
+    /// previous/pending/transactionID/webProfileSnapshotID to be empty while
+    /// idle; an unrecoverable transaction (its versions are gone) must settle
+    /// here instead of locking every plugin/update operation forever. The
+    /// leftover snapshot (if any) is unreferenced and removed by the startup
+    /// orphan sweep.
+    private static func settleAbandonedTransactionIfNeeded(
+        in state: inout DshStateConfig,
+        diagnosticPrefix: String?
+    ) {
+        let runtimeState = state.runtimeState
+        let hasAbandonedTransaction = runtimeState.pending != nil
+            || runtimeState.previous != nil
+            || runtimeState.transactionID != nil
+            || runtimeState.webProfileSnapshotID != nil
+        guard hasAbandonedTransaction else { return }
+        state.runtimeState.pending = nil
+        state.runtimeState.previous = nil
+        state.runtimeState.phase = .idle
+        state.runtimeState.transactionID = nil
+        state.runtimeState.webProfileSnapshotID = nil
+        state.runtimeState.healthyStartCount = 0
+        let detail = " 同时发现并清除了无法恢复的 DSH Runtime 事务残留。"
+        if let diagnosticPrefix {
+            state.runtimeState.lastDiagnostic = diagnosticPrefix + detail
+        } else if var existing = state.runtimeState.lastDiagnostic, !existing.isEmpty {
+            existing += detail
+            state.runtimeState.lastDiagnostic = existing
+        } else {
+            state.runtimeState.lastDiagnostic = "检测到无法恢复的 DSH Runtime 事务，已自动结算。"
+        }
     }
 
     /// Resolve the executable bin.js path for the currently active version.

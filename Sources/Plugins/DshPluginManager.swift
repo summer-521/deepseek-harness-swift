@@ -2268,6 +2268,11 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                 profileDir: profileDir,
                 packageRoot: verifiedRoot
             ) {
+                // A same-name dependency installed by the terminal user is
+                // deliberately never removed. Make the fail-closed refusal
+                // actionable so web->desktop cleanup does not silently retry
+                // forever without telling the user what to change.
+                let actionableFailure = Self.unprovenBridgeOwnershipFailure(underlying: verificationError)
                 do {
                     guard let sourceBundle = NodeRuntime.shared.resolveDesktopHostBundlePath(),
                           try adoptDesktopHostOwnershipProof(
@@ -2275,13 +2280,13 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                               packageRoot: verifiedRoot,
                               sourceBundle: sourceBundle
                           ) else {
-                        throw verificationError
+                        throw actionableFailure
                     }
                 } catch {
-                    // Preserve the original cleanup diagnostic for an
+                    // Preserve the actionable cleanup diagnostic for an
                     // unproven same-name dependency. Adoption is a recovery
                     // aid, never a reason to disclose or broaden ownership.
-                    throw verificationError
+                    throw actionableFailure
                 }
                 verifiedRoot = (try? Data(contentsOf: packageURL))
                     .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
@@ -3357,6 +3362,17 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         }
         return package["name"] as? String == "@deepseek-ai/dsh-host-webserver"
             && package["version"] as? String == version
+    }
+
+    /// Turn an unproven bridge-ownership failure into an actionable message:
+    /// a same-name dependency installed by the terminal user is retained by
+    /// design, and the user must see why web->desktop cleanup keeps failing.
+    private static func unprovenBridgeOwnershipFailure(underlying: Error) -> Error {
+        NSError(
+            domain: "DshPluginManager",
+            code: -60,
+            userInfo: [NSLocalizedDescriptionKey: "\(underlying.localizedDescription) 若 \(desktopHostPluginName) 或 @deepseek-ai/dsh-host-webserver 是您手动安装到 web Profile 的同名包，请先在终端 dsh web 中移除或重命名该包，再重试切换到 swift-desktop Profile。"]
+        )
     }
 
     private func desktopHostOwnershipError(_ detail: String, operation: String = "清理 web Profile 桥接依赖") -> NSError {

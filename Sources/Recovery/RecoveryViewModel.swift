@@ -114,6 +114,7 @@ public struct DshRecoveryActions {
     public var startSafeMode: (DshRecoveryActionRequest) -> Void
     public var removePluginAndRetry: (DshRecoveryPluginRemovalRequest) -> Void
     public var adoptInterruptedTransaction: (DshRecoveryAdoptRequest) -> Void
+    public var rollbackRuntime: (DshRecoveryActionRequest) -> Void
     public var copyDiagnosticSummary: (String) -> Void
     public var saveDiagnosticExport: (DshDiagnosticExportPlan) -> Void
 
@@ -123,6 +124,7 @@ public struct DshRecoveryActions {
         startSafeMode: @escaping (DshRecoveryActionRequest) -> Void = { _ in },
         removePluginAndRetry: @escaping (DshRecoveryPluginRemovalRequest) -> Void = { _ in },
         adoptInterruptedTransaction: @escaping (DshRecoveryAdoptRequest) -> Void = { _ in },
+        rollbackRuntime: @escaping (DshRecoveryActionRequest) -> Void = { _ in },
         copyDiagnosticSummary: @escaping (String) -> Void = { _ in },
         saveDiagnosticExport: @escaping (DshDiagnosticExportPlan) -> Void = { _ in }
     ) {
@@ -131,6 +133,7 @@ public struct DshRecoveryActions {
         self.startSafeMode = startSafeMode
         self.removePluginAndRetry = removePluginAndRetry
         self.adoptInterruptedTransaction = adoptInterruptedTransaction
+        self.rollbackRuntime = rollbackRuntime
         self.copyDiagnosticSummary = copyDiagnosticSummary
         self.saveDiagnosticExport = saveDiagnosticExport
     }
@@ -140,6 +143,7 @@ public enum DshRecoveryAction: String, CaseIterable, Sendable {
     case retry
     case openSettings
     case safeMode
+    case rollbackRuntime
 }
 
 /// Main-actor state for the reusable recovery UI. A launch ID is fixed for
@@ -158,6 +162,8 @@ public final class DshRecoveryViewModel: ObservableObject {
     @Published public private(set) var diagnosticPreviewByteCount = 0
     @Published public private(set) var isSafeModeAvailable = false
     @Published public private(set) var safeModeAvailabilityDescription = "安全模式尚未接入。"
+    @Published public private(set) var isRuntimeRollbackAvailable = false
+    @Published public private(set) var runtimeRollbackAvailabilityDescription = "仅当新 Runtime 已确认且上一个版本仍安装时才可回退。"
     @Published public private(set) var pluginFailureAnalysis: DshPluginFailureAnalysis?
     @Published public private(set) var pluginRemovalInFlight = false
     @Published public private(set) var pluginRemovalRequest: DshRecoveryPluginRemovalRequest?
@@ -598,6 +604,20 @@ public final class DshRecoveryViewModel: ObservableObject {
         }
     }
 
+    /// Whether the recovery surface may offer "恢复到上一个 Runtime". This
+    /// is an explicit capability computed by the window controller from the
+    /// live Runtime transaction (confirmed phase with the previous Runtime
+    /// still installed); the default stays disabled with an explanatory
+    /// reason.
+    public func setRuntimeRollbackAvailability(_ available: Bool, reason: String? = nil) {
+        isRuntimeRollbackAvailable = available
+        if available {
+            runtimeRollbackAvailabilityDescription = "将放弃当前 Runtime，恢复到上一个版本并重新启动服务。"
+        } else {
+            runtimeRollbackAvailabilityDescription = boundedRedacted(reason ?? "仅当新 Runtime 已确认且上一个版本仍安装时才可回退。")
+        }
+    }
+
     @discardableResult
     public func requestRetry() -> Bool {
         beginAction(.retry)
@@ -611,6 +631,11 @@ public final class DshRecoveryViewModel: ObservableObject {
     @discardableResult
     public func requestSafeMode() -> Bool {
         beginAction(.safeMode)
+    }
+
+    @discardableResult
+    public func requestRuntimeRollback() -> Bool {
+        beginAction(.rollbackRuntime)
     }
 
     /// A coordinator calls this after its explicit action has completed. The
@@ -661,6 +686,10 @@ public final class DshRecoveryViewModel: ObservableObject {
             actionMessage = safeModeAvailabilityDescription
             return false
         }
+        guard action != .rollbackRuntime || isRuntimeRollbackAvailable else {
+            actionMessage = runtimeRollbackAvailabilityDescription
+            return false
+        }
 
         actionMessage = nil
         nextActionSequence = nextActionSequence == UInt64.max
@@ -680,6 +709,8 @@ public final class DshRecoveryViewModel: ObservableObject {
             actions.openSettings(request)
         case .safeMode:
             actions.startSafeMode(request)
+        case .rollbackRuntime:
+            actions.rollbackRuntime(request)
         }
         return true
     }

@@ -2076,6 +2076,9 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                 },
                 saveDiagnosticExport: { [weak self] plan in
                     self?.saveDiagnosticExport(plan)
+                },
+                rollbackRuntime: { [weak self] request in
+                    self?.handleRecoveryRollbackRuntime(request, context: context)
                 }
             ),
             diagnosticMetadata: diagnosticExportMetadata(for: context),
@@ -2091,8 +2094,65 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         )
         let safeMode = safeModeAvailability(for: context)
         viewModel.setSafeModeAvailability(safeMode.available, reason: safeMode.reason)
+        let rollback = runtimeRollbackAvailability(for: context)
+        viewModel.setRuntimeRollbackAvailability(rollback.available, reason: rollback.reason)
         recoveryViewModel = viewModel
         DshRecoveryWindowController.shared.show(viewModel: viewModel)
+    }
+
+    /// Whether "恢复到上一个 Runtime" is available: only for a desktop
+    /// confirmed Runtime transaction whose previous version is still
+    /// installed and with no Profile switch in flight. The recovery surface
+    /// recomputes this for every presentation, so a state change between
+    /// presentations refreshes the button.
+    private func runtimeRollbackAvailability(for context: DshLaunchContext) -> (available: Bool, reason: String) {
+        let state = DshStateManager.shared.current
+        guard state.appProfile == .desktop,
+              context.profile == .desktop,
+              state.pendingProfileSwitch == nil,
+              state.runtimeState.profile == .desktop,
+              state.runtimeState.phase == .confirmed,
+              state.runtimeState.transactionID != nil,
+              let previous = state.runtimeState.previous else {
+            return (false, "仅当新 Runtime 已确认且上一个版本仍安装时才可回退。")
+        }
+        guard DshVersionManager.shared.isVersionInstalled(previous.version) else {
+            return (false, "上一个 Runtime \(previous.version) 已不在本地，无法回退。")
+        }
+        return (true, "将放弃当前 Runtime，恢复到 \(previous.version) 并重新启动服务。")
+    }
+
+    /// User-initiated rollback from the recovery surface after a confirmed
+    /// Runtime fails its ordinary second start. The rollingBack transition is
+    /// persisted first (durable decision), then the ordinary restart runs the
+    /// standard rollback path — restoring the retained web Profile snapshot
+    /// and settling the transaction on the first healthy start.
+    private func handleRecoveryRollbackRuntime(
+        _ request: DshRecoveryActionRequest,
+        context: DshLaunchContext
+    ) {
+        let state = DshStateManager.shared.current
+        let availability = runtimeRollbackAvailability(for: context)
+        guard request.launchID == context.launchID,
+              availability.available,
+              state.runtimeState.transactionID == context.transactionID,
+              let previous = state.runtimeState.previous else {
+            recoveryViewModel?.finishAction(request, message: "暂不能回退到上一个 Runtime：\(availability.reason)")
+            return
+        }
+        do {
+            try DshStateManager.shared.updateOrThrow { state in
+                guard state.runtimeState.phase == .confirmed,
+                      state.runtimeState.transactionID == context.transactionID else { return }
+                state.selectedVersion = previous.version
+                state.runtimeState = DshRuntimeTransaction.beginRollback(state.runtimeState)
+            }
+        } catch {
+            recoveryViewModel?.finishAction(request, message: "回退状态写入失败：\(DshMainWindowUIMessage.safe(error))。请重启应用后重试。")
+            return
+        }
+        recoveryViewModel?.finishAction(request, message: "已准备回退到 \(previous.version)，正在重新启动服务…")
+        startAndLoadDsh()
     }
 
     /// Build export metadata from the captured recovery Profile. No chat,

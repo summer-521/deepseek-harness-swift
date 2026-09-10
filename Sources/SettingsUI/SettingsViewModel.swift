@@ -1800,20 +1800,27 @@ public final class SettingsViewModel: ObservableObject {
               context.runtimeDescriptor.version == state.runtimeState.previous?.version,
               state.runtimeState.phase == .rollingBack,
               let active = state.runtimeState.previous,
-              let candidate = state.runtimeState.pending,
               state.selectedVersion == active.version else { return }
 
+        // Two shapes settle here: an upgrade-failure rollback keeps the
+        // failed candidate in `pending`, while a user-initiated confirmed
+        // rollback (recovery surface) has no pending — the confirmed new
+        // Runtime is still `active`. In both cases the directory to discard
+        // is the Runtime that is not coming back.
+        let candidateToDiscard = state.runtimeState.pending ?? state.runtimeState.active
+        let expectedPendingVersion = state.runtimeState.pending?.version
         let expectedSelectedVersion = state.selectedVersion
         let expectedActiveVersion = state.runtimeState.active?.version
         let expectedPreviousVersion = active.version
-        let expectedPendingVersion = candidate.version
         let snapshotID = state.runtimeState.webProfileSnapshotID
         let expectedTransactionID = contextTransactionID
         var cleanupErrors: [String] = []
-        do {
-            try DshVersionManager.shared.discardInstalledVersion(candidate.version)
-        } catch {
-            cleanupErrors.append("candidate 清理失败：\(DshSettingsUIMessage.safe(error))")
+        if let candidateToDiscard {
+            do {
+                try DshVersionManager.shared.discardInstalledVersion(candidateToDiscard.version)
+            } catch {
+                cleanupErrors.append("candidate 清理失败：\(DshSettingsUIMessage.safe(error))")
+            }
         }
 
         var retainedSnapshotID: String?
@@ -2115,6 +2122,15 @@ public final class SettingsViewModel: ObservableObject {
                     } catch {
                         // The reference stays retained; next-launch cleanup
                         // will retry the deletion.
+                    }
+                    // One immediate in-session retry so a transient delete
+                    // failure does not leave plugin mutations locked until
+                    // the next launch (the startup retry in AppDelegate).
+                    do {
+                        try await retryRetainedWebProfileSnapshotCleanup()
+                    } catch {
+                        // Keep the retained reference; next-launch cleanup
+                        // will retry again.
                     }
                 }
             }

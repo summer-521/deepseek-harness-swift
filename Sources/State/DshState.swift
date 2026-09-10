@@ -280,9 +280,12 @@ public struct DshRuntimeState: Codable, Equatable, Sendable {
         self.lastDiagnostic = try container.decodeIfPresent(String.self, forKey: .lastDiagnostic)
         let persistedID = try container.decodeIfPresent(String.self, forKey: .transactionID)
         if phase == .idle {
-            // Idle state has no transaction owner. Preserve a non-empty value
-            // only for forward compatibility with writers that retain one.
-            self.transactionID = persistedID?.isEmpty == false ? persistedID : nil
+            // Idle state has no transaction owner. Decoding must not preserve
+            // a non-empty value here: the mutation gates require
+            // transactionID == nil while idle, so an old or foreign writer
+            // that kept one would otherwise lock every plugin/update
+            // operation forever without any recovery path.
+            self.transactionID = nil
         } else if persistedID?.isEmpty == false {
             self.transactionID = persistedID!
         } else {
