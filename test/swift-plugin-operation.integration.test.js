@@ -116,6 +116,7 @@ test('P01 restart and rollback matrix stays fail-closed', () => {
       'restored-health-failure-recover',
     ])
     runAcrossRestart(binaryPath, 'restoring-setup', 'restoring-recover')
+    runAcrossRestart(binaryPath, 'resuming-restore-setup', 'resuming-restore-recover')
     runAcrossRestart(binaryPath, 'restoring-cleanup-setup', 'restoring-cleanup-recover')
     runAcrossRestart(binaryPath, 'missing-snapshot-setup', 'missing-snapshot-recover')
     runAcrossRestart(binaryPath, 'ownership-mismatch-setup', 'ownership-mismatch-recover')

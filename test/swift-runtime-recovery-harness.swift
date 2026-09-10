@@ -165,6 +165,29 @@ struct RuntimeRecoveryHarness {
         let alphaState = DshRuntimeState(updatePolicy: .automaticStable, channel: .alpha)
         require(alphaState.updatePolicy == .notify, "alpha channel must never persist automatic updates")
 
+        // M2: a user-initiated rollback from the confirmed cleanup window has
+        // no pending candidate. The rollingBack transition must keep the
+        // confirmed new Runtime active until the settle, retain the previous
+        // one for the rollback start, and the settle must keep a retained
+        // snapshot id for later cleanup instead of pretending it is gone.
+        var confirmedRollback = DshRuntimeTransaction.beginRollback(confirmed)
+        require(confirmedRollback.phase == .rollingBack, "confirmed rollback must enter rollingBack")
+        require(confirmedRollback.active == candidate,
+                "confirmed rollback must keep the new runtime active until settle")
+        require(confirmedRollback.previous == active, "confirmed rollback must retain the previous runtime")
+        require(confirmedRollback.pending == nil, "confirmed rollback has no pending candidate")
+        confirmedRollback = DshRuntimeTransaction.finishRollback(
+            confirmedRollback,
+            active: active,
+            retainedWebProfileSnapshotID: "snapshot-id"
+        )
+        require(confirmedRollback.active == active, "confirmed rollback settle must reactivate previous")
+        require(confirmedRollback.previous == nil, "confirmed rollback settle must clear previous")
+        require(confirmedRollback.phase == .idle, "confirmed rollback settle must be idle")
+        require(confirmedRollback.transactionID == nil, "confirmed rollback settle must clear the owner")
+        require(confirmedRollback.webProfileSnapshotID == "snapshot-id",
+                "a failed snapshot cleanup must retain the snapshot id for the startup retry")
+
         print("runtime recovery integration harness passed")
     }
 }

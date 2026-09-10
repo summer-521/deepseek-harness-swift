@@ -773,7 +773,7 @@ public final class SettingsViewModel: ObservableObject {
               !DshService.shared.isServiceRunning else { return }
         Task { @MainActor in
             do {
-                try await MainWindowController.shared.restartDshService()
+                _ = try await MainWindowController.shared.restartDshService()
                 showPluginStatus("插件操作失败，DSH 服务已自动恢复")
             } catch {
                 self.alertMessage = "插件操作失败后尝试恢复 DSH 服务失败：\(DshSettingsUIMessage.safe(error))"

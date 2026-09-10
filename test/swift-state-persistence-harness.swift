@@ -120,6 +120,27 @@ struct StatePersistenceHarness {
                 return
             }
 
+        case "idle-transaction-owner":
+            // A legacy or foreign writer can persist an idle phase together
+            // with a transaction owner. Decoding must drop it: the mutation
+            // gates require transactionID == nil while idle, so preserving it
+            // would lock every plugin/update operation with no recovery path.
+            try! fileManager.createDirectory(
+                at: DshStateManager.appSupportDirectory,
+                withIntermediateDirectories: true
+            )
+            let payload = Data(
+                #"{"appProfile":"desktop","runtimeState":{"phase":"idle","transactionID":"stale-owner"}}"#.utf8
+            )
+            try! payload.write(to: stateURL(), options: .atomic)
+            let manager = DshStateManager.shared
+            require(manager.loadResult == .loaded, "idle transaction state must still decode")
+            require(manager.current.runtimeState.phase == .idle, "idle phase must survive decoding")
+            require(manager.current.runtimeState.transactionID == nil,
+                    "idle decode must drop a stale transaction owner")
+            require(DshRuntimeMutationGate.allowsPluginMutation(manager.current),
+                    "a stale idle transaction owner must not lock plugin mutations")
+
         default:
             fatalError("unknown state persistence harness mode: \(mode)")
         }

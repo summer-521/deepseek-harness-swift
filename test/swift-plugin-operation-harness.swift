@@ -474,6 +474,59 @@ private func recoverRestoringIdempotently() async throws {
     require(second == nil, "restoring recovery must be idempotent")
 }
 
+/// Simulate a force-quit in the P01 restore window after the live Profile was
+/// moved aside (to the deterministic displaced path) but before the snapshot
+/// copy completed. Recovery must resume the interrupted swap from the
+/// app-owned snapshot instead of misreading the absent Profile as an external
+/// modification, and must reclaim the displaced leftover it created.
+private func setupResumingInterruptedRestore() async throws {
+    try resetFixture()
+    let manager = DshPluginManager.shared
+    let operationID = UUID().uuidString
+    let snapshot = try await manager.createPluginOperationSnapshot(
+        operationID: operationID,
+        profile: .desktop,
+        profileDirectory: profileURL()
+    )
+    try marker("mutated-before-interrupted-restore")
+    let mutationDigest = try await manager.pluginProfileDigest(at: profileURL())
+    let state = DshPluginOperationState(
+        operationID: operationID,
+        profile: .desktop,
+        targetPackage: "plugin",
+        action: .update,
+        snapshot: snapshot,
+        phase: .restoring,
+        mutationDigest: mutationDigest
+    )
+    try writeOperationState(state)
+    let displaced = profileURL().deletingLastPathComponent()
+        .appendingPathComponent(".dsh-plugin-restore-\(operationID)", isDirectory: true)
+    try fileManager.moveItem(at: profileURL(), to: displaced)
+    require(!fileManager.fileExists(atPath: profileURL().path),
+            "interrupted restore fixture must leave the canonical Profile absent")
+    require(fileManager.fileExists(atPath: displaced.path),
+            "interrupted restore fixture must retain the displaced tree")
+}
+
+private func recoverResumingInterruptedRestore() async throws {
+    let coordinator = DshPluginOperationCoordinator(operationStoreURL: operationStoreURL())
+    let result = try await coordinator.recoverPendingOperation()
+    require(result?.wasRestored == true,
+            "an interrupted restore must resume instead of reporting external modification")
+    try requireContents("baseline", at: profileURL().appendingPathComponent("marker"),
+                        "resumed restore must put the baseline back")
+    require(coordinator.pendingOperation == nil,
+            "resumed restore must clear the durable record")
+    let leftovers = (try? fileManager.contentsOfDirectory(
+        atPath: profileURL().deletingLastPathComponent().path
+    ))?.filter { $0.hasPrefix(".dsh-plugin-restore-") } ?? []
+    require(leftovers.isEmpty,
+            "resumed restore must reclaim the displaced tree it left behind")
+    let second = try await coordinator.recoverPendingOperation()
+    require(second == nil, "resumed recovery must be idempotent")
+}
+
 /// Simulate the narrow force-quit window after restoration and snapshot
 /// deletion but before the durable operation record is removed. Recovery must
 /// use the baseline digest and the persisted owner reference to finish
@@ -960,6 +1013,8 @@ struct PluginOperationHarness {
         case "restored-health-failure-recover": try await recoverRestoredHealthFailure()
         case "restoring-setup": try await setupRestoring()
         case "restoring-recover": try await recoverRestoringIdempotently()
+        case "resuming-restore-setup": try await setupResumingInterruptedRestore()
+        case "resuming-restore-recover": try await recoverResumingInterruptedRestore()
         case "restoring-cleanup-setup": try await setupRestoringAfterSnapshotDeletion()
         case "restoring-cleanup-recover": try await recoverRestoringAfterSnapshotDeletion()
         case "committed": try await runCommittedRetention()

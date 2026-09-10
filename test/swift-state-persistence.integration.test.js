@@ -37,7 +37,7 @@ test('primary state persistence distinguishes first install, legacy, corruption,
     ], { encoding: 'utf8', timeout: 120000 })
     assert.equal(compile.status, 0, compile.stderr || compile.stdout)
 
-    for (const mode of ['first-launch', 'legacy', 'corrupt', 'unreadable', 'write-failure', 'startup-decision']) {
+    for (const mode of ['first-launch', 'legacy', 'corrupt', 'unreadable', 'write-failure', 'startup-decision', 'idle-transaction-owner']) {
       const root = path.join(testRoot, mode)
       fs.mkdirSync(root, { recursive: true })
       runHarness(binaryPath, mode, root)

@@ -2071,14 +2071,14 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                 adoptInterruptedTransaction: { [weak self] request in
                     self?.adoptInterruptedPluginOperation(request, context: context)
                 },
+                rollbackRuntime: { [weak self] request in
+                    self?.handleRecoveryRollbackRuntime(request, context: context)
+                },
                 copyDiagnosticSummary: { [weak self] summary in
                     self?.copyDiagnosticSummary(summary)
                 },
                 saveDiagnosticExport: { [weak self] plan in
                     self?.saveDiagnosticExport(plan)
-                },
-                rollbackRuntime: { [weak self] request in
-                    self?.handleRecoveryRollbackRuntime(request, context: context)
                 }
             ),
             diagnosticMetadata: diagnosticExportMetadata(for: context),
