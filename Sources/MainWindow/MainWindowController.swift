@@ -702,20 +702,41 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     }
 
     /// Build the ordinary desktop context used by P01 recovery health hooks.
-    /// Any still-open Runtime/Profile transaction is an explicit blocker:
-    /// recovery must not redirect a snapshot restore to a different target.
+    /// A settled Runtime/Profile state or a Runtime update in its confirmed
+    /// cleanup window is compatible with an ordinary desktop start: .confirmed
+    /// keeps the previous Runtime only until the second healthy start, and
+    /// plugin recovery must be able to health-start during it
+    /// (DshRuntimeMutationGate allows plugin mutations in .confirmed).
+    /// Requiring .idle here deadlocks startup when a plugin crash lands inside
+    /// that cleanup window, because the plugin recovery hooks need this
+    /// context and the cleanup needs an ordinary start to finalize.
     private func makeOrdinaryDesktopStartupContext() throws -> DshLaunchContext {
         let state = DshStateManager.shared.current
         let runtimeState = state.runtimeState
+        let transactionShapeIsCompatible: Bool
+        switch runtimeState.phase {
+        case .idle:
+            transactionShapeIsCompatible = runtimeState.previous == nil
+                && runtimeState.pending == nil
+                && runtimeState.transactionID == nil
+                && runtimeState.webProfileSnapshotID == nil
+        case .confirmed:
+            // The previous Runtime and transaction owner are retained for the
+            // two-start cleanup window; both must match a persisted transaction
+            // so the context never fabricates one. A retained web Profile
+            // snapshot only marks pending cleanup and does not block a
+            // plugin-health start (no restore runs for a confirmed phase).
+            transactionShapeIsCompatible = runtimeState.previous != nil
+                && runtimeState.transactionID != nil
+                && runtimeState.pending == nil
+        default:
+            transactionShapeIsCompatible = false
+        }
         guard state.appProfile == .desktop,
               state.pendingProfileSwitch == nil,
               runtimeState.profile == .desktop,
-              runtimeState.phase == .idle,
+              transactionShapeIsCompatible,
               runtimeState.active != nil,
-              runtimeState.previous == nil,
-              runtimeState.pending == nil,
-              runtimeState.webProfileSnapshotID == nil,
-              runtimeState.transactionID == nil,
               let context = DshLaunchContext.makeStartup(from: state),
               context.profile == .desktop,
               context.purpose == .normal else {

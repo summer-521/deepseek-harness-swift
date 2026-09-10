@@ -338,6 +338,35 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
             )
 
         case .restoring, .recoveryRequired:
+            // An interrupted restore moves the live Profile aside (to the
+            // deterministic .dsh-plugin-restore-<operationID> path) and can
+            // die before the snapshot copy completes, leaving the canonical
+            // Profile absent. That is the one shape where continuing the
+            // restore is provably safe: the displaced tree is ours, the
+            // snapshot is app-owned, and re-running the restore copies from
+            // the snapshot and verifies the baseline. recoveryRequired stays
+            // fail-closed — it means an earlier decision already required
+            // explicit user attention.
+            let profileExists = FileManager.default.fileExists(atPath: profileURL.path)
+            if operation.phase == .restoring, !profileExists {
+                do {
+                    let restored = try await restore(
+                        operation,
+                        expectedCurrentDigest: nil,
+                        verifyRestored: hooks?.verifyRestored
+                    )
+                    return DshPluginOperationResult(
+                        operationID: restored.operationID,
+                        phase: .restoring,
+                        wasRestored: true
+                    )
+                } catch {
+                    let recoveryError = (error as? DshPluginOperationError) ??
+                        DshPluginOperationError.recoveryRequired(Self.redacted(error.localizedDescription))
+                    _ = try markRecoveryRequired(operation, error: recoveryError)
+                    throw recoveryError
+                }
+            }
             // Restoration can be interrupted after the Profile has already
             // been put back but before the snapshot/owner record cleanup.
             // A baseline digest plus a missing (or still app-owned) snapshot
@@ -702,7 +731,7 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
 
     private func restore(
         _ operation: DshPluginOperationState,
-        expectedCurrentDigest: String,
+        expectedCurrentDigest: String?,
         verifyRestored: (@Sendable (DshPluginOperationRequest) async throws -> Void)? = nil
     ) async throws -> DshPluginOperationState {
         var restoring = operation

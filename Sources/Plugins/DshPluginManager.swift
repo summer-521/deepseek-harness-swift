@@ -909,22 +909,41 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
 
         let profileURL = URL(fileURLWithPath: reference.profileDirectory, isDirectory: true)
             .standardizedFileURL
-        if fileManager.fileExists(atPath: profileURL.path),
+        let profileExists = fileManager.fileExists(atPath: profileURL.path)
+        if profileExists,
            profileURL.resolvingSymlinksInPath().path != profileURL.path {
             throw DshPluginOperationError.unsafeProfileDirectory
         }
-        let currentDigest = try pluginProfileDigestSynchronously(at: profileURL)
-        if let expectedCurrentDigest, currentDigest != expectedCurrentDigest {
+        // A missing Profile is the signature of an interrupted restore: the
+        // live tree was moved aside and the process died before the snapshot
+        // copy completed. Nothing can be compared in that state, so the
+        // expected-digest gate is skipped and the copy below resumes the
+        // interrupted swap. The restored tree is still verified against the
+        // baseline before the call returns.
+        let currentDigest = profileExists
+            ? try pluginProfileDigestSynchronously(at: profileURL)
+            : nil
+        if let expectedCurrentDigest, let currentDigest, currentDigest != expectedCurrentDigest {
             throw DshPluginOperationError.externalModification
         }
 
         let savedProfileURL = snapshotURL.appendingPathComponent("profile", isDirectory: true)
         let missingMarkerURL = snapshotURL.appendingPathComponent(missingProfileMarkerName)
+        // Deterministic per-operation name so recovery can either resume an
+        // interrupted swap or clean the leftover it left behind; a random
+        // name would strand the live tree in an untracked directory.
         let displacedURL = profileURL.deletingLastPathComponent()
-            .appendingPathComponent(".dsh-plugin-restore-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent(".dsh-plugin-restore-\(reference.operationID)", isDirectory: true)
         var displacedCurrent = false
         do {
             if fileManager.fileExists(atPath: profileURL.path) {
+                // A leftover from an earlier interrupted attempt must not
+                // block the move. It is operation-scoped and its content is
+                // superseded by the snapshot this restore is applying, so it
+                // is safe to clear before the current tree is displaced.
+                if fileManager.fileExists(atPath: displacedURL.path) {
+                    try? fileManager.removeItem(at: displacedURL)
+                }
                 try fileManager.moveItem(at: profileURL, to: displacedURL)
                 displacedCurrent = true
             }
@@ -951,11 +970,25 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
             }
             if displacedCurrent {
                 try fileManager.removeItem(at: displacedURL)
+            } else if fileManager.fileExists(atPath: displacedURL.path) {
+                // Resumed restore: an earlier interrupted attempt left its
+                // displaced tree here. The baseline is verified in place now,
+                // so the operation-scoped leftover can be removed.
+                try? fileManager.removeItem(at: displacedURL)
             }
         } catch {
-            try? fileManager.removeItem(at: profileURL)
+            // Only touch the paths this attempt created. When the Profile was
+            // displaced (displacedCurrent), profileURL holds the partial copy
+            // and the original lives at displacedURL — put it back. When the
+            // Profile was missing and the copy started (resume), profileURL
+            // is also only a partial copy and can be removed. A Profile that
+            // was never touched must stay untouched: deleting it would
+            // destroy the live tree over a failed move.
             if displacedCurrent {
+                try? fileManager.removeItem(at: profileURL)
                 try? fileManager.moveItem(at: displacedURL, to: profileURL)
+            } else if !profileExists {
+                try? fileManager.removeItem(at: profileURL)
             }
             throw error
         }
@@ -1104,13 +1137,22 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
 
         // Keep the displaced copy beside the live Profile. This is important
         // when Application Support and DSH_HOME are on different volumes:
-        // moving the current Profile must remain same-volume and atomic.
+        // moving the current Profile must remain same-volume and atomic. The
+        // name is deterministic per snapshot so a resumed restore (the live
+        // Profile was already moved aside) can clean the leftover.
         let displacedURL = profileURL.deletingLastPathComponent()
-            .appendingPathComponent(".dsh-profile-restore-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent(".dsh-profile-restore-\(id)", isDirectory: true)
+        let profileExists = fileManager.fileExists(atPath: profileURL.path)
         var displacedCurrent = false
 
         do {
-            if fileManager.fileExists(atPath: profileURL.path) {
+            if profileExists {
+                // A leftover from an earlier interrupted attempt must not
+                // block the move; it is snapshot-scoped and superseded by the
+                // snapshot being applied.
+                if fileManager.fileExists(atPath: displacedURL.path) {
+                    try? fileManager.removeItem(at: displacedURL)
+                }
                 try fileManager.moveItem(at: profileURL, to: displacedURL)
                 displacedCurrent = true
             }
@@ -1132,11 +1174,20 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
 
             if displacedCurrent {
                 try? fileManager.removeItem(at: displacedURL)
+            } else if fileManager.fileExists(atPath: displacedURL.path) {
+                // Resumed restore: an earlier interrupted attempt left its
+                // displaced tree here and the snapshot is now in place.
+                try? fileManager.removeItem(at: displacedURL)
             }
         } catch {
-            try? fileManager.removeItem(at: profileURL)
+            // Only touch the paths this attempt created (see the plugin
+            // operation restore for the same reasoning); a Profile that was
+            // never displaced or copied must stay untouched.
             if displacedCurrent {
+                try? fileManager.removeItem(at: profileURL)
                 try? fileManager.moveItem(at: displacedURL, to: profileURL)
+            } else if !profileExists {
+                try? fileManager.removeItem(at: profileURL)
             }
             throw NSError(
                 domain: "DshPluginManager",

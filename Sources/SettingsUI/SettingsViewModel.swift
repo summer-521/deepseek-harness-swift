@@ -1939,7 +1939,10 @@ public final class SettingsViewModel: ObservableObject {
             channel: state.runtimeState.channel,
             profile: state.appProfile
         )
-        DshStateManager.shared.update { state in
+        // The transaction must be durable before any install or file work
+        // starts. A write failure here means the update cannot be recovered
+        // deterministically, so fail closed before mutating anything.
+        try DshStateManager.shared.updateOrThrow { state in
             state.runtimeState = transaction
         }
 
@@ -1963,13 +1966,13 @@ public final class SettingsViewModel: ObservableObject {
                 )
             }
 
-            DshStateManager.shared.update { state in
+            try DshStateManager.shared.updateOrThrow { state in
                 state.selectedVersion = item.version
                 state.runtimeState = DshRuntimeTransaction.activateCandidate(state.runtimeState)
             }
             candidateActivated = true
-            DshStateManager.shared.update {
-                $0.runtimeState = DshRuntimeTransaction.beginVerification($0.runtimeState)
+            try DshStateManager.shared.updateOrThrow { state in
+                state.runtimeState = DshRuntimeTransaction.beginVerification(state.runtimeState)
             }
             do {
                 try await restartDshServiceDuringOperationAndWait()
@@ -1980,14 +1983,26 @@ public final class SettingsViewModel: ObservableObject {
                 )
             }
 
-            DshStateManager.shared.update { state in
+            try DshStateManager.shared.updateOrThrow { state in
                 state.runtimeState = DshRuntimeTransaction.confirm(state.runtimeState)
             }
         } catch {
             let failureDescription = DshSettingsUIMessage.safe(error)
-            DshStateManager.shared.update { state in
-                state.selectedVersion = currentVersion
-                state.runtimeState = DshRuntimeTransaction.beginRollback(state.runtimeState)
+            // The rollback decision must be durable before any file mutation:
+            // deleting the web snapshot while state still references it would
+            // leave a startup restore that can never succeed. Fail closed when
+            // the transition itself cannot be persisted.
+            do {
+                try DshStateManager.shared.updateOrThrow { state in
+                    state.selectedVersion = currentVersion
+                    state.runtimeState = DshRuntimeTransaction.beginRollback(state.runtimeState)
+                }
+            } catch {
+                throw NSError(
+                    domain: "DshRuntimeUpdate",
+                    code: -6,
+                    userInfo: [NSLocalizedDescriptionKey: "更新到 \(item.version) 失败，且回滚状态写入失败：\(DshSettingsUIMessage.safe(error))。请重启应用完成恢复。"]
+                )
             }
             var rollbackError: Error?
             if candidateActivated {
@@ -2002,13 +2017,21 @@ public final class SettingsViewModel: ObservableObject {
             }
             if let rollbackError {
                 let diagnostic = "Runtime 回滚失败：\(DshSettingsUIMessage.safe(rollbackError))"
-                DshStateManager.shared.update { state in
-                    state.runtimeState = DshRuntimeTransaction.recordRollbackFailure(
-                        state.runtimeState,
-                        diagnostic: diagnostic
+                do {
+                    try DshStateManager.shared.updateOrThrow { state in
+                        state.runtimeState = DshRuntimeTransaction.recordRollbackFailure(
+                            state.runtimeState,
+                            diagnostic: diagnostic
+                        )
+                        state.runtimeState.dismissedVersion = item.version
+                        state.runtimeState.dismissedAppVersion = currentAppVersion
+                    }
+                } catch {
+                    throw NSError(
+                        domain: "DshRuntimeUpdate",
+                        code: -8,
+                        userInfo: [NSLocalizedDescriptionKey: "更新到 \(item.version) 失败：\(failureDescription)；自动恢复 \(active.version) 也失败：\(diagnostic)；恢复状态写入也失败：\(DshSettingsUIMessage.safe(error))。"]
                     )
-                    state.runtimeState.dismissedVersion = item.version
-                    state.runtimeState.dismissedAppVersion = currentAppVersion
                 }
                 throw NSError(
                     domain: "DshRuntimeUpdate",
@@ -2023,32 +2046,61 @@ public final class SettingsViewModel: ObservableObject {
             } catch {
                 cleanupErrors.append("candidate 清理失败：\(DshSettingsUIMessage.safe(error))")
             }
+
+            // Commit the settled rollback state BEFORE deleting the retained
+            // web Profile snapshot. State that points at a deleted snapshot is
+            // an unrecoverable startup restore; the reference is cleared only
+            // after the delete succeeds, and a failed delete keeps the ID
+            // retained for the next-launch retry
+            // (retryRetainedWebProfileSnapshotCleanup).
             let snapshotID = DshStateManager.shared.current.runtimeState.webProfileSnapshotID
-            var retainedSnapshotID: String?
+            do {
+                try DshStateManager.shared.updateOrThrow { state in
+                    state.runtimeState = DshRuntimeTransaction.finishRollback(
+                        state.runtimeState,
+                        active: active,
+                        retainedWebProfileSnapshotID: snapshotID
+                    )
+                    state.runtimeState.dismissedVersion = item.version
+                    state.runtimeState.dismissedAppVersion = currentAppVersion
+                    state.runtimeState.lastDiagnostic = cleanupErrors.isEmpty ? nil : cleanupErrors.joined(separator: "；")
+                }
+            } catch {
+                throw NSError(
+                    domain: "DshRuntimeUpdate",
+                    code: -9,
+                    userInfo: [NSLocalizedDescriptionKey: "更新到 \(item.version) 失败，已尝试回滚，但回滚提交写入失败：\(DshSettingsUIMessage.safe(error))。请重启应用完成恢复。"]
+                )
+            }
+
             if let snapshotID {
                 do {
                     try await DshPluginManager.shared.deleteWebProfileSnapshot(snapshotID)
+                    // Clear the retained reference only after the delete
+                    // really succeeded.
+                    try DshStateManager.shared.updateOrThrow { state in
+                        guard state.runtimeState.webProfileSnapshotID == snapshotID,
+                              state.runtimeState.phase == .idle else { return }
+                        state.runtimeState.webProfileSnapshotID = nil
+                    }
                 } catch {
-                    retainedSnapshotID = snapshotID
                     cleanupErrors.append("web Profile 快照清理失败：\(DshSettingsUIMessage.safe(error))")
+                    do {
+                        try DshStateManager.shared.updateOrThrow { state in
+                            guard state.runtimeState.webProfileSnapshotID == snapshotID else { return }
+                            state.runtimeState.lastDiagnostic = cleanupErrors.joined(separator: "；")
+                        }
+                    } catch {
+                        // The reference stays retained; next-launch cleanup
+                        // will retry the deletion.
+                    }
                 }
             }
-            let cleanupDiagnostic = cleanupErrors.isEmpty ? nil : cleanupErrors.joined(separator: "；")
-            DshStateManager.shared.update { state in
-                state.runtimeState = DshRuntimeTransaction.finishRollback(
-                    state.runtimeState,
-                    active: active,
-                    retainedWebProfileSnapshotID: retainedSnapshotID
-                )
-                state.runtimeState.dismissedVersion = item.version
-                state.runtimeState.dismissedAppVersion = currentAppVersion
-                state.runtimeState.lastDiagnostic = cleanupDiagnostic
-            }
-            if let cleanupDiagnostic {
+            if !cleanupErrors.isEmpty {
                 throw NSError(
                     domain: "DshRuntimeUpdate",
                     code: -3,
-                    userInfo: [NSLocalizedDescriptionKey: "更新到 \(item.version) 失败，已恢复 \(active.version)，但\(cleanupDiagnostic)"]
+                    userInfo: [NSLocalizedDescriptionKey: "更新到 \(item.version) 失败，已恢复 \(active.version)，但\(cleanupErrors.joined(separator: "；"))"]
                 )
             }
             throw NSError(
@@ -2474,11 +2526,18 @@ public final class SettingsViewModel: ObservableObject {
         // pnpm or Node work begins. A force-quit after this point can therefore
         // be repaired deterministically during the next app launch.
         var didPersistTransaction = false
-        DshStateManager.shared.update { state in
+        switch DshStateManager.shared.update { state in
             guard state.appProfile == previous, state.pendingProfileSwitch == nil else { return }
             state.appProfile = profile
             state.pendingProfileSwitch = transaction
             didPersistTransaction = true
+        } {
+        case .success:
+            break
+        case .failure(let error):
+            loadFromState()
+            alertMessage = "Profile 切换事务写入失败，已取消本次切换：\(DshSettingsUIMessage.safe(error))"
+            return
         }
         guard didPersistTransaction else {
             loadFromState()
@@ -2514,7 +2573,7 @@ public final class SettingsViewModel: ObservableObject {
                         // phase before touching the shared web tree so a
                         // force-quit can keep desktop and retry cleanup.
                         finalizingTransaction.phase = .finalizing
-                        DshStateManager.shared.update { state in
+                        try DshStateManager.shared.updateOrThrow { state in
                             guard state.pendingProfileSwitch == transaction else { return }
                             state.pendingProfileSwitch = finalizingTransaction
                         }
@@ -2532,7 +2591,7 @@ public final class SettingsViewModel: ObservableObject {
                     // complete startup and health gate. This closes the small
                     // window where a successful restart could be followed by
                     // a force-quit before the UI task resumes.
-                    DshStateManager.shared.update { state in
+                    try DshStateManager.shared.updateOrThrow { state in
                         guard let pending = state.pendingProfileSwitch,
                               pending.from == transaction.from,
                               pending.to == transaction.to,
@@ -2553,9 +2612,20 @@ public final class SettingsViewModel: ObservableObject {
                 // Keep the transaction marker while restoring. If this task
                 // is interrupted, startup will still know to return to the
                 // previous Profile and retry web cleanup.
-                DshStateManager.shared.update { state in
-                    guard state.pendingProfileSwitch == transaction else { return }
-                    state.appProfile = previous
+                do {
+                    try DshStateManager.shared.updateOrThrow { state in
+                        guard state.pendingProfileSwitch == transaction else { return }
+                        state.appProfile = previous
+                    }
+                } catch {
+                    // Do not continue the in-process restore against a
+                    // persisted state that still claims the target Profile:
+                    // the rollback restart would launch the wrong Profile.
+                    // Next-launch recovery restores the healthy Profile from
+                    // the retained transaction marker.
+                    self.isSwitchingProfile = false
+                    self.alertMessage = "切换到 \(profile.rawValue) Profile 失败，且回滚标记写入失败：\(DshSettingsUIMessage.safe(error))。请重启应用，启动时会自动恢复 \(previous.rawValue) Profile。"
+                    return
                 }
                 self.appProfile = previous
                 self.saveGeneralSettings()
@@ -2587,7 +2657,7 @@ public final class SettingsViewModel: ObservableObject {
                         // prevent the known-good Profile from being restored.
                         _ = try await MainWindowController.shared
                             .restartDshServiceWithAuthenticationRecoveryDuringOperation(context: context)
-                        DshStateManager.shared.update { state in
+                        try DshStateManager.shared.updateOrThrow { state in
                             guard state.pendingProfileSwitch == transaction else { return }
                             state.appProfile = previous
                             state.pendingProfileSwitch = cleanupError == nil ? nil : transaction
