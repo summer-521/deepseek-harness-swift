@@ -328,9 +328,33 @@ test('runtime update policy defaults to notify and labels failure stages', () =>
 test('R12 keeps displaced Profile trees behind a durable completion proof', () => {
   // State shape: the debt record and its decision rule.
   assert.match(STATE_SOURCE, /public struct DshProfileRestoreCleanup/)
-  assert.match(STATE_SOURCE, /public var pendingProfileRestoreCleanup: DshProfileRestoreCleanup\?/)
+  assert.match(STATE_SOURCE, /public var pendingProfileRestoreCleanups: \[DshProfileRestoreCleanup\]/)
+  assert.match(
+    STATE_SOURCE,
+    /case pendingProfileRestoreCleanup$/m,
+    'the single-slot legacy key must stay decodable'
+  )
   assert.match(STATE_SOURCE, /public static func mayReclaim\(/)
-  assert.match(STATE_SOURCE, /cleanup\.completed && canonicalProfileExists/)
+  assert.match(STATE_SOURCE, /cleanup\.completed\s*\n\s*&& cleanup\.hasWellFormedDisplacedName/)
+
+  // Round-4 R12: the decision is derived from the record itself. The record
+  // lives in Application Support, which every DSH_HOME shares, so the current
+  // home's canonical Profile must never authorise deleting this tree.
+  assert.match(STATE_SOURCE, /public var profilesRootURL: URL \{\s*\n\s*displacedURL\.deletingLastPathComponent\(\)/)
+  assert.match(STATE_SOURCE, /public var canonicalProfileURL: URL \{\s*\n\s*profilesRootURL\.appendingPathComponent\(profile\.runtimeProfileName/)
+  assert.match(STATE_SOURCE, /public var hasWellFormedDisplacedName: Bool \{/)
+  assert.doesNotMatch(
+    SETTINGS_SOURCE,
+    /DshLaunchContext\.profileDirectory\(for: cleanup\.profile\)/,
+    'reclamation must not derive the canonical Profile from the current DSH_HOME'
+  )
+
+  // The deletion entry point re-validates the identity it was handed: the
+  // recorded path is user-writable state, so a mismatch must never turn a
+  // startup pass into an arbitrary recursive delete.
+  assert.match(PLUGIN_SOURCE, /expectedSnapshotID: String/)
+  assert.match(PLUGIN_SOURCE, /static func isDisplacedProfileRestoreName\(_ name: String, snapshotID: String\)/)
+  assert.match(PLUGIN_SOURCE, /func removeDisplacedProfileTree\([\s\S]{0,120}expectedSnapshotID/)
 
   // The debt is recorded before a restore can displace the live Profile, and
   // settled afterwards with the proof the restore itself cannot write.
@@ -341,17 +365,34 @@ test('R12 keeps displaced Profile trees behind a durable completion proof', () =
 
   const beginBody = SETTINGS_SOURCE.slice(begin, finish)
   assert.match(beginBody, /completed: false/, 'the debt starts unproven')
+  assert.match(
+    beginBody,
+    /pendingProfileRestoreCleanups\.append\(record\)/,
+    'a new debt must be appended, never overwrite another one'
+  )
+  assert.match(
+    beginBody,
+    /removeAll \{\s*\n\s*\$0\.matches\(profile: profile, snapshotID: snapshotID\)/,
+    're-recording the same identity restarts its completion proof'
+  )
   const finishBody = SETTINGS_SOURCE.slice(finish, retry)
-  assert.match(finishBody, /cleanup\.completed = true/, 'the proof is written after the restore')
-  assert.match(finishBody, /state\.pendingProfileRestoreCleanup = nil/, 'a clean restore clears the debt')
+  assert.match(finishBody, /completed = true/, 'the proof is written after the restore')
+  assert.match(finishBody, /pendingProfileRestoreCleanups\.remove\(at: index\)/, 'a clean restore clears the debt')
+  assert.match(finishBody, /matches\(profile: profile, snapshotID: snapshotID\)/, 'the settle must target its own record')
 
   const retryBody = SETTINGS_SOURCE.slice(retry, SETTINGS_SOURCE.indexOf('/// Finish a rollback that was left pending'))
+  assert.match(
+    retryBody,
+    /for cleanup in state\.pendingProfileRestoreCleanups/,
+    'every recorded debt must be considered'
+  )
+  assert.match(retryBody, /DshPluginManager\.isRealDirectory\(/)
   assert.ok(
     retryBody.indexOf('mayReclaim(') < retryBody.indexOf('removeDisplacedProfileTree('),
     'the reclamation pass must require the proof before deleting anything'
   )
   assert.ok(
-    retryBody.indexOf('removeDisplacedProfileTree(') < retryBody.indexOf('state.pendingProfileRestoreCleanup = nil'),
+    retryBody.indexOf('removeDisplacedProfileTree(') < retryBody.indexOf('pendingProfileRestoreCleanups.removeAll'),
     'the debt is cleared only after the tree is really gone'
   )
   assert.match(retryBody, /guard reclaimed else/, 'a failed reclamation keeps the debt and reports it')
@@ -363,7 +404,21 @@ test('R12 keeps displaced Profile trees behind a durable completion proof', () =
   )
   assert.match(WINDOW_SOURCE, /beginProfileRestoreCleanup\(/)
   assert.match(WINDOW_SOURCE, /finishProfileRestoreCleanup\(/)
-  assert.match(SETTINGS_SOURCE, /finishProfileRestoreCleanup\(leftover: restoreOutcome\.displacedLeftover\)/)
+  assert.match(
+    WINDOW_SOURCE,
+    /finishProfileRestoreCleanup\([\s\S]{0,160}snapshotID: snapshotID/,
+    'the settle must carry the record identity'
+  )
+
+  // Round-4 (resume ordering): both restore implementations must keep an
+  // existing displaced leftover until the replacement content has been
+  // verified and installed. Deleting it first destroyed the only complete copy
+  // whenever the resumed restore then failed.
+  assert.equal(
+    (PLUGIN_SOURCE.match(/let resumeWithLeftover = snapshotHasContent/g) || []).length,
+    2,
+    'the Profile restore and the P01 restore must share the resume rule'
+  )
 
   // The startup pass runs after the retained-snapshot cleanup and before the
   // first launch.
@@ -469,7 +524,31 @@ test('round-3 fixes keep their ordering and fail-closed invariants', () => {
     SETTINGS_SOURCE.indexOf('public func recoverPendingProfileSwitch() async throws {'),
     SETTINGS_SOURCE.indexOf('public func retryPendingProfileSwitchCleanup(')
   )
-  assert.match(profileSwitchRecovery, /updateOrThrow \{ state in[\s\S]*state\.appProfile = state\.runtimeState\.profile/)
+  assert.match(
+    profileSwitchRecovery,
+    /updateOrThrow \{ state in[\s\S]*state\.appProfile = repairTarget/,
+    'the repair must write the owner Profile inside the throwing chain'
+  )
+  // Round-4 T9: the repair must cover *every* open, owned transaction, not
+  // only one with a pending descriptor. A confirmed transaction has already
+  // cleared `pending`, and skipping the repair there left the app locked: the
+  // health count refuses to settle a transaction started in the wrong Profile,
+  // the Profile switch is gated on idle, and the Runtime rollback action only
+  // applies to desktop.
+  assert.match(STATE_SOURCE, /public enum DshRuntimeTransactionOwnership/)
+  assert.match(STATE_SOURCE, /public static func profileRepairTarget\(/)
+  assert.match(STATE_SOURCE, /guard runtime\.phase != \.idle, hasOwnerEvidence else \{ return nil \}/)
+  assert.doesNotMatch(
+    STATE_SOURCE,
+    /guard runtime\.pending != nil,\s*\n\s*runtime\.transactionID != nil else \{ return nil \}/,
+    'the repair must not require a pending descriptor'
+  )
+  assert.match(
+    profileSwitchRecovery,
+    /DshRuntimeTransactionOwnership\.profileRepairTarget\(/,
+    'recoverPendingProfileSwitch must ask the ownership rule'
+  )
+  assert.match(profileSwitchRecovery, /hasPendingProfileSwitch: existing\.pendingProfileSwitch != nil/)
 })
 
 test('round-2 fixes keep their fail-closed ordering and invariants', () => {
@@ -548,4 +627,62 @@ test('round-2 fixes keep their fail-closed ordering and invariants', () => {
   assert.doesNotMatch(sweep, /options: \[\.skipsHiddenFiles\]/)
   assert.match(sweep, /options: \[\]/)
   assert.match(PLUGIN_SOURCE, /static func isAppGeneratedStagingName/)
+})
+
+test('round-4 T1 closes the Profile-tree gate race after queueing', () => {
+  // The entry-point gate (`pluginWritesAllowed`) is evaluated before the task
+  // queues on the runtime gate, so the state can move on while it waits: a
+  // Runtime update that was already in flight can reach `.confirmed`, and a
+  // confirmed transaction still holds the rollback snapshot for the Profile
+  // tree the queued operation is about to mutate. The re-check must therefore
+  // live inside the gate, before any side effect.
+  const execute = SETTINGS_SOURCE.slice(
+    SETTINGS_SOURCE.indexOf('private func executeDesktopPluginOperation('),
+    SETTINGS_SOURCE.indexOf('private func pluginOperationFailureMessage(')
+  )
+  assert.ok(execute.length > 0, 'executeDesktopPluginOperation must exist')
+  const recheck = execute.indexOf('DshRuntimeMutationGate.allowsProfileTreeMutation(DshStateManager.shared.current)')
+  assert.ok(recheck > 0, 'the plugin mutation must re-check the Profile-tree gate after queueing')
+  assert.ok(
+    recheck < execute.indexOf('context.isFresh('),
+    'the re-check must come before the stale-context check and every side effect'
+  )
+  assert.match(execute, /guard DshRuntimeMutationGate\.allowsProfileTreeMutation[\s\S]{0,60}else \{/)
+  assert.ok(
+    (SETTINGS_SOURCE.match(/withRuntimeOperation \{/g) || []).length >= 5,
+    'every plugin mutation runs through the runtime gate'
+  )
+
+  // The uninstall entry point used the weaker general-settings gate while every
+  // other plugin entry used the Profile-tree gate.
+  const remove = SETTINGS_SOURCE.slice(
+    SETTINGS_SOURCE.indexOf('private func startPluginRemove(name: String) -> Bool {'),
+    SETTINGS_SOURCE.indexOf('private func startPluginRemove(name: String) -> Bool {') + 800
+  )
+  assert.ok(remove.length > 0, 'startPluginRemove must exist')
+  assert.match(remove, /guard pluginWritesAllowed, !isOperatingPlugin, !isSwitchingProfile else \{ return false \}/)
+
+  // A Runtime update must not queue behind a plugin transaction: both hold the
+  // same gate, and the reordering would be invisible to the user.
+  assert.match(
+    SETTINGS_SOURCE,
+    /guard pluginMutationsAllowed, !isUpdatingRuntime, !isOperatingPlugin else \{ return \}/
+  )
+  assert.match(
+    SETTINGS_SOURCE,
+    /public var runtimeUpdateAllowed: Bool \{[\s\S]{0,300}!isOperatingPlugin/
+  )
+
+  // The recovery surface must stay reachable. `removePluginFromRecovery`
+  // already requires a fully settled idle state, so the stricter in-gate check
+  // cannot dead-lock the escape hatch that exists for a broken Runtime.
+  const recoveryRemoval = SETTINGS_SOURCE.slice(
+    SETTINGS_SOURCE.indexOf('public func removePluginFromRecovery('),
+    SETTINGS_SOURCE.indexOf('public func removePluginFromRecovery(') + 1400
+  )
+  assert.match(recoveryRemoval, /state\.runtimeState\.phase == \.idle/)
+  assert.match(recoveryRemoval, /state\.runtimeState\.pending == nil/)
+  // ...and the coordinator's adopt path never routes through the plugin
+  // mutation helper.
+  assert.doesNotMatch(COORDINATOR_SOURCE, /executeDesktopPluginOperation/)
 })

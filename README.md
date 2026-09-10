@@ -154,8 +154,8 @@ npm test
 - App 默认使用独立的 `profiles/swift-desktop`，终端 `dsh web` 继续使用 `profiles/web`；旧版 App 的 `profiles/desktop` 会在首次启动时安全复制到新目录；通用设置中切换到 `web` 后，两者会共享插件和依赖，升级或插件变更可能影响终端启动。
 - `web` Profile 下禁止 DSH Runtime 版本升级和自动更新；从 `web` 切回 `swift-desktop` 时，应用会先停止服务，再移除 web Profile 中的 `dsh-desktop-host` 与 `@deepseek-ai/dsh-host-webserver`，避免继续污染终端环境。
 - 目前仅提供 macOS 26+、Apple Silicon（arm64）构建。
-- 同一用户会话只允许运行一个实例：状态文件、事务快照、服务记录和端口都位于 `~/Library/Application Support/DSH`，而该目录不随 `DSH_HOME` 隔离。重复启动会被拒绝（`LSMultipleInstancesProhibited` + 应用内的 `flock` 实例锁，见 `Sources/Service/DshInstanceLock.swift`）；测试 harness 使用独立的 `DSH_TEST_APP_SUPPORT` 根，仍可并行运行。
-- Runtime 升级完成到下次启动之间是"已确认待结算"窗口：此期间插件安装/更新/卸载与 Profile 切换会保持禁用（普通设置不受影响），重启一次 DSH 后即可继续——这样可避免升级回退时静默撤销此间改动的插件，或让清理悬置。
+- 同一用户会话只允许运行一个实例：状态文件、事务快照、服务记录和端口都位于 `~/Library/Application Support/DSH`，而该目录不随 `DSH_HOME` 隔离。重复启动会被拒绝（`LSMultipleInstancesProhibited` + 应用内的 `flock` 实例锁，见 `Sources/Service/DshInstanceLock.swift`）；锁路径被非普通文件占用（目录、符号链接等）或锁调用异常时会弹窗说明并停止启动，只有权限/只读/磁盘空间这类环境限制才会在记录诊断后继续启动。测试 harness 使用独立的 `DSH_TEST_APP_SUPPORT` 根，仍可并行运行。
+- Runtime 升级完成到下次启动之间是"已确认待结算"窗口：此期间插件安装/更新/卸载与 Profile 切换会保持禁用（普通设置不受影响），重启一次 DSH 后即可继续——这样可避免升级回退时静默撤销此间改动的插件，或让清理悬置。该门禁在插件操作真正取得运行时锁之后会再检查一次，因此排队期间进入该窗口的操作会被拒绝，而不是静默生效后再被回退。
 
 ## 许可证
 

@@ -638,6 +638,42 @@ private func recoverRestoreWithStaleStaging() async throws {
             "a completed resume must leave no displaced or staging directory behind")
 }
 
+/// Round-4 (resume ordering): an interrupted attempt leaves the complete
+/// pre-restore tree at the displaced path and a partial copy at the canonical
+/// path. A resumed restore must not delete that leftover before the staged
+/// replacement has been verified — it is the only complete copy. This fixture
+/// makes the snapshot content incomplete so the resumed restore fails, and
+/// requires both the leftover and the (unverified) canonical tree to survive.
+private func verifyInterruptedRestoreKeepsLeftover() async throws {
+    try resetFixture()
+    let manager = DshPluginManager.shared
+    let operationID = UUID().uuidString
+    let snapshot = try await manager.createPluginOperationSnapshot(
+        operationID: operationID,
+        profile: .desktop,
+        profileDirectory: profileURL()
+    )
+    let parent = profileURL().deletingLastPathComponent()
+    let displaced = parent.appendingPathComponent(".dsh-plugin-restore-\(operationID)", isDirectory: true)
+    try fileManager.moveItem(at: profileURL(), to: displaced)
+    try fileManager.createDirectory(at: profileURL(), withIntermediateDirectories: true)
+    try marker("partial-copy")
+    try fileManager.removeItem(
+        at: snapshotDirectoryURL(snapshot).appendingPathComponent("profile", isDirectory: true)
+    )
+    var restoreError: Error?
+    do {
+        try await manager.restorePluginOperationSnapshot(snapshot, expectedCurrentDigest: nil)
+    } catch {
+        restoreError = error
+    }
+    require(restoreError != nil, "a plugin snapshot without content must fail the restore")
+    try requireContents("baseline", at: displaced.appendingPathComponent("marker"),
+                        "the complete leftover must survive a failed resumed restore")
+    try requireContents("partial-copy", at: profileURL().appendingPathComponent("marker"),
+                        "the canonical tree must not be replaced by a failed restore")
+}
+
 /// R3 regression: a restore that already failed once (recoveryRequired, but a
 /// mutation digest exists) with the canonical Profile absent must resume
 /// instead of dead-ending as `externalModification`. This is what a full disk
@@ -1416,6 +1452,7 @@ struct PluginOperationHarness {
         case "restoring-recover": try await recoverRestoringIdempotently()
         case "resuming-restore-setup": try await setupResumingInterruptedRestore()
         case "resuming-restore-recover": try await recoverResumingInterruptedRestore()
+        case "interrupted-restore-leftover": try await verifyInterruptedRestoreKeepsLeftover()
         case "stale-staging-restore-setup": try await setupRestoreWithStaleStaging()
         case "stale-staging-restore-recover": try await recoverRestoreWithStaleStaging()
         case "recovery-required-missing-profile-setup": try await setupRecoveryRequiredMissingProfile()

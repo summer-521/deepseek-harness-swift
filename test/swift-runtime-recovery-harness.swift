@@ -257,11 +257,86 @@ struct RuntimeRecoveryHarness {
             DshStateConfig(appProfile: .desktop, runtimeState: settledReset)
         ), "a settled reset must reopen plugin/Runtime mutations in the same session")
 
+        // T9: a Profile repair is required for every open, *owned* Runtime
+        // transaction whose Profile disagrees with `appProfile`. A confirmed
+        // transaction has no pending descriptor, and that is exactly the state
+        // an older build could persist after switching Profiles; skipping the
+        // repair there left the app locked forever (the health count refuses to
+        // settle, the Profile switch is gated on idle, and the Runtime rollback
+        // action only applies to desktop).
+        var stuckConfirmed = DshRuntimeState(updatePolicy: .notify, channel: .latest)
+        stuckConfirmed.phase = .confirmed
+        stuckConfirmed.active = candidate
+        stuckConfirmed.previous = active
+        stuckConfirmed.transactionID = "tx-stuck"
+        stuckConfirmed.profile = .desktop
+        require(
+            !DshRuntimeMutationGate.allowsProfileTreeMutation(
+                DshStateConfig(appProfile: .web, runtimeState: stuckConfirmed)
+            ),
+            "the stuck state must be locked, which is why the repair is required"
+        )
+        require(
+            DshRuntimeTransactionOwnership.profileRepairTarget(
+                runtime: stuckConfirmed,
+                appProfile: .web,
+                hasPendingProfileSwitch: false
+            ) == .desktop,
+            "a confirmed transaction with a cleared pending descriptor must still repair the Profile"
+        )
+        require(
+            DshRuntimeTransactionOwnership.profileRepairTarget(
+                runtime: stuckConfirmed,
+                appProfile: .desktop,
+                hasPendingProfileSwitch: false
+            ) == nil,
+            "a matching Profile must not be rewritten"
+        )
+        require(
+            DshRuntimeTransactionOwnership.profileRepairTarget(
+                runtime: stuckConfirmed,
+                appProfile: .web,
+                hasPendingProfileSwitch: true
+            ) == nil,
+            "a pending Profile switch owns the Profile decision for this launch"
+        )
+        var ownerlessLegacy = stuckConfirmed
+        ownerlessLegacy.transactionID = nil
+        require(
+            DshRuntimeTransactionOwnership.profileRepairTarget(
+                runtime: ownerlessLegacy,
+                appProfile: .web,
+                hasPendingProfileSwitch: false
+            ) == .desktop,
+            "a legacy transaction without an owner id must repair using descriptor evidence"
+        )
+        var settledState = stuckConfirmed
+        settledState.phase = .idle
+        require(
+            DshRuntimeTransactionOwnership.profileRepairTarget(
+                runtime: settledState,
+                appProfile: .web,
+                hasPendingProfileSwitch: false
+            ) == nil,
+            "a settled idle state must not be rewritten"
+        )
+        var emptyOpenPhase = DshRuntimeState(updatePolicy: .notify, channel: .latest)
+        emptyOpenPhase.phase = .rollingBack
+        require(
+            DshRuntimeTransactionOwnership.profileRepairTarget(
+                runtime: emptyOpenPhase,
+                appProfile: .web,
+                hasPendingProfileSwitch: false
+            ) == nil,
+            "an open phase without ownership evidence must not be rewritten"
+        )
+
         // R12: a displaced Profile tree is only reclaimed with the durable
         // completion proof AND a canonical Profile in place. Anything else can
         // be the only complete copy of the user's Profile.
-        let displaced = URL(
-            fileURLWithPath: "/tmp/profiles/.dsh-profile-restore-snapshot-r12",
+        let profilesRoot = URL(fileURLWithPath: "/tmp/dsh-recovery-home/profiles", isDirectory: true)
+        let displaced = profilesRoot.appendingPathComponent(
+            DshProfileRestoreCleanup.displacedNamePrefix + "snapshot-r12",
             isDirectory: true
         )
         let unproven = DshProfileRestoreCleanup(
@@ -270,37 +345,125 @@ struct RuntimeRecoveryHarness {
             displacedPath: displaced,
             completed: false
         )
-        require(!DshProfileRestoreCleanup.mayReclaim(unproven, canonicalProfileExists: true),
-                "an unproven restore must never be reclaimed")
-        require(!DshProfileRestoreCleanup.mayReclaim(unproven, canonicalProfileExists: false),
-                "an unproven restore must never be reclaimed")
+        require(
+            !DshProfileRestoreCleanup.mayReclaim(unproven, canonicalProfileIsRealDirectory: true),
+            "an unproven restore must never be reclaimed"
+        )
+        require(
+            !DshProfileRestoreCleanup.mayReclaim(unproven, canonicalProfileIsRealDirectory: false),
+            "an unproven restore must never be reclaimed"
+        )
+
+        // The canonical Profile is derived from the record itself, because the
+        // record lives in Application Support (shared by every DSH_HOME): a
+        // canonical Profile from a *different* home must never authorise
+        // deleting this tree, and the same home must not be assumed.
+        require(
+            unproven.profilesRootURL == profilesRoot.standardizedFileURL,
+            "the profiles root must come from the recorded path"
+        )
+        require(
+            unproven.canonicalProfileURL
+                == profilesRoot.appendingPathComponent("web", isDirectory: true),
+            "the canonical Profile must be the recorded tree's sibling"
+        )
+        require(unproven.hasWellFormedDisplacedName, "the record must recognise its own displaced name")
+        require(
+            unproven.matches(profile: .web, snapshotID: "snapshot-r12"),
+            "the record must match its own identity"
+        )
+        require(
+            !unproven.matches(profile: .desktop, snapshotID: "snapshot-r12"),
+            "the record must not match another Profile"
+        )
 
         var proven = unproven
         proven.completed = true
-        require(DshProfileRestoreCleanup.mayReclaim(proven, canonicalProfileExists: true),
-                "a proven restore with a canonical Profile may be reclaimed")
-        require(!DshProfileRestoreCleanup.mayReclaim(proven, canonicalProfileExists: false),
-                "a missing canonical Profile must keep the displaced tree")
+        require(
+            DshProfileRestoreCleanup.mayReclaim(proven, canonicalProfileIsRealDirectory: true),
+            "a proven restore with a canonical Profile may be reclaimed"
+        )
+        require(
+            !DshProfileRestoreCleanup.mayReclaim(proven, canonicalProfileIsRealDirectory: false),
+            "a missing canonical Profile must keep the displaced tree"
+        )
 
-        // The debt round-trips through the state file, and a state written
-        // before this field existed still decodes.
+        // `dsh-state.json` is user-writable, so the recorded path is untrusted
+        // input: a path that is not this app's exact displaced name for the
+        // recorded snapshot must never authorise a recursive delete.
+        var foreignTree = proven
+        foreignTree.displacedPath = profilesRoot.appendingPathComponent(
+            DshProfileRestoreCleanup.displacedNamePrefix + "another-snapshot",
+            isDirectory: true
+        ).path
+        require(!foreignTree.hasWellFormedDisplacedName, "a foreign displaced name must be rejected")
+        require(
+            !DshProfileRestoreCleanup.mayReclaim(foreignTree, canonicalProfileIsRealDirectory: true),
+            "a snapshot-id mismatch must never be reclaimed"
+        )
+        var arbitraryPath = proven
+        arbitraryPath.displacedPath = "/Users/someone/Documents"
+        require(
+            !DshProfileRestoreCleanup.mayReclaim(arbitraryPath, canonicalProfileIsRealDirectory: true),
+            "an arbitrary absolute path must never be reclaimed"
+        )
+
+        // Debt is a collection: a later restore must not drop the reference to a
+        // tree that is still on disk, because nothing reclaims an unreferenced
+        // displaced tree.
         var stateWithCleanup = DshStateConfig(appProfile: .web)
-        stateWithCleanup.pendingProfileRestoreCleanup = proven
+        stateWithCleanup.pendingProfileRestoreCleanups = [proven, foreignTree]
         let encodedState = try! JSONEncoder().encode(stateWithCleanup)
         let decodedState = try! JSONDecoder().decode(DshStateConfig.self, from: encodedState)
-        let restoredCleanup = decodedState.pendingProfileRestoreCleanup
-        require(restoredCleanup?.completed == true, "the completion proof must round-trip")
-        require(restoredCleanup?.snapshotID == "snapshot-r12", "the snapshot id must round-trip")
-        require(restoredCleanup?.profile == .web, "the owning Profile must round-trip")
-        require(restoredCleanup?.displacedPath == displaced.standardizedFileURL.path,
-                "the displaced path must round-trip")
+        let restoredCleanups = decodedState.pendingProfileRestoreCleanups
+        require(restoredCleanups.count == 2, "every cleanup debt must round-trip")
+        require(restoredCleanups.first?.completed == true, "the completion proof must round-trip")
+        require(restoredCleanups.first?.snapshotID == "snapshot-r12", "the snapshot id must round-trip")
+        require(restoredCleanups.first?.profile == .web, "the owning Profile must round-trip")
+        require(
+            restoredCleanups.first?.displacedPath == displaced.standardizedFileURL.path,
+            "the displaced path must round-trip"
+        )
+        require(
+            restoredCleanups.last?.displacedPath == foreignTree.displacedPath,
+            "a second debt must not be dropped"
+        )
+
+        // Legacy single-slot state (the format this app wrote before the record
+        // became a collection) must fold into the collection instead of being
+        // dropped, which would leak the retained tree forever.
+        let legacyData = try! JSONSerialization.data(withJSONObject: [
+            "appProfile": "web",
+            "pendingProfileRestoreCleanup": [
+                "profile": "web",
+                "snapshotID": "snapshot-r12",
+                "displacedPath": displaced.standardizedFileURL.path,
+                "completed": true,
+                "createdAt": 0,
+            ],
+        ])
+        let legacyDebtState = try! JSONDecoder().decode(DshStateConfig.self, from: legacyData)
+        require(
+            legacyDebtState.pendingProfileRestoreCleanups.count == 1,
+            "the legacy single-slot record must migrate into the collection"
+        )
+        require(
+            legacyDebtState.pendingProfileRestoreCleanups.first?.snapshotID == "snapshot-r12",
+            "the legacy record must keep its snapshot id"
+        )
+        require(
+            legacyDebtState.pendingProfileRestoreCleanups.first?.completed == true,
+            "the legacy record must keep its completion proof"
+        )
 
         let legacyState = try! JSONDecoder().decode(
             DshStateConfig.self,
             from: Data(#"{"appProfile":"desktop"}"#.utf8)
         )
-        require(legacyState.pendingProfileRestoreCleanup == nil,
-                "a state file without the cleanup field must decode")
+        require(
+            legacyState.pendingProfileRestoreCleanups.isEmpty,
+            "a state file without the cleanup field must decode"
+        )
 
         print("runtime recovery integration harness passed")
     }

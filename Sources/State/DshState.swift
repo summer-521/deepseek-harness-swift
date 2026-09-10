@@ -115,14 +115,54 @@ public struct DshProfileRestoreCleanup: Codable, Equatable, Sendable {
         self.createdAt = createdAt
     }
 
+    /// `.dsh-profile-restore-<snapshotID>`: the deterministic displaced-tree
+    /// name the restore helper builds. Reclamation requires the recorded path
+    /// to carry exactly this name, so a record can never authorise deleting a
+    /// tree that is not this app's displaced copy.
+    public static let displacedNamePrefix = ".dsh-profile-restore-"
+
+    /// The displaced tree as an absolute URL.
+    public var displacedURL: URL {
+        URL(fileURLWithPath: displacedPath, isDirectory: true).standardizedFileURL
+    }
+
+    /// The `profiles` directory that holds both the displaced tree and the
+    /// canonical Profile. Deliberately derived from the record itself: the
+    /// current `DSH_HOME` can have changed since the record was written, and a
+    /// canonical Profile from a *different* home must never authorise deleting
+    /// this tree.
+    public var profilesRootURL: URL {
+        displacedURL.deletingLastPathComponent()
+    }
+
+    /// The canonical Profile the displaced tree was moved aside from
+    /// (`<profiles>/<runtimeProfileName>`).
+    public var canonicalProfileURL: URL {
+        profilesRootURL.appendingPathComponent(profile.runtimeProfileName, isDirectory: true)
+    }
+
+    /// True when the recorded path is exactly this app's displaced-tree name
+    /// for the recorded snapshot.
+    public var hasWellFormedDisplacedName: Bool {
+        displacedURL.lastPathComponent == Self.displacedNamePrefix + snapshotID
+    }
+
+    public func matches(profile: DshAppProfile, snapshotID: String) -> Bool {
+        self.profile == profile && self.snapshotID == snapshotID
+    }
+
     /// A displaced tree may only be reclaimed when the restore provably
-    /// finished and a canonical Profile is in place; otherwise it can be the
-    /// only complete copy of the user's Profile.
+    /// finished, the recorded path still identifies this app's displaced tree,
+    /// and the canonical Profile it was moved aside from is a real directory in
+    /// the same `profiles` root. Otherwise the tree can be the only complete
+    /// copy of the user's Profile, and a wrong answer deletes it irreversibly.
     public static func mayReclaim(
         _ cleanup: DshProfileRestoreCleanup,
-        canonicalProfileExists: Bool
+        canonicalProfileIsRealDirectory: Bool
     ) -> Bool {
-        cleanup.completed && canonicalProfileExists
+        cleanup.completed
+            && cleanup.hasWellFormedDisplacedName
+            && canonicalProfileIsRealDirectory
     }
 }
 
@@ -442,6 +482,45 @@ public enum DshRuntimeRecoveryPlanner {
     }
 }
 
+/// T9: Profile repair that must run before any recovery reads persisted state.
+///
+/// `DshRuntimeState.profile` owns the retained rollback snapshot of an open
+/// Runtime transaction. A state written by an older build can instead carry a
+/// Profile switch that moved `appProfile` to the *other* Profile while such a
+/// transaction was still open (the switch used to persist the target
+/// immediately, and `confirm` clears `pending` without settling the
+/// transaction). That combination has no in-process exit: the health-count
+/// check refuses to settle a transaction started in the wrong Profile,
+/// `allowsProfileTreeMutation` keeps the Profile switch locked (so the user
+/// cannot move back), and the Runtime rollback action only applies to the
+/// desktop Profile — the app stays locked until the state file is edited by
+/// hand. This repair is therefore part of the throwing startup chain: a failed
+/// write must block startup instead of being silently ignored.
+public enum DshRuntimeTransactionOwnership {
+    /// The Profile `appProfile` must be repaired to, or `nil` when no repair is
+    /// needed. A pending Profile switch owns `appProfile` for the current
+    /// launch (its own recovery derives the safe Profile from the transaction
+    /// it is completing and writes it durably), so the repair defers to it and
+    /// applies on a later launch if the two still disagree.
+    public static func profileRepairTarget(
+        runtime: DshRuntimeState,
+        appProfile: DshAppProfile,
+        hasPendingProfileSwitch: Bool
+    ) -> DshAppProfile? {
+        guard !hasPendingProfileSwitch else { return nil }
+        // Any retained descriptor or transaction identity is ownership
+        // evidence; `transactionID` is the primary one, the others keep the
+        // repair working for states written before it existed.
+        let hasOwnerEvidence = runtime.transactionID != nil
+            || runtime.pending != nil
+            || runtime.previous != nil
+            || runtime.webProfileSnapshotID != nil
+        guard runtime.phase != .idle, hasOwnerEvidence else { return nil }
+        guard runtime.profile != appProfile else { return nil }
+        return runtime.profile
+    }
+}
+
 /// Runtime transaction gates used by the settings surface. A successfully
 /// updated Runtime remains in `confirmed` until a second healthy start proves
 /// that the old Runtime can be removed.
@@ -666,10 +745,13 @@ public struct DshStateConfig: Codable, Equatable {
     public var networkExposure: DshNetworkExposure
     public var uiTheme: String
     public var cachedUserPath: String?
-    /// Cleanup debt for a Profile snapshot restore whose displaced tree could
+    /// Cleanup debt for Profile snapshot restores whose displaced tree could
     /// not be removed. Kept until a startup pass can prove the restore
-    /// finished; never reclaimed on a prefix match alone.
-    public var pendingProfileRestoreCleanup: DshProfileRestoreCleanup?
+    /// finished; never reclaimed on a prefix match alone. A collection, not a
+    /// single slot: overwriting one record would drop the only reference to a
+    /// previously retained tree, and those trees are deliberately never
+    /// reclaimed by a prefix sweep (R12).
+    public var pendingProfileRestoreCleanups: [DshProfileRestoreCleanup]
 
     public init(
         selectedVersion: String? = nil,
@@ -684,7 +766,7 @@ public struct DshStateConfig: Codable, Equatable {
         networkExposure: DshNetworkExposure = .loopback,
         uiTheme: String = "default",
         cachedUserPath: String? = nil,
-        pendingProfileRestoreCleanup: DshProfileRestoreCleanup? = nil
+        pendingProfileRestoreCleanups: [DshProfileRestoreCleanup] = []
     ) {
         self.selectedVersion = selectedVersion
         self.appProfile = appProfile
@@ -698,7 +780,7 @@ public struct DshStateConfig: Codable, Equatable {
         self.networkExposure = browserAccessEnabled ? networkExposure : .loopback
         self.uiTheme = uiTheme
         self.cachedUserPath = cachedUserPath
-        self.pendingProfileRestoreCleanup = pendingProfileRestoreCleanup
+        self.pendingProfileRestoreCleanups = pendingProfileRestoreCleanups
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -714,6 +796,8 @@ public struct DshStateConfig: Codable, Equatable {
         case networkExposure
         case uiTheme
         case cachedUserPath
+        case pendingProfileRestoreCleanups
+        /// Decode-only legacy key: the pre-collection single-slot record.
         case pendingProfileRestoreCleanup
     }
 
@@ -749,10 +833,22 @@ public struct DshStateConfig: Codable, Equatable {
         self.networkExposure = self.browserAccessEnabled ? decodedExposure : .loopback
         self.uiTheme = try container.decodeIfPresent(String.self, forKey: .uiTheme) ?? "default"
         self.cachedUserPath = try container.decodeIfPresent(String.self, forKey: .cachedUserPath)
-        self.pendingProfileRestoreCleanup = try container.decodeIfPresent(
+        if let cleanups = try container.decodeIfPresent(
+            [DshProfileRestoreCleanup].self,
+            forKey: .pendingProfileRestoreCleanups
+        ) {
+            self.pendingProfileRestoreCleanups = cleanups
+        } else if let legacy = try container.decodeIfPresent(
             DshProfileRestoreCleanup.self,
             forKey: .pendingProfileRestoreCleanup
-        )
+        ) {
+            // Migrate the single-slot format this app wrote before the record
+            // became a collection: dropping it would leak the retained tree
+            // forever, because nothing reclaims an unreferenced displaced tree.
+            self.pendingProfileRestoreCleanups = [legacy]
+        } else {
+            self.pendingProfileRestoreCleanups = []
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -769,10 +865,7 @@ public struct DshStateConfig: Codable, Equatable {
         try container.encode(networkExposure, forKey: .networkExposure)
         try container.encode(uiTheme, forKey: .uiTheme)
         try container.encodeIfPresent(cachedUserPath, forKey: .cachedUserPath)
-        try container.encodeIfPresent(
-            pendingProfileRestoreCleanup,
-            forKey: .pendingProfileRestoreCleanup
-        )
+        try container.encode(pendingProfileRestoreCleanups, forKey: .pendingProfileRestoreCleanups)
     }
 
     public static let `default` = DshStateConfig()

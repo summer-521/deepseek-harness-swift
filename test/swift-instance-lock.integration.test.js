@@ -98,12 +98,34 @@ test('the instance lock serializes one Application Support root across processes
     assertRun(binaryPath, 'isolated-roots', root, 'scoped per Application Support root')
 
     // A root the process cannot write reports "unavailable" instead of
-    // pretending the lock is held, so the caller can fail open.
+    // pretending the lock is held, so the caller may fail open.
     assertRun(
       binaryPath,
       'unavailable-when-readonly',
       root,
-      'unusable root instead of blocking startup|permission probe skipped',
+      'limited environment instead of blocking startup|permission probe skipped',
+    )
+
+    // A lock path occupied by anything but this app's regular file is a hard
+    // failure: starting anyway would silently drop the single-instance
+    // guarantee that the shared state and rollback snapshots depend on.
+    assertRun(
+      binaryPath,
+      'blocked-when-directory',
+      path.join(root, 'blocked-directory'),
+      'refuses a directory at the lock path',
+    )
+    assertRun(
+      binaryPath,
+      'blocked-when-symlink',
+      path.join(root, 'blocked-symlink'),
+      'refuses a symlink at the lock path',
+    )
+    assertRun(
+      binaryPath,
+      'blocked-when-dangling-symlink',
+      path.join(root, 'blocked-dangling-symlink'),
+      'refuses a dangling symlink without creating its target',
     )
   } finally {
     fs.rmSync(moduleCachePath, { recursive: true, force: true })
@@ -127,4 +149,29 @@ test('the app takes the instance lock before touching durable state', () => {
   assert.match(appSource, /NSApp\.terminate\(nil\)/, 'a held lock must stop this launch')
   assert.match(appSource, /Instance lock unavailable, continuing without cross-process protection/)
   assert.match(infoPlist, /<key>LSMultipleInstancesProhibited<\/key>\s*\n\s*<true\/>/)
+
+  // T3: a blocked lock path must fail closed (alert + stop), while only a
+  // genuinely limited environment may continue without protection.
+  const blockedCase = appSource.indexOf('case .blocked(let detail):')
+  const unavailableCase = appSource.indexOf('case .unavailable(let detail):')
+  assert.ok(blockedCase > 0, 'AppDelegate must handle a blocked instance lock')
+  assert.ok(
+    blockedCase < unavailableCase,
+    'the blocked branch must be separate from the fail-open branch',
+  )
+  assert.match(
+    appSource.slice(blockedCase, unavailableCase),
+    /presentBlockedInstanceLockAlert\(detail\)[\s\S]*NSApp\.terminate\(nil\)/,
+    'a blocked lock path must present the reason and stop the launch',
+  )
+  assert.match(
+    appSource,
+    /private func presentBlockedInstanceLockAlert[\s\S]*DshInstanceLock\.fileName/,
+    'the blocked-launch alert must name the lock file the user has to fix',
+  )
+  assert.match(
+    read('Sources/Service/DshInstanceLock.swift'),
+    /case EACCES, EPERM, EROFS, ENOSPC:[\s\S]*return \.unavailable/,
+    'only permission- and capacity-shaped errors may stay fail-open',
+  )
 })

@@ -123,6 +123,7 @@ test('P01 restart and rollback matrix stays fail-closed', () => {
       'recovery-required-missing-profile-setup',
       'recovery-required-missing-profile-recover',
     )
+    runSingle(binaryPath, 'interrupted-restore-leftover')
     runSingle(binaryPath, 'm2-rollback-selection')
     runSingle(binaryPath, 'staging-sweep')
     runSingle(binaryPath, 'selection-preserves-open-transaction')

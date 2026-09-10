@@ -39,11 +39,18 @@ public final class DshInstanceLock {
         /// Another live process holds the lock; the payload is best-effort
         /// diagnostics and may be missing.
         case heldBy(Holder?)
-        /// The lock mechanism itself is unavailable (permissions, read-only
-        /// file system, unsupported `flock`, descriptor exhaustion...).
-        /// Callers decide the policy; the app continues without cross-process
-        /// protection and records the detail, because a broken lock file must
-        /// not make the app impossible to start.
+        /// The lock cannot be established for a reason that does **not**
+        /// describe an environment limitation: the lock path is occupied by
+        /// something that is not this app's regular lock file (directory,
+        /// symlink, socket...), or `open`/`flock` failed for an unexpected
+        /// reason. Starting anyway would silently drop the single-instance
+        /// guarantee, so callers must fail closed.
+        case blocked(String)
+        /// The environment cannot support the lock (read-only volume, no write
+        /// permission, no space). Reading and using an existing state is still
+        /// possible — and a second instance could not persist either — so
+        /// callers continue without cross-process protection and record the
+        /// detail rather than making the app impossible to start.
         case unavailable(String)
     }
 
@@ -74,11 +81,26 @@ public final class DshInstanceLock {
             }
         }
         let url = directory.appendingPathComponent(fileName, isDirectory: false)
+        // `lstat` deliberately: a regular file is the only shape this app ever
+        // creates, and it is the only shape `flock` can meaningfully protect.
+        // A symlink would redirect the lock to an unrelated inode (or, with
+        // `O_CREAT`, create the link target), and a directory fails at `open`
+        // with a misleading errno — both are reports of a sabotaged or foreign
+        // lock path, not of a limited environment.
+        var info = stat()
+        let lstatResult = url.path.withCString { lstat($0, &info) }
+        if lstatResult == 0, (info.st_mode & S_IFMT) != S_IFREG {
+            return .blocked(
+                "实例锁路径被非普通文件占用（\(Self.describe(info.st_mode))）：\(url.path)。"
+                    + "请移除该对象后重新启动。"
+            )
+        }
         // O_CLOEXEC matters: without it the managed Node child could inherit
         // the descriptor and keep the lock held after the app itself died.
         let descriptor = open(url.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
         guard descriptor >= 0 else {
-            return .unavailable("无法打开实例锁文件（errno \(errno)）")
+            let code = errno
+            return Self.failure(code: code, "无法打开实例锁文件", url: url)
         }
         if flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
             let code = errno
@@ -87,11 +109,36 @@ public final class DshInstanceLock {
             if code == EWOULDBLOCK {
                 return .heldBy(existingHolder)
             }
-            return .unavailable("无法获取实例锁（errno \(code)）")
+            return Self.failure(code: code, "无法获取实例锁", url: url)
         }
         // The lock is ours; the payload is best-effort diagnostics only.
         writeHolder(holder, to: descriptor)
         return .acquired(DshInstanceLock(descriptor: descriptor, url: url))
+    }
+
+    /// Classify an `open`/`flock` failure. Permission- and capacity-shaped
+    /// errors describe an environment that cannot hold the lock at all (and
+    /// that equally cannot persist a second instance's state), so they stay
+    /// recoverable; everything else means the lock path itself is unusable and
+    /// must stop startup.
+    private static func failure(code: Int32, _ detail: String, url: URL) -> Acquisition {
+        switch code {
+        case EACCES, EPERM, EROFS, ENOSPC:
+            return .unavailable("\(detail)（errno \(code)）：\(url.path)")
+        default:
+            return .blocked("\(detail)（errno \(code)）：\(url.path)")
+        }
+    }
+
+    private static func describe(_ mode: mode_t) -> String {
+        switch mode & S_IFMT {
+        case S_IFDIR: return "目录"
+        case S_IFLNK: return "符号链接"
+        case S_IFIFO: return "管道"
+        case S_IFSOCK: return "套接字"
+        case S_IFCHR, S_IFBLK: return "设备文件"
+        default: return "类型 \(mode & S_IFMT)"
+        }
     }
 
     /// Release the lock explicitly (process exit does this anyway).

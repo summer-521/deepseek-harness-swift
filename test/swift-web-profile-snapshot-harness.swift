@@ -129,6 +129,161 @@ struct WebProfileSnapshotHarness {
         try await manager.deleteWebProfileSnapshot(missingSnapshotID)
         require(manager.bootstrapReadiness(at: profile) == .freshEmpty, "An absent Profile must be classified as fresh")
 
+        // An interrupted restore moves the live Profile aside and leaves a
+        // partial copy at the canonical path. The resumed attempt must not
+        // delete that leftover before the replacement content is verified: it
+        // is the only complete copy left. Here the snapshot content is gone, so
+        // the restore must fail *and* leave the Profile at its pre-restore
+        // state instead of keeping the partial tree.
+        let interruptedProfile = root.appendingPathComponent("profiles/interrupted-restore-web", isDirectory: true)
+        try fileManager.createDirectory(
+            at: interruptedProfile.appendingPathComponent("node_modules/plugin", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data(#"{"dependencies":{"plugin":"1.0.0"}}"#.utf8)
+            .write(to: interruptedProfile.appendingPathComponent("package.json"), options: .atomic)
+        try Data("before".utf8)
+            .write(to: interruptedProfile.appendingPathComponent("node_modules/plugin/marker"), options: .atomic)
+        let interruptedSnapshotID = try await manager.createWebProfileSnapshot(
+            profile: .web,
+            profileDirectory: interruptedProfile
+        )
+        let interruptedDisplaced = DshPluginManager.displacedProfileRestoreURL(
+            profileDirectory: interruptedProfile,
+            snapshotID: interruptedSnapshotID
+        )
+        try fileManager.moveItem(at: interruptedProfile, to: interruptedDisplaced)
+        try fileManager.createDirectory(at: interruptedProfile, withIntermediateDirectories: true)
+        try Data("partial".utf8)
+            .write(to: interruptedProfile.appendingPathComponent("partial-copy"), options: .atomic)
+        // The snapshot directory exists but its content copy is gone, and no
+        // "was missing" marker was written, so the restore must refuse (-33).
+        let interruptedSnapshotURL = DshStateManager.appSupportDirectory
+            .appendingPathComponent("dsh-runtime-profile-snapshots", isDirectory: true)
+            .appendingPathComponent(interruptedSnapshotID, isDirectory: true)
+        try fileManager.removeItem(at: interruptedSnapshotURL.appendingPathComponent("profile", isDirectory: true))
+        var interruptedError: Error?
+        do {
+            try await manager.restoreWebProfileSnapshot(
+                interruptedSnapshotID,
+                profile: .web,
+                profileDirectory: interruptedProfile
+            )
+        } catch {
+            interruptedError = error
+        }
+        require(interruptedError != nil, "a snapshot without content must fail the restore")
+        let recoveredPackage = (try? String(
+            contentsOf: interruptedProfile.appendingPathComponent("package.json"),
+            encoding: .utf8
+        )) ?? ""
+        require(
+            recoveredPackage.contains("1.0.0"),
+            "a failed resumed restore must keep the complete pre-restore Profile, not the partial copy"
+        )
+        require(
+            !fileManager.fileExists(atPath: interruptedProfile.appendingPathComponent("partial-copy").path),
+            "the partial copy from the interrupted attempt must not survive as the Profile"
+        )
+        require(
+            !fileManager.fileExists(atPath: interruptedDisplaced.path),
+            "the complete leftover must be put back in place, never stranded"
+        )
+        try await manager.deleteWebProfileSnapshot(interruptedSnapshotID)
+
+        // The same shape with an intact snapshot must complete: the canonical
+        // path is replaced by a fresh copy of the snapshot content (never nested
+        // inside the partial tree) and only then is the leftover reclaimed.
+        let resumedProfile = root.appendingPathComponent("profiles/resumed-restore-web", isDirectory: true)
+        try fileManager.createDirectory(
+            at: resumedProfile.appendingPathComponent("node_modules/plugin", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data(#"{"dependencies":{"plugin":"1.0.0"}}"#.utf8)
+            .write(to: resumedProfile.appendingPathComponent("package.json"), options: .atomic)
+        try Data("before".utf8)
+            .write(to: resumedProfile.appendingPathComponent("node_modules/plugin/marker"), options: .atomic)
+        let resumedSnapshotID = try await manager.createWebProfileSnapshot(
+            profile: .web,
+            profileDirectory: resumedProfile
+        )
+        let resumedDisplaced = DshPluginManager.displacedProfileRestoreURL(
+            profileDirectory: resumedProfile,
+            snapshotID: resumedSnapshotID
+        )
+        try fileManager.moveItem(at: resumedProfile, to: resumedDisplaced)
+        try fileManager.createDirectory(at: resumedProfile, withIntermediateDirectories: true)
+        try Data("partial".utf8)
+            .write(to: resumedProfile.appendingPathComponent("partial-copy"), options: .atomic)
+        let resumedOutcome = try await manager.restoreWebProfileSnapshot(
+            resumedSnapshotID,
+            profile: .web,
+            profileDirectory: resumedProfile
+        )
+        require(resumedOutcome == .restored, "a resumed restore with complete content must report a clean restore")
+        let resumedPackage = try String(
+            contentsOf: resumedProfile.appendingPathComponent("package.json"),
+            encoding: .utf8
+        )
+        require(resumedPackage.contains("1.0.0"), "the resumed restore must apply the snapshot content")
+        require(
+            !fileManager.fileExists(atPath: resumedProfile.appendingPathComponent("profile").path),
+            "the snapshot content must not be nested inside the partial tree"
+        )
+        require(
+            !fileManager.fileExists(atPath: resumedProfile.appendingPathComponent("partial-copy").path),
+            "the partial copy must not survive a successful restore"
+        )
+        require(
+            !fileManager.fileExists(atPath: resumedDisplaced.path),
+            "a successful resumed restore must reclaim its leftover"
+        )
+        try await manager.deleteWebProfileSnapshot(resumedSnapshotID)
+
+        // R12: the reclamation entry point validates the identity itself,
+        // because the path comes from user-writable state.
+        let reclaimRoot = root.appendingPathComponent("profiles-reclaim", isDirectory: true)
+        try fileManager.createDirectory(at: reclaimRoot, withIntermediateDirectories: true)
+        let wellFormedTree = reclaimRoot.appendingPathComponent(
+            DshProfileRestoreCleanup.displacedNamePrefix + "reclaim-id",
+            isDirectory: true
+        )
+        try fileManager.createDirectory(at: wellFormedTree, withIntermediateDirectories: true)
+        let foreignTree = reclaimRoot.appendingPathComponent(
+            DshProfileRestoreCleanup.displacedNamePrefix + "other-id",
+            isDirectory: true
+        )
+        try fileManager.createDirectory(at: foreignTree, withIntermediateDirectories: true)
+        let mismatchReclaimed = await manager.removeDisplacedProfileTree(
+            at: foreignTree,
+            expectedSnapshotID: "reclaim-id"
+        )
+        require(!mismatchReclaimed, "a recorded path with another snapshot id must be refused")
+        require(fileManager.fileExists(atPath: foreignTree.path), "a refused reclamation must leave the tree untouched")
+        let symlinkTree = reclaimRoot.appendingPathComponent(
+            DshProfileRestoreCleanup.displacedNamePrefix + "link-id",
+            isDirectory: true
+        )
+        try fileManager.createSymbolicLink(atPath: symlinkTree.path, withDestinationPath: wellFormedTree.path)
+        let symlinkReclaimed = await manager.removeDisplacedProfileTree(
+            at: symlinkTree,
+            expectedSnapshotID: "link-id"
+        )
+        require(!symlinkReclaimed, "a symlink at the recorded path must be refused")
+        require(fileManager.fileExists(atPath: wellFormedTree.path), "the symlink target must survive")
+        require(
+            (try? fileManager.destinationOfSymbolicLink(atPath: symlinkTree.path)) != nil,
+            "a refused reclamation must not even unlink the symlink"
+        )
+        try? fileManager.removeItem(at: symlinkTree)
+        let reclaimed = await manager.removeDisplacedProfileTree(
+            at: wellFormedTree,
+            expectedSnapshotID: "reclaim-id"
+        )
+        require(reclaimed, "a well-formed displaced tree must be reclaimed")
+        require(!fileManager.fileExists(atPath: wellFormedTree.path), "a reclaimed tree must be gone")
+        try? fileManager.removeItem(at: reclaimRoot)
+
         let blockedProfile = root.appendingPathComponent("profiles/existing-uninitialized", isDirectory: true)
         let blockedPayload = blockedProfile.appendingPathComponent("node_modules/user-package/keep", isDirectory: false)
         try fileManager.createDirectory(at: blockedPayload.deletingLastPathComponent(), withIntermediateDirectories: true)

@@ -984,6 +984,8 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                 }
             }
             SettingsViewModel.shared.finishProfileRestoreCleanup(
+                profile: context.profile,
+                snapshotID: snapshotID,
                 leftover: restoreOutcome.displacedLeftover
             )
             // The Profile is restored either way; a displaced leftover is

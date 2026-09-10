@@ -61,6 +61,33 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// The lock path exists but cannot be this app's lock file (a directory or
+    /// symlink planted at `dsh-instance.lock`, or an unexpected `open`/`flock`
+    /// failure). This is deliberately fatal: starting anyway would run without
+    /// the single-instance protection that the state file, the shared Profile
+    /// tree and the rollback snapshots depend on.
+    private func presentBlockedInstanceLockAlert(_ detail: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "无法建立实例锁，已停止启动"
+        alert.informativeText = """
+        \(detail)
+
+        应用数据目录中的 \(DshInstanceLock.fileName) 不是 DSH 创建的普通锁文件，或锁调用异常，因此无法保证“同一份应用数据只有一个实例”。
+
+        继续启动会让两个实例互相覆盖状态、并发修改同一份 Profile，并可能删除对方的事务回滚点，所以本次启动已停止。
+
+        请在“访达”中前往 \(DshStateManager.appSupportDirectory.path)，删除或重命名该对象后重新打开 DSH。若该对象不是你有意创建的，请先确认是否有其他程序在干预该目录。
+        """
+        alert.addButton(withTitle: "退出")
+        alert.addButton(withTitle: "复制诊断信息")
+        if alert.runModal() == .alertSecondButtonReturn {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(detail, forType: .string)
+        }
+    }
+
     private static let holderTimestampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .short
@@ -90,9 +117,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             presentAlreadyRunningInstanceAlert(holder)
             NSApp.terminate(nil)
             return
+        case .blocked(let detail):
+            // Fail closed: the lock path is occupied by something that is not
+            // this app's lock file, or the lock call failed for an unexpected
+            // reason. Continuing would silently drop the single-instance
+            // guarantee that protects the shared state, Profile tree, port and
+            // rollback snapshots, and a blocked path is actionable for the
+            // user (unlike a limited environment, see `.unavailable`).
+            presentBlockedInstanceLockAlert(detail)
+            NSApp.terminate(nil)
+            return
         case .unavailable(let detail):
-            // Fail open: a broken lock file (permissions, read-only volume,
-            // unsupported flock) must not make the app impossible to start.
+            // Fail open: a genuinely limited environment (read-only volume, no
+            // write permission, no space) must not make the app impossible to
+            // start, and a second instance could not persist its state either.
             // The double-instance risk is recorded so it stays diagnosable.
             print("[AppDelegate] Instance lock unavailable, continuing without cross-process protection:", detail)
         }

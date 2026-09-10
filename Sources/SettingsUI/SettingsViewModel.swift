@@ -221,11 +221,15 @@ public final class SettingsViewModel: ObservableObject {
     /// healthy start. Keep that cleanup safety window from accepting another
     /// Runtime update, which would replace the recorded previous descriptor.
     /// Plugin and ordinary settings mutations remain available during it.
+    /// A plugin operation in flight disables it too: both hold the same runtime
+    /// gate, and queueing an update behind a plugin transaction would silently
+    /// reorder the user's two actions.
     public var runtimeUpdateAllowed: Bool {
         let state = DshStateManager.shared.current
         return pluginMutationsAllowed
             && state.appProfile == .desktop
             && appProfile == .desktop
+            && !isOperatingPlugin
             && DshRuntimeMutationGate.allowsRuntimeUpdate(state)
     }
 
@@ -415,6 +419,19 @@ public final class SettingsViewModel: ObservableObject {
         targetPackages: [String] = [],
         ignoringMinimumReleaseAge: Bool = false
     ) async throws -> DshPluginOperationResult {
+        // T1: the entry-point gates (`pluginWritesAllowed`) are evaluated
+        // before this task queues on the runtime gate, so the state can have
+        // moved on by the time it runs: a Runtime update that was already in
+        // flight can reach `.confirmed` while the task waits, and a confirmed
+        // transaction still holds the rollback snapshot for the very Profile
+        // tree this operation is about to mutate. A successful mutation there
+        // is silently reverted by a later rollback, which is exactly the
+        // failure the read-only confirmation window exists to prevent. Re-check
+        // the Profile-tree gate here — inside the gate and before any side
+        // effect — instead of trusting the pre-queue decision.
+        guard DshRuntimeMutationGate.allowsProfileTreeMutation(DshStateManager.shared.current) else {
+            throw DshPluginOperationError.runtimeOrProfileRecoveryPending
+        }
         guard context.isFresh(in: DshStateManager.shared.current) else {
             throw DshLaunchContextError.staleContext
         }
@@ -870,21 +887,34 @@ public final class SettingsViewModel: ObservableObject {
     /// plugins and shared credentials are never removed.
     public func recoverPendingProfileSwitch() async throws {
         // A state written by an older build can carry a Profile switch while a
-        // Runtime transaction (rollback) belongs to a different Profile. The
-        // retained snapshot belongs to the transaction's Profile, so make that
-        // Profile durable before any recovery reads the state. This repair used
-        // to live in `loadFromState` with a discarded Result; it now runs in the
-        // throwing startup chain, so a failed write blocks startup instead of
-        // being silently ignored.
+        // Runtime transaction belongs to a different Profile. The retained
+        // snapshot belongs to the transaction's Profile, so make that Profile
+        // durable before any recovery reads the state. The repair covers every
+        // open, owned transaction — not only one with a pending descriptor: a
+        // confirmed transaction whose `pending` was already cleared is just as
+        // stuck (T9), and it used to skip this repair entirely. This repair
+        // used to live in `loadFromState` with a discarded Result; it now runs
+        // in the throwing startup chain, so a failed write blocks startup
+        // instead of being silently ignored.
         let existing = DshStateManager.shared.current
-        if existing.runtimeState.pending != nil,
-           existing.appProfile != existing.runtimeState.profile {
+        if let repairTarget = DshRuntimeTransactionOwnership.profileRepairTarget(
+            runtime: existing.runtimeState,
+            appProfile: existing.appProfile,
+            hasPendingProfileSwitch: existing.pendingProfileSwitch != nil
+        ) {
             try DshStateManager.shared.updateOrThrow { state in
-                guard state.runtimeState.pending != nil else { return }
-                state.appProfile = state.runtimeState.profile
+                // Re-evaluate under the write lock: the decision must hold for
+                // the state that is actually persisted.
+                guard DshRuntimeTransactionOwnership.profileRepairTarget(
+                    runtime: state.runtimeState,
+                    appProfile: state.appProfile,
+                    hasPendingProfileSwitch: state.pendingProfileSwitch != nil
+                ) != nil else { return }
+                state.appProfile = repairTarget
             }
-            self.appProfile = existing.runtimeState.profile
-            self.alertMessage = "检测到未完成的 Runtime 回滚，已切回 \(existing.runtimeState.profile.rawValue) Profile 以保护 Profile 数据。"
+            let repaired = DshStateManager.shared.current.appProfile
+            self.appProfile = repaired
+            self.alertMessage = "检测到未完成的 Runtime 事务，已切回 \(repaired.rawValue) Profile 以保护 Profile 数据。"
         }
 
         let state = DshStateManager.shared.current
@@ -1652,7 +1682,11 @@ public final class SettingsViewModel: ObservableObject {
                             self.installProgressDetail = progress.detail.map(DshSettingsUIMessage.safe)
                         }
                     }
-                    finishProfileRestoreCleanup(leftover: restoreOutcome.displacedLeftover)
+                    finishProfileRestoreCleanup(
+                        profile: snapshotProfile,
+                        snapshotID: snapshotID,
+                        leftover: restoreOutcome.displacedLeftover
+                    )
                     if let leftover = restoreOutcome.displacedLeftover {
                         self.alertMessage =
                             "web Profile 已恢复，但旧的 displaced 副本删除失败，仍保留在：\(DshSettingsUIMessage.safe(leftover.path))。确认不需要后可在访达中手动删除。"
@@ -1904,12 +1938,21 @@ public final class SettingsViewModel: ObservableObject {
     ) {
         do {
             try DshStateManager.shared.updateOrThrow { state in
-                state.pendingProfileRestoreCleanup = DshProfileRestoreCleanup(
+                let record = DshProfileRestoreCleanup(
                     profile: profile,
                     snapshotID: snapshotID,
                     displacedPath: displacedPath,
                     completed: false
                 )
+                // R12: never overwrite a different debt. Each record is the only
+                // reference to a retained tree that no prefix sweep may touch, so
+                // dropping one would leak it permanently. Re-recording the same
+                // identity restarts its completion proof, which is correct: the
+                // restore for that snapshot is running again.
+                state.pendingProfileRestoreCleanups.removeAll {
+                    $0.matches(profile: profile, snapshotID: snapshotID)
+                }
+                state.pendingProfileRestoreCleanups.append(record)
             }
         } catch {
             print("[SettingsViewModel] Failed to record Profile restore cleanup debt:", error)
@@ -1919,16 +1962,26 @@ public final class SettingsViewModel: ObservableObject {
     /// Settle the debt once the restore returned. A restore that removed its
     /// displaced tree clears the record; a retained leftover keeps it with the
     /// durable completion proof, so the next startup may reclaim it.
-    public func finishProfileRestoreCleanup(leftover: URL?) {
+    public func finishProfileRestoreCleanup(
+        profile: DshAppProfile,
+        snapshotID: String,
+        leftover: URL?
+    ) {
         do {
             try DshStateManager.shared.updateOrThrow { state in
-                guard var cleanup = state.pendingProfileRestoreCleanup else { return }
+                let index = state.pendingProfileRestoreCleanups.firstIndex {
+                    $0.matches(profile: profile, snapshotID: snapshotID)
+                }
+                guard let index else { return }
                 if let leftover {
-                    cleanup.completed = true
-                    cleanup.displacedPath = leftover.standardizedFileURL.path
-                    state.pendingProfileRestoreCleanup = cleanup
+                    // The restore completed; the tree it displaced could not be
+                    // removed. Keep it as completed debt so a later startup pass
+                    // may reclaim it.
+                    state.pendingProfileRestoreCleanups[index].completed = true
+                    state.pendingProfileRestoreCleanups[index].displacedPath =
+                        leftover.standardizedFileURL.path
                 } else {
-                    state.pendingProfileRestoreCleanup = nil
+                    state.pendingProfileRestoreCleanups.remove(at: index)
                 }
             }
         } catch {
@@ -1943,27 +1996,49 @@ public final class SettingsViewModel: ObservableObject {
     /// reported instead.
     public func retryPendingProfileRestoreCleanup() async throws {
         let state = DshStateManager.shared.current
-        guard let cleanup = state.pendingProfileRestoreCleanup else { return }
-        let canonicalProfileExists = FileManager.default.fileExists(
-            atPath: DshLaunchContext.profileDirectory(for: cleanup.profile).path
-        )
-        guard DshProfileRestoreCleanup.mayReclaim(
-            cleanup,
-            canonicalProfileExists: canonicalProfileExists
-        ) else {
-            alertMessage = "检测到未确认完成的 Profile 恢复遗留副本（\(cleanup.displacedPath)）：在恢复确认完成前不会自动删除；如确认不再需要，可手动删除。"
-            return
+        guard !state.pendingProfileRestoreCleanups.isEmpty else { return }
+        var retained: [String] = []
+        var failed: [String] = []
+        for cleanup in state.pendingProfileRestoreCleanups {
+            // Every check is derived from the record itself, never from the
+            // current DSH_HOME (R12): the record lives in Application Support,
+            // which is shared by every DSH_HOME, so the canonical Profile of a
+            // *different* home must not authorise deleting this tree.
+            let canonicalIsRealDirectory = DshPluginManager.isRealDirectory(
+                at: cleanup.canonicalProfileURL
+            )
+            guard DshProfileRestoreCleanup.mayReclaim(
+                cleanup,
+                canonicalProfileIsRealDirectory: canonicalIsRealDirectory
+            ) else {
+                retained.append(cleanup.displacedPath)
+                continue
+            }
+            let reclaimed = await DshPluginManager.shared.removeDisplacedProfileTree(
+                at: cleanup.displacedURL,
+                expectedSnapshotID: cleanup.snapshotID
+            )
+            guard reclaimed else {
+                failed.append(cleanup.displacedPath)
+                continue
+            }
+            try DshStateManager.shared.updateOrThrow { state in
+                state.pendingProfileRestoreCleanups.removeAll { $0 == cleanup }
+            }
         }
-        let reclaimed = await DshPluginManager.shared.removeDisplacedProfileTree(
-            at: URL(fileURLWithPath: cleanup.displacedPath, isDirectory: true)
-        )
-        guard reclaimed else {
-            alertMessage = "Profile 恢复遗留副本删除失败，仍保留在：\(cleanup.displacedPath)。确认不需要后可在访达中手动删除。"
-            return
+        var notes: [String] = []
+        if !retained.isEmpty {
+            notes.append(
+                "检测到未确认完成的 Profile 恢复遗留副本（\(retained.joined(separator: "、"))）：在恢复确认完成前不会自动删除；如确认不再需要，可手动删除。"
+            )
         }
-        try DshStateManager.shared.updateOrThrow { state in
-            guard state.pendingProfileRestoreCleanup == cleanup else { return }
-            state.pendingProfileRestoreCleanup = nil
+        if !failed.isEmpty {
+            notes.append(
+                "Profile 恢复遗留副本删除失败，仍保留在：\(failed.joined(separator: "、"))。确认不需要后可在访达中手动删除。"
+            )
+        }
+        if !notes.isEmpty {
+            alertMessage = notes.joined(separator: "\n")
         }
     }
 
@@ -2099,7 +2174,10 @@ public final class SettingsViewModel: ObservableObject {
     }
 
     private func runRuntimeUpdate(_ item: DshVersionItem, isAutomatic: Bool = false) async {
-        guard pluginMutationsAllowed, !isUpdatingRuntime else { return }
+        // A plugin operation holds the same runtime gate for its whole
+        // duration; queueing an update behind it would silently reorder the
+        // user's two actions, so wait for the plugin operation to finish.
+        guard pluginMutationsAllowed, !isUpdatingRuntime, !isOperatingPlugin else { return }
         guard runtimeUpdateAllowed else { return }
         guard DshStateManager.shared.current.appProfile == .desktop else {
             alertMessage = "web Profile 与终端共享，暂不允许升级 DSH Runtime；请切回 desktop Profile。"
@@ -2678,7 +2756,11 @@ public final class SettingsViewModel: ObservableObject {
 
     @discardableResult
     private func startPluginRemove(name: String) -> Bool {
-        guard pluginMutationsAllowed, !isOperatingPlugin, !isSwitchingProfile else { return false }
+        // T1: `pluginWritesAllowed` (not the weaker `pluginMutationsAllowed`)
+        // is the Profile-tree gate every other plugin entry point uses; without
+        // it a confirmed-Runtime window could uninstall a plugin whose rollback
+        // snapshot is still live.
+        guard pluginWritesAllowed, !isOperatingPlugin, !isSwitchingProfile else { return false }
         clearRetryablePluginOperation()
         isOperatingPlugin = true
         clearPluginStatus()
