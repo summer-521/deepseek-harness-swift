@@ -183,19 +183,62 @@ test('version settings expose only one-way npm latest updates', () => {
   assert.doesNotMatch(VERSIONS_VIEW_SOURCE, /安装此版本/)
 })
 
-test('the running Runtime channel is independent from the update-channel picker', () => {
+test('the running Runtime channel is the recorded install source, not the picker', () => {
+  // npm can serve one build from several dist-tags (0.1.5-rc.1 is both
+  // `latest` and `next`), so the badge must show what the install recorded and
+  // only guess from the version string for descriptors written before that.
+  assert.match(STATE_SOURCE, /public let channel: DshRuntimeChannel\?/)
+  assert.match(STATE_SOURCE, /public var activeChannel: DshRuntimeChannel\?/)
+  assert.match(
+    STATE_SOURCE,
+    /return active\.channel \?\? DshRuntimeChannel\.inferred\(from: active\.version\)/
+  )
   assert.match(STATE_SOURCE, /public static func inferred\(from version: String\) -> DshRuntimeChannel/)
-  assert.match(STATE_SOURCE, /case "alpha":\s*return \.alpha/)
-  assert.match(STATE_SOURCE, /case "rc":\s*return \.next/)
-  assert.match(VERSIONS_VIEW_SOURCE, /private var activeChannelName: String/)
-  assert.match(VERSIONS_VIEW_SOURCE, /DshRuntimeChannel\.inferred\(from: currentVersion\)/)
+  // The install path records the channel while it builds the candidate.
+  assert.match(
+    SETTINGS_SOURCE,
+    /NpmRuntimeDescriptor\(\s*version: item\.version,\s*registry: registry,\s*integrity: integrity,/
+  )
+  assert.match(SETTINGS_SOURCE, /channel: state\.runtimeState\.channel/)
+  // A re-sync of an already installed Runtime must carry the source forward
+  // instead of dropping it back to the version-string guess.
+  assert.match(VERSION_MANAGER_SOURCE, /channel: state\.runtimeState\.active\?\.channel/)
+  assert.match(VERSIONS_VIEW_SOURCE, /private var activeChannelName: String\?/)
+  assert.match(VERSIONS_VIEW_SOURCE, /viewModel\.activeRuntimeChannel\?\.rawValue/)
+  assert.match(SETTINGS_SOURCE, /self\.activeRuntimeChannel = state\.runtimeState\.activeChannel/)
+
+  // Legacy installs are backfilled only from an unambiguous single npm tag;
+  // a build published under several tags keeps the honest fallback instead.
+  assert.match(STATE_SOURCE, /public static func installSourceBackfill\(/)
+  assert.match(STATE_SOURCE, /catalogTagsForVersion tags: \[String\]/)
+  assert.match(SETTINGS_SOURCE, /private func backfillActiveRuntimeChannel\(from catalog: \[DshVersionItem\]\)/)
+  assert.match(SETTINGS_SOURCE, /DshRuntimeState\.installSourceBackfill\(/)
+  assert.match(SETTINGS_SOURCE, /backfillActiveRuntimeChannel\(from: res\.versions\)/)
+  const backfill = SETTINGS_SOURCE.slice(
+    SETTINGS_SOURCE.indexOf('private func backfillActiveRuntimeChannel'),
+    SETTINGS_SOURCE.indexOf('public func refreshPlugins()')
+  )
+  assert.match(backfill, /active\.channel == nil/)
+  assert.match(backfill, /current\.channel == nil/)
+  assert.match(backfill, /loadFromState\(\)/)
+  const predicate = STATE_SOURCE.slice(
+    STATE_SOURCE.indexOf('public static func installSourceBackfill'),
+    STATE_SOURCE.indexOf('public static let `default` = DshRuntimeState()')
+  )
+  assert.match(predicate, /active\.channel == nil/)
+  assert.match(predicate, /tags\.count == 1/)
 
   const runtimeCard = VERSIONS_VIEW_SOURCE.slice(
     VERSIONS_VIEW_SOURCE.indexOf('"DSH Runtime"'),
     VERSIONS_VIEW_SOURCE.indexOf('if viewModel.isInstallingVersion')
   )
-  assert.match(runtimeCard, /activeChannelName/)
+  assert.match(runtimeCard, /sourceDescription/)
   assert.doesNotMatch(runtimeCard, /channelName/)
+  // The card text itself has to be built from the recorded install source.
+  assert.match(
+    VERSIONS_VIEW_SOURCE,
+    /private var sourceDescription: String \{[\s\S]{0,200}activeChannelName/
+  )
 })
 
 test('plugin install asks before bypassing the minimum release age policy', () => {

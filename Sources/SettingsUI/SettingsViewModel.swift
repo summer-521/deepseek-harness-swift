@@ -152,6 +152,10 @@ public final class SettingsViewModel: ObservableObject {
     @Published public var alphaVersion: String? = nil
     @Published public var autoFollowLatest: Bool = false
     @Published public var runtimeChannel: DshRuntimeChannel = .latest
+    /// npm tag channel the running Runtime was installed from, with a
+    /// version-string fallback for installs recorded before the descriptor
+    /// stored it. `nil` means no Runtime is installed.
+    @Published public private(set) var activeRuntimeChannel: DshRuntimeChannel?
     @Published public var npmRegistry: String = DshVersionManager.defaultRegistry
     @Published public var appProfile: DshAppProfile = .desktop
     @Published public var dshPort: Int = 3080
@@ -843,6 +847,10 @@ public final class SettingsViewModel: ObservableObject {
         self.appProfile = effectiveProfile
         self.isRuntimeRecoveryPending = hasPendingRuntimeRecovery
         self.runtimeChannel = state.runtimeState.channel
+        // The running Runtime's install source is independent from the update
+        // preference above; the settings card must show what is installed, not
+        // what the user selected for the next update.
+        self.activeRuntimeChannel = state.runtimeState.activeChannel
         self.autoFollowLatest = self.appProfile == .desktop
             && self.runtimeChannel == .latest
             && state.runtimeState.updatePolicy == .automaticStable
@@ -1077,6 +1085,7 @@ public final class SettingsViewModel: ObservableObject {
             self.alphaVersion = res.alpha
             self.availableVersions = res.versions
             self.installedVersions = DshVersionManager.shared.listInstalledVersions()
+            backfillActiveRuntimeChannel(from: res.versions)
         } catch {
             if requestGeneration == catalogRequestGeneration,
                DshVersionManager.normalizedRegistry(npmRegistry) == registry {
@@ -1084,6 +1093,41 @@ public final class SettingsViewModel: ObservableObject {
             }
         }
         await holdRefreshAnimation(since: startedAt)
+    }
+
+    /// Record the install source of an already installed Runtime that predates
+    /// the descriptor's `channel` field, but only when the Registry publishes
+    /// that exact version under a single npm tag. See
+    /// `DshRuntimeState.installSourceBackfill` for why several tags stay
+    /// unrecorded.
+    private func backfillActiveRuntimeChannel(from catalog: [DshVersionItem]) {
+        guard let active = DshStateManager.shared.current.runtimeState.active,
+              active.channel == nil,
+              let item = catalog.first(where: { $0.version == active.version }),
+              let channel = DshRuntimeState.installSourceBackfill(
+                  for: DshStateManager.shared.current.runtimeState,
+                  catalogTagsForVersion: item.tags
+              ) else { return }
+        DshStateManager.shared.update { state in
+            // Re-derive under the state lock: a Runtime update may have
+            // replaced the descriptor while the catalog request was in flight.
+            guard let current = state.runtimeState.active,
+                  current.channel == nil,
+                  current.version == active.version,
+                  DshRuntimeState.installSourceBackfill(
+                      for: state.runtimeState,
+                      catalogTagsForVersion: item.tags
+                  ) == channel else { return }
+            state.runtimeState.active = NpmRuntimeDescriptor(
+                version: current.version,
+                registry: current.registry,
+                integrity: current.integrity,
+                installedAt: current.installedAt,
+                channel: channel
+            )
+        }
+        // Re-read so the published install source reflects the durable record.
+        loadFromState()
     }
 
     public func refreshPlugins() {
@@ -2266,7 +2310,12 @@ public final class SettingsViewModel: ObservableObject {
         let candidate = NpmRuntimeDescriptor(
             version: item.version,
             registry: registry,
-            integrity: integrity
+            integrity: integrity,
+            // Record the npm tag channel this install came from. npm can
+            // publish the same build under several dist-tags (0.1.5-rc.1 is
+            // both `latest` and `next` today), so the version string alone
+            // cannot answer "where did the running Runtime come from?".
+            channel: state.runtimeState.channel
         )
 
         let transaction = DshRuntimeTransaction.begin(

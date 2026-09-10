@@ -141,6 +141,72 @@ struct StatePersistenceHarness {
             require(DshRuntimeMutationGate.allowsPluginMutation(manager.current),
                     "a stale idle transaction owner must not lock plugin mutations")
 
+        case "install-source":
+            // npm can publish one build under several dist-tags (0.1.5-rc.1 is
+            // both `latest` and `next`), so the running Runtime's channel must
+            // come from what was recorded at install time, and only fall back
+            // to the version-string inference for descriptors written before
+            // that field existed. Both directions are decoded from the exact
+            // persisted JSON so the synthesized descriptor decoder is covered.
+            let recorded = Data(
+                #"{"selectedVersion":"0.1.5-rc.1","runtimeState":{"phase":"idle","active":{"version":"0.1.5-rc.1","registry":"https://registry.npmjs.org","installedAt":810733475.41418,"channel":"latest"}}}"#.utf8
+            )
+            let recordedState = try! JSONDecoder().decode(DshStateConfig.self, from: recorded)
+            require(recordedState.runtimeState.active?.channel == .latest,
+                    "the descriptor must retain the channel recorded at install time")
+            require(recordedState.runtimeState.activeChannel == .latest,
+                    "an rc build installed from npm latest must not be reported as next")
+
+            let legacy = Data(
+                #"{"selectedVersion":"0.1.5-rc.1","runtimeState":{"phase":"idle","active":{"version":"0.1.5-rc.1","registry":"https://registry.npmjs.org","installedAt":810733475.41418}}}"#.utf8
+            )
+            let legacyState = try! JSONDecoder().decode(DshStateConfig.self, from: legacy)
+            require(legacyState.runtimeState.active?.channel == nil,
+                    "a legacy descriptor without a channel must still decode")
+            require(legacyState.runtimeState.activeChannel == .next,
+                    "a legacy rc descriptor must keep the version-string fallback")
+
+            let empty = Data(#"{"selectedVersion":null}"#.utf8)
+            let emptyState = try! JSONDecoder().decode(DshStateConfig.self, from: empty)
+            require(emptyState.runtimeState.activeChannel == nil,
+                    "a state without an active Runtime must report no install source")
+
+            // Backfilling a legacy descriptor is only allowed when the Registry
+            // publishes the running version under exactly one npm tag.
+            let singleTag = DshRuntimeState.installSourceBackfill(
+                for: legacyState.runtimeState,
+                catalogTagsForVersion: ["alpha"]
+            )
+            require(singleTag == .alpha,
+                    "a legacy descriptor with one npm tag must record that tag as its source")
+            require(DshRuntimeState.installSourceBackfill(
+                for: legacyState.runtimeState,
+                catalogTagsForVersion: ["latest", "next"]
+            ) == nil,
+                    "a version published under several tags must not be given an invented source")
+            require(DshRuntimeState.installSourceBackfill(
+                for: legacyState.runtimeState,
+                catalogTagsForVersion: ["beta"]
+            ) == nil,
+                    "a tag that is not a release channel must not be recorded")
+            require(DshRuntimeState.installSourceBackfill(
+                for: legacyState.runtimeState,
+                catalogTagsForVersion: []
+            ) == nil,
+                    "a version with no npm tag must not be given an invented source")
+            // A descriptor that already records its source is never rewritten,
+            // even when the current catalog would suggest another channel.
+            require(DshRuntimeState.installSourceBackfill(
+                for: recordedState.runtimeState,
+                catalogTagsForVersion: ["alpha"]
+            ) == nil,
+                    "a recorded install source must never be backfilled over")
+            require(DshRuntimeState.installSourceBackfill(
+                for: emptyState.runtimeState,
+                catalogTagsForVersion: ["latest"]
+            ) == nil,
+                    "a state without an active Runtime has no source to record")
+
         default:
             fatalError("unknown state persistence harness mode: \(mode)")
         }

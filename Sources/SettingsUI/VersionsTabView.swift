@@ -24,9 +24,19 @@ public struct VersionsTabView: View {
         viewModel.runtimeChannel.rawValue
     }
 
-    private var activeChannelName: String {
-        guard let currentVersion else { return "未安装" }
-        return DshRuntimeChannel.inferred(from: currentVersion).rawValue
+    /// Install source of the Runtime that is actually running. Never the
+    /// update-channel picker: that is a separate preference, and npm can serve
+    /// one version from several tags (0.1.5-rc.1 is both `latest` and `next`),
+    /// so it cannot be derived from the selection either.
+    private var activeChannelName: String? {
+        guard let currentVersion else { return nil }
+        return viewModel.activeRuntimeChannel?.rawValue
+            ?? DshRuntimeChannel.inferred(from: currentVersion).rawValue
+    }
+
+    private var sourceDescription: String {
+        guard let activeChannelName else { return "来源：npm Registry" }
+        return "来源：npm Registry · 通道：\(activeChannelName)"
     }
 
     private var channelDescription: String {
@@ -79,7 +89,7 @@ public struct VersionsTabView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(currentVersion ?? "未安装")
                             .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                        Text("来源：npm Registry · 通道：\(activeChannelName)")
+                        Text(sourceDescription)
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }

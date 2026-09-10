@@ -747,12 +747,14 @@ public final class DshVersionManager {
     private func runtimeDescriptor(
         version: String,
         registry: String? = nil,
-        integrity: String? = nil
+        integrity: String? = nil,
+        channel: DshRuntimeChannel? = nil
     ) -> NpmRuntimeDescriptor {
         NpmRuntimeDescriptor(
             version: version,
             registry: Self.normalizedRegistry(registry ?? DshStateManager.shared.current.npmRegistry),
-            integrity: integrity
+            integrity: integrity,
+            channel: channel
         )
     }
 
@@ -771,7 +773,15 @@ public final class DshVersionManager {
         guard state.runtimeState.pending == nil,
               phase == .idle || phase == .confirmed else { return }
         guard state.runtimeState.active?.version != version else { return }
-        let descriptor = runtimeDescriptor(version: version, registry: state.runtimeState.active?.registry ?? state.npmRegistry)
+        // The re-synced descriptor describes an install this app already made,
+        // so carry its recorded install source forward. Dropping it here would
+        // make the settings card fall back to guessing the channel from the
+        // version string again.
+        let descriptor = runtimeDescriptor(
+            version: version,
+            registry: state.runtimeState.active?.registry ?? state.npmRegistry,
+            channel: state.runtimeState.active?.channel
+        )
         // A confirmed cleanup window keeps its phase: re-syncing `active` must
         // not consume the second-healthy-start bookkeeping.
         let settledPhase: DshRuntimeTransactionPhase = phase == .confirmed ? .confirmed : .idle

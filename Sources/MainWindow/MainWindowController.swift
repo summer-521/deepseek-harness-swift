@@ -3797,7 +3797,10 @@ final class OnboardingViewModel: ObservableObject {
                     state.runtimeState.active = NpmRuntimeDescriptor(
                         version: latest,
                         registry: DshVersionManager.normalizedRegistry(registry),
-                        integrity: latestIntegrity
+                        integrity: latestIntegrity,
+                        // First-run onboarding resolves `catalog.latest`, so the
+                        // install source is the latest channel by construction.
+                        channel: .latest
                     )
                     state.runtimeState.pending = nil
                     state.runtimeState.phase = .idle

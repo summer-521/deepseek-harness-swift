@@ -271,12 +271,28 @@ public struct NpmRuntimeDescriptor: Codable, Equatable, Sendable {
     public let registry: String
     public let integrity: String?
     public let installedAt: Date
+    /// npm tag channel this Runtime was installed from, recorded at install
+    /// time. npm may publish one version under several dist-tags (for example
+    /// `latest` and `next` currently both resolve to an `-rc` build), so the
+    /// version string alone cannot say which channel produced an install.
+    /// `nil` means "unknown" — a descriptor written before this was recorded,
+    /// or one synthesized for a version this app never installed (first-run
+    /// recovery placeholders). Readers must fall back to
+    /// `DshRuntimeChannel.inferred(from:)` for those.
+    public let channel: DshRuntimeChannel?
 
-    public init(version: String, registry: String, integrity: String? = nil, installedAt: Date = Date()) {
+    public init(
+        version: String,
+        registry: String,
+        integrity: String? = nil,
+        installedAt: Date = Date(),
+        channel: DshRuntimeChannel? = nil
+    ) {
         self.version = version
         self.registry = registry
         self.integrity = integrity
         self.installedAt = installedAt
+        self.channel = channel
     }
 }
 
@@ -447,6 +463,35 @@ public struct DshRuntimeState: Codable, Equatable, Sendable {
         let data = (try? encoder.encode(identity)) ?? Data()
         let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         return "legacy-runtime-" + digest
+    }
+
+    /// Release channel the running Runtime came from, as shown by the
+    /// settings UI. This is deliberately separate from `channel`, which is the
+    /// user's *update* preference and may be changed at any time without
+    /// touching the installed Runtime.
+    public var activeChannel: DshRuntimeChannel? {
+        guard let active else { return nil }
+        return active.channel ?? DshRuntimeChannel.inferred(from: active.version)
+    }
+
+    /// Install source that can be recorded for an already installed Runtime
+    /// whose descriptor carries no `channel` (one written before that field
+    /// existed), or `nil` when the Registry cannot answer it.
+    ///
+    /// `tags` is the set of npm dist-tags the active version is published
+    /// under, as reported by the version catalog. Exactly one tag is
+    /// registry-stated provenance, not a guess. Several tags are deliberately
+    /// unrecordable: npm currently serves 0.1.5-rc.1 from both `latest` and
+    /// `next`, and no local evidence distinguishes those two installs after
+    /// the fact — the settings card keeps its inference fallback for them
+    /// instead of inventing a source.
+    public static func installSourceBackfill(
+        for runtime: DshRuntimeState,
+        catalogTagsForVersion tags: [String]
+    ) -> DshRuntimeChannel? {
+        guard let active = runtime.active, active.channel == nil else { return nil }
+        guard tags.count == 1, let tag = tags.first else { return nil }
+        return DshRuntimeChannel(rawValue: tag)
     }
 
     public static let `default` = DshRuntimeState()
