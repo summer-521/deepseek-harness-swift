@@ -5,31 +5,81 @@ import Darwin
 /// wider Runtime/Profile operation. Waiting callers suspend instead of
 /// blocking the main actor.
 final class DshAsyncOperationGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var isHeld = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private final class Waiter: @unchecked Sendable {
+        let continuation: CheckedContinuation<Void, Error>
+        let cancelled: CancelledFlag
 
-    func acquire() async {
-        await withCheckedContinuation { continuation in
-            var resumeImmediately = false
-            lock.lock()
-            if isHeld {
-                waiters.append(continuation)
-            } else {
-                isHeld = true
-                resumeImmediately = true
-            }
-            lock.unlock()
-
-            if resumeImmediately {
-                continuation.resume()
-            }
+        init(
+            continuation: CheckedContinuation<Void, Error>,
+            cancelled: CancelledFlag
+        ) {
+            self.continuation = continuation
+            self.cancelled = cancelled
         }
     }
 
+    private final class CancelledFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+
+        func mark() {
+            lock.lock()
+            value = true
+            lock.unlock()
+        }
+
+        var isSet: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+    }
+
+    private let lock = NSLock()
+    private var isHeld = false
+    private var waiters: [Waiter] = []
+
+    /// A waiter cancelled while queued must not run the caller's operation
+    /// once its turn arrives. The cancellation flag is set both by the waiter
+    /// itself (checked at enqueue time) and by the cancellation handler, so
+    /// the release pop can skip the waiter and resume it with
+    /// CancellationError without breaking the FIFO between live waiters.
+    func acquire() async throws {
+        let cancelled = CancelledFlag()
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                var resumeNow = false
+                lock.lock()
+                if Task.isCancelled {
+                    cancelled.mark()
+                    waiters.append(Waiter(continuation: continuation, cancelled: cancelled))
+                } else if isHeld {
+                    waiters.append(Waiter(continuation: continuation, cancelled: cancelled))
+                } else {
+                    isHeld = true
+                    resumeNow = true
+                }
+                lock.unlock()
+                if resumeNow {
+                    continuation.resume()
+                }
+            }
+        }, onCancel: {
+            // Marks this task's enqueued waiter (if it is still queued) so
+            // the release pop skips it; the waiter itself also sets the flag,
+            // so either ordering is safe.
+            cancelled.mark()
+        })
+    }
+
     func release() {
-        let next: CheckedContinuation<Void, Never>?
+        var cancelledWaiters: [Waiter] = []
+        var next: Waiter?
         lock.lock()
+        while let candidate = waiters.first, candidate.cancelled.isSet {
+            cancelledWaiters.append(candidate)
+            waiters.removeFirst()
+        }
         if waiters.isEmpty {
             isHeld = false
             next = nil
@@ -37,7 +87,10 @@ final class DshAsyncOperationGate: @unchecked Sendable {
             next = waiters.removeFirst()
         }
         lock.unlock()
-        next?.resume()
+        for waiter in cancelledWaiters {
+            waiter.continuation.resume(throwing: CancellationError())
+        }
+        next?.continuation.resume()
     }
 }
 
@@ -134,7 +187,7 @@ public final class DshService: @unchecked Sendable {
     /// pnpm cleanup when ownership cannot be established safely.
     @available(*, deprecated, message: "Use prepareForProfileMutation(context:) so the target Profile and port are immutable.")
     public func prepareForProfileMutation() async throws {
-        await startOperationGate.acquire()
+        try await startOperationGate.acquire()
         defer { startOperationGate.release() }
 
         await stopAndWait()
@@ -148,7 +201,7 @@ public final class DshService: @unchecked Sendable {
     /// refresh cannot redirect the safety check to another service.
     public func prepareForProfileMutation(context: DshLaunchContext) async throws {
         try context.validate()
-        await startOperationGate.acquire()
+        try await startOperationGate.acquire()
         defer { startOperationGate.release() }
 
         await stopAndWait()
@@ -173,7 +226,7 @@ public final class DshService: @unchecked Sendable {
     /// Start or restart the DSH service and return the protected session.
     public func start(context: DshLaunchContext) async throws -> DshServiceSession {
         try context.validate()
-        await startOperationGate.acquire()
+        try await startOperationGate.acquire()
         defer { startOperationGate.release() }
 
         let actualPort = context.port

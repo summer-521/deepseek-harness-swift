@@ -94,6 +94,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                     _ = await DshPluginManager.shared.cleanupOrphanedPluginOperationSnapshots(
                         keeping: DshPluginOperationCoordinator.shared.pendingOperation?.operationID
                     )
+                    // Disposable staging/migration/bridge leftovers stranded
+                    // by a force-quit; never touches live trees (see manager).
+                    _ = await DshPluginManager.shared.cleanupOrphanedStagingDirectories()
                 }
             } catch {
                 // Keep M1's original MainWindow startup classification for

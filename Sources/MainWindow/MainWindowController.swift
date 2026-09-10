@@ -769,7 +769,12 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             }
             return
         }
-        guard startupTask == nil else { return }
+        guard startupTask == nil else {
+            // A launch is already in flight; bring its progress surface to
+            // the front instead of silently swallowing the request.
+            showStartupSurface()
+            return
+        }
         hideOnboardingView()
         hideRecoverySurface()
         showStartupSurface()
@@ -871,7 +876,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     /// plugin mutations from interleaving profile changes or replacing the
     /// shared Web UI continuation.
     public func withRuntimeOperation<T>(_ operation: () async throws -> T) async throws -> T {
-        await runtimeOperationGate.acquire()
+        try await runtimeOperationGate.acquire()
         defer { runtimeOperationGate.release() }
         return try await operation()
     }

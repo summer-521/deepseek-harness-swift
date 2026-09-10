@@ -357,7 +357,8 @@ test('M1 launch and settings boundaries reject stale work and retain blocked con
   assert.match(WINDOW_SOURCE, /guard authenticatedSession\.context == context,[\s\S]*context\.isFresh\(in: DshStateManager\.shared\.current\)/)
   assert.match(WINDOW_SOURCE, /private var startupTask: Task<Void, Never>\?/
   )
-  assert.match(WINDOW_SOURCE, /guard startupTask == nil else \{ return \}/)
+  assert.match(WINDOW_SOURCE, /guard startupTask == nil else \{\n\s*\/\/ A launch is already in flight/)
+  assert.match(WINDOW_SOURCE, /showStartupSurface\(\)\n\s*return\n\s*\}/)
   assert.match(WINDOW_SOURCE, /DshMainWindowUIMessage\.safe/)
   assert.match(WINDOW_SOURCE, /case -7:[\s\S]*\.pluginPackageMissing/)
   assert.match(WINDOW_SOURCE, /default:[\s\S]*\.unknown, "DSH 插件操作失败，原因尚未分类。"/)

@@ -3375,6 +3375,91 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         )
     }
 
+    /// Best-effort startup sweep for disposable staging leftovers that a
+    /// force-quit can strand outside the normal deferred cleanup:
+    /// - `.swift-desktop-migration-*` under profiles/ (a copy; the legacy
+    ///   source profile is never modified, so leftover copies are safe);
+    /// - `.dsh-desktop-host-staging-*` inside a managed profile and
+    ///   `.dsh-desktop-host-previous-*` under its node_modules (the App
+    ///   bundle is the authoritative bridge source and refresh is idempotent);
+    /// - `.dsh-plugin-restore-<operationID>` under profiles/ only while the
+    ///   desktop Profile exists again (the interrupted swap completed; the
+    ///   leftover is the displaced pre-restore tree). Never touched while the
+    ///   Profile is absent — there the displaced tree is the only copy.
+    /// Everything else, including `.dsh-profile-restore-*` (whose target
+    /// profile cannot be derived from the snapshot id), is left for the
+    /// recovery surface. Each removal is best-effort and never fails startup.
+    @discardableResult
+    public func cleanupOrphanedStagingDirectories() async -> [String] {
+        await Task.detached(priority: .utility) {
+            let fileManager = FileManager.default
+            let profilesRoot = DshLaunchContext.defaultDshHome
+                .appendingPathComponent("profiles", isDirectory: true)
+            let desktopExists = fileManager.fileExists(
+                atPath: DshLaunchContext.profileDirectory(for: .desktop).path
+            )
+            var removed: [String] = []
+            guard let entries = try? fileManager.contentsOfDirectory(
+                at: profilesRoot,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ) else { return [] }
+
+            for entry in entries {
+                let name = entry.lastPathComponent
+                if name.hasPrefix(".swift-desktop-migration-") {
+                    Self.removeOrphanedStagingEntry(entry, name, &removed)
+                } else if name.hasPrefix(".dsh-plugin-restore-"), desktopExists {
+                    Self.removeOrphanedStagingEntry(entry, name, &removed)
+                }
+            }
+
+            // Bridge refresh leftovers live inside the managed profiles.
+            for profile in DshAppProfile.allCases {
+                let profileDir = DshLaunchContext.profileDirectory(for: profile)
+                guard fileManager.fileExists(atPath: profileDir.path),
+                      let contents = try? fileManager.contentsOfDirectory(
+                          at: profileDir,
+                          includingPropertiesForKeys: nil,
+                          options: [.skipsHiddenFiles]
+                      ) else { continue }
+                for entry in contents {
+                    let name = entry.lastPathComponent
+                    if name.hasPrefix(".dsh-desktop-host-staging-") {
+                        Self.removeOrphanedStagingEntry(entry, name, &removed)
+                    }
+                }
+                let nodeModules = profileDir.appendingPathComponent("node_modules", isDirectory: true)
+                if let entries = try? fileManager.contentsOfDirectory(
+                    at: nodeModules,
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                ) {
+                    for entry in entries {
+                        let name = entry.lastPathComponent
+                        if name.hasPrefix(".dsh-desktop-host-previous-") {
+                            Self.removeOrphanedStagingEntry(entry, name, &removed)
+                        }
+                    }
+                }
+            }
+            return removed
+        }.value
+    }
+
+    private static func removeOrphanedStagingEntry(
+        _ entry: URL,
+        _ name: String,
+        _ removed: inout [String]
+    ) {
+        do {
+            try FileManager.default.removeItem(at: entry)
+            removed.append(name)
+        } catch {
+            print("[DshPluginManager] Failed to remove orphaned staging directory \(name):", error)
+        }
+    }
+
     private func desktopHostOwnershipError(_ detail: String, operation: String = "清理 web Profile 桥接依赖") -> NSError {
         NSError(
             domain: "DshPluginManager",
