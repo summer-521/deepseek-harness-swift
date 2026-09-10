@@ -160,6 +160,8 @@ test('readiness requires both the loopback URL and the matching control generati
 })
 
 test('WebKit receives a strict, HttpOnly, session-only host cookie for each generation', () => {
+  assert.match(WEB_SHELL_SOURCE, /config\.websiteDataStore\s*=\s*\.nonPersistent\(\)/)
+  assert.doesNotMatch(WEB_SHELL_SOURCE, /config\.websiteDataStore\s*=\s*\.default\(\)/)
   assert.match(COOKIE_SOURCE, /dsh_swift_renderer/)
   assert.match(COOKIE_SOURCE, /isHTTPOnly/)
   assert.match(COOKIE_SOURCE, /sameSiteStrict/)
@@ -169,7 +171,8 @@ test('WebKit receives a strict, HttpOnly, session-only host cookie for each gene
   assert.match(WINDOW_SOURCE, /ensureDesktopHostPlugin\([\s\S]*profileDirectory:\s*context\.profileDirectory[\s\S]*profile:\s*context\.profile/)
   assert.match(WINDOW_SOURCE, /try\s+await\s+rendererCookieStore\.install\(for: session\)/)
   assert.match(WINDOW_SOURCE, /let firstNavigationURL = session\.endpoint\.bootstrapURL \?\? session\.originURL/)
-  assert.match(WINDOW_SOURCE, /webView\?\.\s*load\(URLRequest\(url: firstNavigationURL\)\)/)
+  assert.match(WINDOW_SOURCE, /URLRequest\([\s\S]*url:\s*firstNavigationURL,[\s\S]*cachePolicy:\s*\.reloadIgnoringLocalCacheData[\s\S]*\)/)
+  assert.match(WINDOW_SOURCE, /webView\?\.load\(bootstrapRequest\)/)
   assert.match(UPSTREAM_COOKIE_SOURCE, /dsh-auth-/)
   assert.match(UPSTREAM_COOKIE_SOURCE, /prepareForNewSession/)
   assert.match(UPSTREAM_COOKIE_SOURCE, /waitForAuthenticatedCookies/)
@@ -203,15 +206,19 @@ test('alpha Runtime health verifies the real WebKit Remote stream and can renew 
   assert.match(WINDOW_SOURCE, /restartDshServiceDuringOperation\(\)/)
   assert.match(WINDOW_SOURCE, /authenticationRequired/)
   assert.match(WINDOW_SOURCE, /self\.reloadDsh\(\)/)
+  assert.match(WINDOW_SOURCE, /reloadDshWithAuthenticationRecovery[\s\S]*?resetWebsiteDataForAuthenticationRecovery\(\)[\s\S]*?restartDshServiceDuringOperation\(\)/)
   assert.match(UPSTREAM_COOKIE_SOURCE, /public func authenticatedCookies\(for session: DshServiceSession\)/)
 })
 
-test('managed starts and plugin health verification retry one stale WebKit authentication failure', () => {
+test('managed starts, Profile switches and plugin health verification retry one stale WebKit authentication failure', () => {
   assert.match(WINDOW_SOURCE, /public func restartDshServiceWithAuthenticationRecoveryDuringOperation\(/)
   assert.match(
     WINDOW_SOURCE,
-    /restartDshServiceWithAuthenticationRecoveryDuringOperation[\s\S]*?isAuthenticationRecoveryFailure\(error\)[\s\S]*?recoveryCount < Self\.maxAutomaticAuthenticationRecoveries/,
+    /restartDshServiceWithAuthenticationRecoveryDuringOperation[\s\S]*?isAuthenticationRecoveryFailure\(error\)[\s\S]*?recoveryCount < Self\.maxAutomaticAuthenticationRecoveries[\s\S]*?resetWebsiteDataForAuthenticationRecovery\(\)/,
   )
+  assert.match(WEB_SHELL_SOURCE, /public func resetWebsiteDataForAuthenticationRecovery\(\) async/)
+  assert.match(WEB_SHELL_SOURCE, /WKWebsiteDataStore\.allWebsiteDataTypes\(\)/)
+  assert.match(WEB_SHELL_SOURCE, /modifiedSince:\s*\.distantPast/)
   assert.match(
     WINDOW_SOURCE,
     /makeStartupPluginOperationHooks[\s\S]*?restartDshServiceWithAuthenticationRecoveryDuringOperation/,
@@ -220,10 +227,15 @@ test('managed starts and plugin health verification retry one stale WebKit authe
     WINDOW_SOURCE,
     /startAndLoadDsh[\s\S]*?restartDshServiceWithAuthenticationRecoveryDuringOperation/,
   )
+  const profileSwitchBoundary = SETTINGS_SOURCE.slice(
+    SETTINGS_SOURCE.indexOf('public func setAppProfile'),
+    SETTINGS_SOURCE.indexOf('    /// Change the live Node policy', SETTINGS_SOURCE.indexOf('public func setAppProfile')),
+  )
   assert.equal(
-    (SETTINGS_SOURCE.match(/restartDshServiceWithAuthenticationRecoveryDuringOperation\(context: context\)/g) ?? []).length,
+    (profileSwitchBoundary.match(/restartDshServiceWithAuthenticationRecoveryDuringOperation\(context: context\)/g) ?? []).length,
     2,
   )
+  assert.doesNotMatch(profileSwitchBoundary, /restartDshServiceDuringOperation\(context: context\)/)
 })
 
 test('first launch bootstraps the canonical profile and installs the host before DSH starts', () => {

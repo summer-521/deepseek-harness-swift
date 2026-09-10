@@ -290,6 +290,13 @@ public final class DshWebShell {
         self.bridgeHandler = DshBridgeHandler()
 
         let config = WKWebViewConfiguration()
+        // DSH owns durable sessions and application data in its Profile. The
+        // WebView carries only the current loopback process's short-lived
+        // authentication state, so persisting website data across App
+        // launches can only retain credentials/cache state for a process that
+        // no longer exists. A fresh ephemeral store also gives bounded auth
+        // recovery a genuinely new WebKit network session.
+        config.websiteDataStore = .nonPersistent()
         config.preferences.setValue(Self.developerToolsEnabledByDefault, forKey: "developerExtrasEnabled")
 
         let userContent = WKUserContentController()
@@ -355,6 +362,23 @@ public final class DshWebShell {
     /// Disable native actions while there is no authenticated live session.
     public func clearBridgeValidationContext() {
         bridgeHandler.updateValidationContext(nil)
+    }
+
+    /// Discard every transient artifact owned by the loopback page before a
+    /// bounded authentication retry. Cookies alone are insufficient when the
+    /// WebKit network process has retained a failed redirect or origin state;
+    /// this store is ephemeral and contains no durable DSH user data.
+    public func resetWebsiteDataForAuthenticationRecovery() async {
+        webView.stopLoading()
+        let dataStore = webView.configuration.websiteDataStore
+        await withCheckedContinuation { continuation in
+            dataStore.removeData(
+                ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+                modifiedSince: .distantPast
+            ) {
+                continuation.resume()
+            }
+        }
     }
 
     public func syncTheme(_ theme: String) {

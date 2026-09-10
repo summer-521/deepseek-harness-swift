@@ -1041,7 +1041,14 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             try await self.waitForWebUIReady()
         }
         await Task.yield()
-        guard let navigation = self.webView?.load(URLRequest(url: firstNavigationURL)) else {
+        // The bootstrap URL is a one-shot credential exchange. Never satisfy
+        // it from WebKit's document cache, especially after the same loopback
+        // authority has belonged to a previous Runtime/Profile generation.
+        let bootstrapRequest = URLRequest(
+            url: firstNavigationURL,
+            cachePolicy: .reloadIgnoringLocalCacheData
+        )
+        guard let navigation = self.webView?.load(bootstrapRequest) else {
             let error = NSError(
                 domain: "DshWebUI",
                 code: -1,
@@ -1116,6 +1123,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                     throw error
                 }
                 recoveryCount += 1
+                await webShell?.resetWebsiteDataForAuthenticationRecovery()
             }
         }
     }
@@ -3070,6 +3078,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
 
                 recoveryCount += 1
                 do {
+                    await webShell?.resetWebsiteDataForAuthenticationRecovery()
                     // DshService.start() creates a new access generation and
                     // receives a fresh `dsh web:?token=...` URL. The old
                     // bootstrap URL is never retained or replayed.

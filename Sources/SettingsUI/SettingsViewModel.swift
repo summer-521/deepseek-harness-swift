@@ -2499,7 +2499,13 @@ public final class SettingsViewModel: ObservableObject {
                     if leavingSharedWeb {
                         await DshService.shared.stopAndWait()
                     }
-                    _ = try await MainWindowController.shared.restartDshServiceDuringOperation(context: context)
+                    // A Profile switch replaces the service while the shared
+                    // WebView may still be completing navigation for the old
+                    // Profile. Give that stale authentication response the
+                    // same single bounded recovery used by ordinary starts,
+                    // Runtime updates and plugin verification.
+                    _ = try await MainWindowController.shared
+                        .restartDshServiceWithAuthenticationRecoveryDuringOperation(context: context)
 
                     var cleanupError: Error?
                     var finalizingTransaction = transaction
@@ -2576,7 +2582,11 @@ public final class SettingsViewModel: ObservableObject {
                                 cleanupError = error
                             }
                         }
-                        _ = try await MainWindowController.shared.restartDshServiceDuringOperation(context: context)
+                        // Rollback crosses the same WebKit generation boundary
+                        // as the forward switch. A stale response must not
+                        // prevent the known-good Profile from being restored.
+                        _ = try await MainWindowController.shared
+                            .restartDshServiceWithAuthenticationRecoveryDuringOperation(context: context)
                         DshStateManager.shared.update { state in
                             guard state.pendingProfileSwitch == transaction else { return }
                             state.appProfile = previous

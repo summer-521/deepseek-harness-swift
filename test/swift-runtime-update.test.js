@@ -83,8 +83,17 @@ test('Profile switches are recoverable across force-quit and commit only after a
   assert.match(SETTINGS_SOURCE, /DshProfileSwitchTransaction\(from: previous, to: profile\)/)
   assert.match(SETTINGS_SOURCE, /finalizingTransaction\.phase = \.finalizing/)
   assert.match(SETTINGS_SOURCE, /pendingProfileSwitch = transaction/)
-  assert.match(SETTINGS_SOURCE, /restartDshServiceDuringOperation\(context: context\)[\s\S]*pendingProfileSwitch = cleanupError == nil \? nil : finalizingTransaction/)
-  assert.match(SETTINGS_SOURCE, /restartDshServiceDuringOperation\(context: context\)[\s\S]*pendingProfileSwitch = cleanupError == nil \? nil : transaction/)
+  const profileSwitchBoundary = SETTINGS_SOURCE.slice(
+    SETTINGS_SOURCE.indexOf('public func setAppProfile'),
+    SETTINGS_SOURCE.indexOf('    /// Change the live Node policy', SETTINGS_SOURCE.indexOf('public func setAppProfile')),
+  )
+  assert.equal(
+    (profileSwitchBoundary.match(/restartDshServiceWithAuthenticationRecoveryDuringOperation\(context: context\)/g) ?? []).length,
+    2,
+  )
+  assert.doesNotMatch(profileSwitchBoundary, /restartDshServiceDuringOperation\(context: context\)/)
+  assert.match(profileSwitchBoundary, /restartDshServiceWithAuthenticationRecoveryDuringOperation\(context: context\)[\s\S]*pendingProfileSwitch = cleanupError == nil \? nil : finalizingTransaction/)
+  assert.match(profileSwitchBoundary, /restartDshServiceWithAuthenticationRecoveryDuringOperation\(context: context\)[\s\S]*pendingProfileSwitch = cleanupError == nil \? nil : transaction/)
   assert.match(SETTINGS_SOURCE, /Bridge cleanup is app-owned housekeeping|桥接清理是 App 自有清理/)
   assert.match(SETTINGS_SOURCE, /pendingProfileSwitch = cleanupError == nil \? nil : transaction/)
   assert.match(WINDOW_SOURCE, /retryPendingProfileSwitchCleanup\(for: context\)/)
