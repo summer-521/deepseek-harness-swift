@@ -6,6 +6,49 @@
         <description>Updates for the native Swift shell of DSH Desktop.</description>
         <language>zh-CN</language>
         <item>
+            <title>1.2.4</title>
+            <pubDate>Fri, 11 Sep 2026 18:31:42 +0800</pubDate>
+            <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.4</link>
+            <sparkle:version>15</sparkle:version>
+            <sparkle:shortVersionString>1.2.4</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[
+## 更新内容
+
+### 任务通知增强
+
+- 新增“任务等待操作”通知：工具权限申请、计划审阅和 agent 提问期间，窗口隐藏或失焦时不再没有任何提示。
+- 通知按类型区分：权限申请为「需要你的批准」，计划审阅为「需要你的确认」，提问为「需要你的输入」；正文分别给出审批原因、计划标题或问题内容。
+
+## 改进与修复
+
+### Runtime 安装来源
+
+- 版本页面现在显示正在运行的 Runtime 实际安装通道，而不是根据版本号推测。
+- 修复预发布格式的版本从 `latest` 安装后被错误显示为 `next` 的问题。
+
+### 单实例保护
+
+- 无法取得实例锁时统一停止启动并显示原因，避免多个实例同时修改状态、Profile、服务端口和恢复快照。
+- 权限不足、只读卷、磁盘空间不足以及锁路径异常不再绕过实例保护继续运行。
+- 加锁时拒绝符号链接，并重新验证实际打开的锁文件，减少路径被替换后锁到错误对象的风险。
+
+### Profile 恢复清理
+
+- 自动删除恢复遗留副本前，会验证快照编号和应用生成的目录格式。
+- 删除范围限制在当前应用配置的 DSH Profile 根目录中，名称相似的其他 `profiles` 目录不会被处理。
+- Profile 根目录和待删除目标必须是真实目录；符号链接不能把清理操作重定向到其他位置。
+- 无法安全证明归属或恢复完成状态时保留副本并提示，不执行递归删除。
+
+## 已知限制
+
+- 最低需要 macOS 26，只提供 Apple Silicon（arm64）安装包。
+- Swift 应用包更新与 DSH npm Runtime 更新是两套独立流程。
+]]></description>
+            <enclosure url="https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.2.4/DSH-Desktop-1.2.4-arm64.dmg" length="50956966" type="application/octet-stream" sparkle:edSignature="BntQ95/2lq322eiiiGof8hwp3r/xgv3gnDgczYE2mk+ITET9hw8U+kPyeCx3tztobJPNGwX2YGruXY/qCtXqCg=="/>
+        </item>
+        <item>
             <title>1.2.3</title>
             <pubDate>Thu, 10 Sep 2026 17:32:48 +0800</pubDate>
             <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.3</link>
