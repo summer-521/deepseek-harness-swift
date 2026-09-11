@@ -61,23 +61,43 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// The lock path exists but cannot be this app's lock file (a directory or
-    /// symlink planted at `dsh-instance.lock`, or an unexpected `open`/`flock`
-    /// failure). This is deliberately fatal: starting anyway would run without
-    /// the single-instance protection that the state file, the shared Profile
-    /// tree and the rollback snapshots depend on.
-    private func presentBlockedInstanceLockAlert(_ detail: String) {
+    /// Why the instance lock could not be established. Both kinds stop the
+    /// launch; only the explanation and the suggested remedy differ.
+    private enum InstanceLockFailureKind {
+        /// Something other than this app's regular lock file occupies the path.
+        case pathConflict
+        /// Permissions, a read-only volume, or no space.
+        case environmentLimitation
+    }
+
+    /// The lock could not be established. This is deliberately fatal in every
+    /// case: starting anyway would run without the single-instance protection
+    /// that the state file, the shared Profile tree, the port and the rollback
+    /// snapshots depend on. A lock-file-local failure does not imply that the
+    /// rest of the Application Support root is unwritable, so there is no safe
+    /// degraded mode.
+    private func presentInstanceLockFailureAlert(_ detail: String, kind: InstanceLockFailureKind) {
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "无法建立实例锁，已停止启动"
+        let cause: String
+        let remedy: String
+        switch kind {
+        case .pathConflict:
+            cause = "应用数据目录中的 \(DshInstanceLock.fileName) 不是 DSH 创建的普通锁文件，或锁调用异常。"
+            remedy = "请在“访达”中前往 \(DshStateManager.appSupportDirectory.path)，删除或重命名该对象后重新打开 DSH。若该对象不是你有意创建的，请先确认是否有其他程序在干预该目录。"
+        case .environmentLimitation:
+            cause = "应用数据目录中的 \(DshInstanceLock.fileName) 无法写入（权限不足、所在卷只读，或磁盘空间不足）。"
+            remedy = "请检查 \(DshStateManager.appSupportDirectory.path) 的权限与可用空间（以及该卷是否为只读），修复后重新打开 DSH。DSH 需要在这里持续写入运行状态，因此不会在缺少互斥锁的情况下继续启动。"
+        }
         alert.informativeText = """
         \(detail)
 
-        应用数据目录中的 \(DshInstanceLock.fileName) 不是 DSH 创建的普通锁文件，或锁调用异常，因此无法保证“同一份应用数据只有一个实例”。
+        \(cause)
 
-        继续启动会让两个实例互相覆盖状态、并发修改同一份 Profile，并可能删除对方的事务回滚点，所以本次启动已停止。
+        无法保证“同一份应用数据只有一个实例”。继续启动会让两个实例互相覆盖状态、并发修改同一份 Profile，并可能删除对方的事务回滚点，所以本次启动已停止。
 
-        请在“访达”中前往 \(DshStateManager.appSupportDirectory.path)，删除或重命名该对象后重新打开 DSH。若该对象不是你有意创建的，请先确认是否有其他程序在干预该目录。
+        \(remedy)
         """
         alert.addButton(withTitle: "退出")
         alert.addButton(withTitle: "复制诊断信息")
@@ -118,21 +138,22 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         case .blocked(let detail):
-            // Fail closed: the lock path is occupied by something that is not
-            // this app's lock file, or the lock call failed for an unexpected
-            // reason. Continuing would silently drop the single-instance
-            // guarantee that protects the shared state, Profile tree, port and
-            // rollback snapshots, and a blocked path is actionable for the
-            // user (unlike a limited environment, see `.unavailable`).
-            presentBlockedInstanceLockAlert(detail)
+            // The lock path is occupied by something that is not this app's
+            // lock file, or the lock call failed for an unexpected reason.
+            presentInstanceLockFailureAlert(detail, kind: .pathConflict)
             NSApp.terminate(nil)
             return
         case .unavailable(let detail):
-            // Fail open: a genuinely limited environment (read-only volume, no
-            // write permission, no space) must not make the app impossible to
-            // start, and a second instance could not persist its state either.
-            // The double-instance risk is recorded so it stays diagnosable.
-            print("[AppDelegate] Instance lock unavailable, continuing without cross-process protection:", detail)
+            // Fail closed as well. The failure can be specific to the lock
+            // path while the shared state file stays writable (round-5
+            // reproduction: `000` mode lock file next to a writable
+            // `dsh-state.json`), so continuing would silently run two
+            // instances against one Application Support root. Only the
+            // diagnostic text differs: this one is an environment limitation
+            // with an actionable fix (permissions, read-only volume, space).
+            presentInstanceLockFailureAlert(detail, kind: .environmentLimitation)
+            NSApp.terminate(nil)
+            return
         }
         // Keep one updater for the whole app. Sparkle starts its automatic
         // checker from the Info.plist settings and the same controller backs

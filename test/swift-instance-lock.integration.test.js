@@ -106,6 +106,16 @@ test('the instance lock serializes one Application Support root across processes
       'limited environment instead of blocking startup|permission probe skipped',
     )
 
+    // Round-5: an unwritable lock file next to a writable state file is the
+    // case that made the old fail-open policy unsound. The scenario also
+    // proves the directory itself stays writable.
+    assertRun(
+      binaryPath,
+      'unavailable-when-lock-file-unwritable',
+      path.join(root, 'unwritable-lock-file'),
+      'limited environment for an unwritable lock file only|permission probe skipped',
+    )
+
     // A lock path occupied by anything but this app's regular file is a hard
     // failure: starting anyway would silently drop the single-instance
     // guarantee that the shared state and rollback snapshots depend on.
@@ -147,31 +157,46 @@ test('the app takes the instance lock before touching durable state', () => {
     'the lock must be taken before the first durable state read',
   )
   assert.match(appSource, /NSApp\.terminate\(nil\)/, 'a held lock must stop this launch')
-  assert.match(appSource, /Instance lock unavailable, continuing without cross-process protection/)
   assert.match(infoPlist, /<key>LSMultipleInstancesProhibited<\/key>\s*\n\s*<true\/>/)
+  assert.doesNotMatch(
+    appSource,
+    /Instance lock unavailable, continuing without cross-process protection/,
+    'no lock failure may continue without cross-process protection',
+  )
 
-  // T3: a blocked lock path must fail closed (alert + stop), while only a
-  // genuinely limited environment may continue without protection.
+  // Round-5: every acquisition failure must fail closed (alert + stop). The
+  // permission/capacity class only changes the diagnostic text: the failure
+  // can be specific to the lock file while the shared state file stays
+  // writable, so there is no safe degraded mode.
   const blockedCase = appSource.indexOf('case .blocked(let detail):')
   const unavailableCase = appSource.indexOf('case .unavailable(let detail):')
   assert.ok(blockedCase > 0, 'AppDelegate must handle a blocked instance lock')
-  assert.ok(
-    blockedCase < unavailableCase,
-    'the blocked branch must be separate from the fail-open branch',
-  )
+  assert.ok(unavailableCase > 0, 'AppDelegate must handle a limited-environment lock failure')
   assert.match(
     appSource.slice(blockedCase, unavailableCase),
-    /presentBlockedInstanceLockAlert\(detail\)[\s\S]*NSApp\.terminate\(nil\)/,
+    /presentInstanceLockFailureAlert\(detail, kind: \.pathConflict\)[\s\S]*NSApp\.terminate\(nil\)/,
     'a blocked lock path must present the reason and stop the launch',
   )
   assert.match(
-    appSource,
-    /private func presentBlockedInstanceLockAlert[\s\S]*DshInstanceLock\.fileName/,
-    'the blocked-launch alert must name the lock file the user has to fix',
+    appSource.slice(unavailableCase, unavailableCase + 800),
+    /presentInstanceLockFailureAlert\(detail, kind: \.environmentLimitation\)[\s\S]*NSApp\.terminate\(nil\)/,
+    'a limited environment must also stop the launch',
   )
   assert.match(
-    read('Sources/Service/DshInstanceLock.swift'),
+    appSource,
+    /private func presentInstanceLockFailureAlert[\s\S]*DshInstanceLock\.fileName[\s\S]*environmentLimitation/,
+    'the failure alert must name the lock file and the environment remedy',
+  )
+  const lockSource = read('Sources/Service/DshInstanceLock.swift')
+  assert.match(
+    lockSource,
     /case EACCES, EPERM, EROFS, ENOSPC:[\s\S]*return \.unavailable/,
-    'only permission- and capacity-shaped errors may stay fail-open',
+    'permission- and capacity-shaped errors keep their own diagnostic text',
+  )
+  assert.match(lockSource, /O_NOFOLLOW/, 'the lock open must not follow a swapped symlink')
+  assert.match(
+    lockSource,
+    /fstat\(descriptor, &opened\)/,
+    'the lock must verify the opened descriptor instead of trusting the path',
   )
 })

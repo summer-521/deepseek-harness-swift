@@ -25,17 +25,17 @@ public struct VersionsTabView: View {
     }
 
     /// Install source of the Runtime that is actually running. Never the
-    /// update-channel picker: that is a separate preference, and npm can serve
-    /// one version from several tags (0.1.5-rc.1 is both `latest` and `next`),
-    /// so it cannot be derived from the selection either.
+    /// update-channel picker (that is a separate preference) and never a guess
+    /// derived from the version string: an `-rc` build can be published on
+    /// `latest`, so an unrecorded source is shown as unrecorded instead of as
+    /// a certain-looking channel.
     private var activeChannelName: String? {
-        guard let currentVersion else { return nil }
+        guard currentVersion != nil else { return nil }
         return viewModel.activeRuntimeChannel?.rawValue
-            ?? DshRuntimeChannel.inferred(from: currentVersion).rawValue
     }
 
     private var sourceDescription: String {
-        guard let activeChannelName else { return "来源：npm Registry" }
+        guard let activeChannelName else { return "来源：npm Registry · 通道：未记录" }
         return "来源：npm Registry · 通道：\(activeChannelName)"
     }
 

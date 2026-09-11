@@ -15,29 +15,6 @@ public enum DshRuntimeChannel: String, Codable, Sendable {
     case latest
     case next
     case alpha
-
-    /// Resolve the release channel represented by an installed Runtime
-    /// version. This is deliberately independent from the user's pending
-    /// update-channel setting: changing that setting must not rewrite the
-    /// channel shown for the Runtime that is already running.
-    public static func inferred(from version: String) -> DshRuntimeChannel {
-        guard let prerelease = version
-            .split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
-            .dropFirst()
-            .first,
-            let identifier = prerelease.split(separator: ".").first else {
-            return .latest
-        }
-
-        switch identifier {
-        case "alpha":
-            return .alpha
-        case "rc":
-            return .next
-        default:
-            return .latest
-        }
-    }
 }
 
 /// The DSH profile used by the desktop app. The isolated desktop profile is
@@ -141,10 +118,18 @@ public struct DshProfileRestoreCleanup: Codable, Equatable, Sendable {
         profilesRootURL.appendingPathComponent(profile.runtimeProfileName, isDirectory: true)
     }
 
-    /// True when the recorded path is exactly this app's displaced-tree name
-    /// for the recorded snapshot.
+    /// True when the record still identifies a tree this app could have
+    /// created: the deterministic displaced name for a **UUID** snapshot,
+    /// directly inside a `profiles` directory. `dsh-state.json` is
+    /// user-writable, so a record that fails this must never authorise deleting
+    /// anything — the UUID and the fixed root name are the only structural
+    /// evidence available without re-reading the current `DSH_HOME`.
     public var hasWellFormedDisplacedName: Bool {
-        displacedURL.lastPathComponent == Self.displacedNamePrefix + snapshotID
+        guard UUID(uuidString: snapshotID) != nil,
+              displacedURL.lastPathComponent == Self.displacedNamePrefix + snapshotID else {
+            return false
+        }
+        return profilesRootURL.lastPathComponent == "profiles"
     }
 
     public func matches(profile: DshAppProfile, snapshotID: String) -> Bool {
@@ -277,8 +262,8 @@ public struct NpmRuntimeDescriptor: Codable, Equatable, Sendable {
     /// version string alone cannot say which channel produced an install.
     /// `nil` means "unknown" — a descriptor written before this was recorded,
     /// or one synthesized for a version this app never installed (first-run
-    /// recovery placeholders). Readers must fall back to
-    /// `DshRuntimeChannel.inferred(from:)` for those.
+    /// recovery placeholders). Unknown is reported as unknown: see
+    /// `DshRuntimeState.activeChannel`.
     public let channel: DshRuntimeChannel?
 
     public init(
@@ -470,8 +455,11 @@ public struct DshRuntimeState: Codable, Equatable, Sendable {
     /// user's *update* preference and may be changed at any time without
     /// touching the installed Runtime.
     public var activeChannel: DshRuntimeChannel? {
-        guard let active else { return nil }
-        return active.channel ?? DshRuntimeChannel.inferred(from: active.version)
+        // Deliberately no version-string fallback: an `-rc` build can be
+        // published on `latest` (0.1.5-rc.1 currently is), so inferring a
+        // channel would present a guess as provenance. Unknown stays unknown
+        // until the Registry can prove it (see `installSourceBackfill`).
+        active?.channel
     }
 
     /// Install source that can be recorded for an already installed Runtime

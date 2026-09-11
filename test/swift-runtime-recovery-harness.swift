@@ -336,12 +336,12 @@ struct RuntimeRecoveryHarness {
         // be the only complete copy of the user's Profile.
         let profilesRoot = URL(fileURLWithPath: "/tmp/dsh-recovery-home/profiles", isDirectory: true)
         let displaced = profilesRoot.appendingPathComponent(
-            DshProfileRestoreCleanup.displacedNamePrefix + "snapshot-r12",
+            DshProfileRestoreCleanup.displacedNamePrefix + "3F2504E0-4F89-41D3-9A0C-0305E82C3301",
             isDirectory: true
         )
         let unproven = DshProfileRestoreCleanup(
             profile: .web,
-            snapshotID: "snapshot-r12",
+            snapshotID: "3F2504E0-4F89-41D3-9A0C-0305E82C3301",
             displacedPath: displaced,
             completed: false
         )
@@ -369,11 +369,11 @@ struct RuntimeRecoveryHarness {
         )
         require(unproven.hasWellFormedDisplacedName, "the record must recognise its own displaced name")
         require(
-            unproven.matches(profile: .web, snapshotID: "snapshot-r12"),
+            unproven.matches(profile: .web, snapshotID: "3F2504E0-4F89-41D3-9A0C-0305E82C3301"),
             "the record must match its own identity"
         )
         require(
-            !unproven.matches(profile: .desktop, snapshotID: "snapshot-r12"),
+            !unproven.matches(profile: .desktop, snapshotID: "3F2504E0-4F89-41D3-9A0C-0305E82C3301"),
             "the record must not match another Profile"
         )
 
@@ -393,7 +393,7 @@ struct RuntimeRecoveryHarness {
         // recorded snapshot must never authorise a recursive delete.
         var foreignTree = proven
         foreignTree.displacedPath = profilesRoot.appendingPathComponent(
-            DshProfileRestoreCleanup.displacedNamePrefix + "another-snapshot",
+            DshProfileRestoreCleanup.displacedNamePrefix + "1B4E28BA-2FA1-11D2-883F-0016D3CCA427",
             isDirectory: true
         ).path
         require(!foreignTree.hasWellFormedDisplacedName, "a foreign displaced name must be rejected")
@@ -407,6 +407,34 @@ struct RuntimeRecoveryHarness {
             !DshProfileRestoreCleanup.mayReclaim(arbitraryPath, canonicalProfileIsRealDirectory: true),
             "an arbitrary absolute path must never be reclaimed"
         )
+        // Round-5 hardening: the snapshot id must be a UUID and the tree must
+        // live directly inside a `profiles` directory. A user-writable state
+        // file must not be able to point the reclaim at an unrelated tree that
+        // merely shares the name pattern.
+        var nonUUID = proven
+        nonUUID.displacedPath = profilesRoot.appendingPathComponent(
+            DshProfileRestoreCleanup.displacedNamePrefix + "snapshot-r12",
+            isDirectory: true
+        ).path
+        require(!nonUUID.hasWellFormedDisplacedName, "a non-UUID snapshot id must be rejected")
+        require(
+            !DshProfileRestoreCleanup.mayReclaim(nonUUID, canonicalProfileIsRealDirectory: true),
+            "a non-UUID snapshot id must never authorise a delete"
+        )
+        var foreignRoot = proven
+        foreignRoot.displacedPath = URL(fileURLWithPath: "/Users/someone/Documents", isDirectory: true)
+            .appendingPathComponent(
+                DshProfileRestoreCleanup.displacedNamePrefix + "3F2504E0-4F89-41D3-9A0C-0305E82C3301",
+                isDirectory: true
+            ).path
+        require(
+            !foreignRoot.hasWellFormedDisplacedName,
+            "a displaced tree outside a profiles directory must be rejected"
+        )
+        require(
+            !DshProfileRestoreCleanup.mayReclaim(foreignRoot, canonicalProfileIsRealDirectory: true),
+            "a displaced tree outside a profiles directory must never be reclaimed"
+        )
 
         // Debt is a collection: a later restore must not drop the reference to a
         // tree that is still on disk, because nothing reclaims an unreferenced
@@ -418,7 +446,7 @@ struct RuntimeRecoveryHarness {
         let restoredCleanups = decodedState.pendingProfileRestoreCleanups
         require(restoredCleanups.count == 2, "every cleanup debt must round-trip")
         require(restoredCleanups.first?.completed == true, "the completion proof must round-trip")
-        require(restoredCleanups.first?.snapshotID == "snapshot-r12", "the snapshot id must round-trip")
+        require(restoredCleanups.first?.snapshotID == "3F2504E0-4F89-41D3-9A0C-0305E82C3301", "the snapshot id must round-trip")
         require(restoredCleanups.first?.profile == .web, "the owning Profile must round-trip")
         require(
             restoredCleanups.first?.displacedPath == displaced.standardizedFileURL.path,
@@ -436,7 +464,7 @@ struct RuntimeRecoveryHarness {
             "appProfile": "web",
             "pendingProfileRestoreCleanup": [
                 "profile": "web",
-                "snapshotID": "snapshot-r12",
+                "snapshotID": "3F2504E0-4F89-41D3-9A0C-0305E82C3301",
                 "displacedPath": displaced.standardizedFileURL.path,
                 "completed": true,
                 "createdAt": 0,
@@ -448,7 +476,7 @@ struct RuntimeRecoveryHarness {
             "the legacy single-slot record must migrate into the collection"
         )
         require(
-            legacyDebtState.pendingProfileRestoreCleanups.first?.snapshotID == "snapshot-r12",
+            legacyDebtState.pendingProfileRestoreCleanups.first?.snapshotID == "3F2504E0-4F89-41D3-9A0C-0305E82C3301",
             "the legacy record must keep its snapshot id"
         )
         require(

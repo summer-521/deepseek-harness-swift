@@ -251,6 +251,19 @@ public struct DshLaunchContext: Codable, Sendable, Equatable {
             )
         }
         guard let resolvedRuntime else { return nil }
+        // The install source is display metadata: no launch decision, plugin
+        // boundary or health check reads it (they use version/registry/
+        // integrity). Deliberately drop it from the context descriptor so a
+        // purely cosmetic state rewrite — the catalog backfill that records
+        // where an older Runtime came from — cannot make an already captured
+        // launch context look stale. `isFresh` compares contexts for equality,
+        // so this also keeps its `expected` value comparable.
+        let launchRuntime = NpmRuntimeDescriptor(
+            version: resolvedRuntime.version,
+            registry: resolvedRuntime.registry,
+            integrity: resolvedRuntime.integrity,
+            installedAt: resolvedRuntime.installedAt
+        )
 
         let targetProfile: DshAppProfile
         let originalProfile: DshAppProfile
@@ -285,7 +298,7 @@ public struct DshLaunchContext: Codable, Sendable, Equatable {
         return DshLaunchContext(
             launchID: launchID,
             purpose: purpose,
-            runtimeDescriptor: resolvedRuntime,
+            runtimeDescriptor: launchRuntime,
             profile: targetProfile,
             profileDirectory: profileDirectory(for: targetProfile),
             effectiveDshHome: defaultDshHome,

@@ -163,8 +163,8 @@ struct StatePersistenceHarness {
             let legacyState = try! JSONDecoder().decode(DshStateConfig.self, from: legacy)
             require(legacyState.runtimeState.active?.channel == nil,
                     "a legacy descriptor without a channel must still decode")
-            require(legacyState.runtimeState.activeChannel == .next,
-                    "a legacy rc descriptor must keep the version-string fallback")
+            require(legacyState.runtimeState.activeChannel == nil,
+                    "a legacy descriptor without a record must report an unknown source, never a guess")
 
             let empty = Data(#"{"selectedVersion":null}"#.utf8)
             let emptyState = try! JSONDecoder().decode(DshStateConfig.self, from: empty)

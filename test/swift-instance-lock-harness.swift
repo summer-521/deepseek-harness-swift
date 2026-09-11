@@ -133,6 +133,50 @@ struct InstanceLockHarness {
                 failAcquired("a limited environment must not be reported as a blocked lock path: \(detail)")
             }
 
+        // Round-5 reproduction: the permission failure can be specific to the
+        // lock file while the rest of the Application Support root stays
+        // writable, so "the environment cannot write anything" is not a safe
+        // assumption. The module still classifies it as a limited environment
+        // (the message differs); the app now stops on it as well.
+        case "unavailable-when-lock-file-unwritable":
+            let root = directory()
+            try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let lockPath = root.appendingPathComponent(DshInstanceLock.fileName, isDirectory: false)
+            try? FileManager.default.removeItem(at: lockPath)
+            try? Data().write(to: lockPath)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: lockPath.path)
+            require(
+                FileManager.default.fileExists(atPath: lockPath.path),
+                "fixture: the unwritable lock file must exist"
+            )
+            defer {
+                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: lockPath.path)
+                try? FileManager.default.removeItem(at: lockPath)
+            }
+            switch DshInstanceLock.acquire(at: root, holder: holder()) {
+            case .unavailable:
+                // Prove the sibling state file is still writable: that is
+                // exactly why the caller must fail closed rather than continue.
+                let stateURL = root.appendingPathComponent("dsh-state.json")
+                var directoryWritable = false
+                do {
+                    try Data("{}".utf8).write(to: stateURL)
+                    directoryWritable = true
+                } catch {
+                    directoryWritable = false
+                }
+                try? FileManager.default.removeItem(at: stateURL)
+                require(directoryWritable, "fixture: the Application Support root must stay writable")
+                print("instance lock reports a limited environment for an unwritable lock file only")
+            case .acquired(let lock):
+                // Running privileged ignores the permission bits; the
+                // limited-environment path is then not exercised.
+                lock.release()
+                print("instance lock permission probe skipped (running privileged)")
+            case .blocked, .heldBy:
+                failAcquired("an unwritable regular lock file must stay in the limited-environment class")
+            }
+
         // A directory planted at the lock path used to surface as a generic
         // `unavailable` (EISDIR through `open`), which the app treats as
         // fail-open — i.e. sabotaging the path silently disabled the

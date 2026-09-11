@@ -1348,7 +1348,11 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
     /// this app creates, and only ever for the snapshot it was moved aside for.
     /// Reclamation must match it exactly: see `removeDisplacedProfileTree`.
     static func isDisplacedProfileRestoreName(_ name: String, snapshotID: String) -> Bool {
-        name == DshProfileRestoreCleanup.displacedNamePrefix + snapshotID
+        // The snapshot id must be a UUID as well: snapshot directories are
+        // UUID-named, so a record carrying anything else cannot describe a tree
+        // this app created, whatever its path looks like.
+        UUID(uuidString: snapshotID) != nil
+            && name == DshProfileRestoreCleanup.displacedNamePrefix + snapshotID
     }
 
     /// Remove one displaced Profile tree recorded as cleanup debt. The caller

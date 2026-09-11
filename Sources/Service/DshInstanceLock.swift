@@ -46,11 +46,13 @@ public final class DshInstanceLock {
         /// reason. Starting anyway would silently drop the single-instance
         /// guarantee, so callers must fail closed.
         case blocked(String)
-        /// The environment cannot support the lock (read-only volume, no write
-        /// permission, no space). Reading and using an existing state is still
-        /// possible — and a second instance could not persist either — so
-        /// callers continue without cross-process protection and record the
-        /// detail rather than making the app impossible to start.
+        /// The environment cannot hold the lock (read-only volume, no write
+        /// permission on that path, no space). Callers must fail closed as
+        /// well: the failure can be specific to the lock file while the shared
+        /// state file stays writable (round-5 reproduction: a `000` mode lock
+        /// file next to a writable `dsh-state.json`), so continuing would
+        /// silently drop the single-instance guarantee. The value only selects
+        /// the diagnostic text.
         case unavailable(String)
     }
 
@@ -97,10 +99,23 @@ public final class DshInstanceLock {
         }
         // O_CLOEXEC matters: without it the managed Node child could inherit
         // the descriptor and keep the lock held after the app itself died.
-        let descriptor = open(url.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        // O_NOFOLLOW closes the window between the `lstat` above and this
+        // `open`: a path swapped for a symlink in between fails with ELOOP
+        // (reported as blocked) instead of redirecting the lock to another
+        // inode, or creating the link target with `O_CREAT`.
+        let descriptor = open(url.path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else {
             let code = errno
             return Self.failure(code: code, "无法打开实例锁文件", url: url)
+        }
+        // Re-check the opened file itself. `lstat` + `O_NOFOLLOW` already
+        // reject symlinks, but the descriptor is the object the lock is
+        // actually taken on, so verify it directly rather than trusting the
+        // path that was inspected a moment ago.
+        var opened = stat()
+        if fstat(descriptor, &opened) != 0 || (opened.st_mode & S_IFMT) != S_IFREG {
+            close(descriptor)
+            return .blocked("实例锁路径不是普通文件：\(url.path)。请移除该对象后重新启动。")
         }
         if flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
             let code = errno

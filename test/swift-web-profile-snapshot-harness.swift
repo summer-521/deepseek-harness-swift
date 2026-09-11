@@ -245,29 +245,29 @@ struct WebProfileSnapshotHarness {
         let reclaimRoot = root.appendingPathComponent("profiles-reclaim", isDirectory: true)
         try fileManager.createDirectory(at: reclaimRoot, withIntermediateDirectories: true)
         let wellFormedTree = reclaimRoot.appendingPathComponent(
-            DshProfileRestoreCleanup.displacedNamePrefix + "reclaim-id",
+            DshProfileRestoreCleanup.displacedNamePrefix + "9C2A7B86-1E4D-4C21-9F0B-6D1E5A7C3B48",
             isDirectory: true
         )
         try fileManager.createDirectory(at: wellFormedTree, withIntermediateDirectories: true)
         let foreignTree = reclaimRoot.appendingPathComponent(
-            DshProfileRestoreCleanup.displacedNamePrefix + "other-id",
+            DshProfileRestoreCleanup.displacedNamePrefix + "A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D",
             isDirectory: true
         )
         try fileManager.createDirectory(at: foreignTree, withIntermediateDirectories: true)
         let mismatchReclaimed = await manager.removeDisplacedProfileTree(
             at: foreignTree,
-            expectedSnapshotID: "reclaim-id"
+            expectedSnapshotID: "9C2A7B86-1E4D-4C21-9F0B-6D1E5A7C3B48"
         )
         require(!mismatchReclaimed, "a recorded path with another snapshot id must be refused")
         require(fileManager.fileExists(atPath: foreignTree.path), "a refused reclamation must leave the tree untouched")
         let symlinkTree = reclaimRoot.appendingPathComponent(
-            DshProfileRestoreCleanup.displacedNamePrefix + "link-id",
+            DshProfileRestoreCleanup.displacedNamePrefix + "5E6F7A8B-9C0D-4E1F-2A3B-4C5D6E7F8A9B",
             isDirectory: true
         )
         try fileManager.createSymbolicLink(atPath: symlinkTree.path, withDestinationPath: wellFormedTree.path)
         let symlinkReclaimed = await manager.removeDisplacedProfileTree(
             at: symlinkTree,
-            expectedSnapshotID: "link-id"
+            expectedSnapshotID: "5E6F7A8B-9C0D-4E1F-2A3B-4C5D6E7F8A9B"
         )
         require(!symlinkReclaimed, "a symlink at the recorded path must be refused")
         require(fileManager.fileExists(atPath: wellFormedTree.path), "the symlink target must survive")
@@ -278,7 +278,7 @@ struct WebProfileSnapshotHarness {
         try? fileManager.removeItem(at: symlinkTree)
         let reclaimed = await manager.removeDisplacedProfileTree(
             at: wellFormedTree,
-            expectedSnapshotID: "reclaim-id"
+            expectedSnapshotID: "9C2A7B86-1E4D-4C21-9F0B-6D1E5A7C3B48"
         )
         require(reclaimed, "a well-formed displaced tree must be reclaimed")
         require(!fileManager.fileExists(atPath: wellFormedTree.path), "a reclaimed tree must be gone")

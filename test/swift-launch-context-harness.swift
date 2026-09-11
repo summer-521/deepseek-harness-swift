@@ -141,6 +141,62 @@ struct DshLaunchContextHarness {
         )
         expect(idleWithoutTransaction.transactionID == nil, "idle state may have no transaction owner")
 
+        // Round-5: recording where an older Runtime came from (the catalog
+        // backfill) rewrites only display metadata. A launch context captured
+        // before that rewrite is freshness-checked again after the health gate
+        // and by the healthy-start settle, so it must survive the rewrite.
+        let legacyState = DshStateConfig(
+            selectedVersion: "1.2.3",
+            runtimeState: DshRuntimeState(
+                active: NpmRuntimeDescriptor(
+                    version: "1.2.3",
+                    registry: "https://registry.example.test",
+                    installedAt: Date(timeIntervalSince1970: 100)
+                ),
+                phase: .idle
+            ),
+            dshPort: 4321
+        )
+        guard let captured = DshLaunchContext.makeStartup(from: legacyState) else {
+            expect(false, "a settled legacy state must produce a launch context")
+            return
+        }
+        expect(
+            captured.runtimeDescriptor.channel == nil,
+            "a launch context must not carry the display-only install source"
+        )
+        expect(captured.isFresh(in: legacyState), "the captured context matches its own state")
+        let capturedActive = legacyState.runtimeState.active!
+        var backfilledState = legacyState
+        backfilledState.runtimeState.active = NpmRuntimeDescriptor(
+            version: capturedActive.version,
+            registry: capturedActive.registry,
+            integrity: capturedActive.integrity,
+            installedAt: capturedActive.installedAt,
+            channel: .latest
+        )
+        expect(
+            backfilledState.runtimeState.activeChannel == .latest,
+            "the recorded install source must be visible to the settings card"
+        )
+        expect(
+            captured.isFresh(in: backfilledState),
+            "a display-only install-source backfill must not stale a captured launch context"
+        )
+        expect(
+            DshLaunchContext.makeStartup(from: backfilledState)?.runtimeDescriptor.channel == nil,
+            "the launch view of a state never includes the install source"
+        )
+        expect(
+            captured.runtimeDescriptor == NpmRuntimeDescriptor(
+                version: capturedActive.version,
+                registry: capturedActive.registry,
+                integrity: capturedActive.integrity,
+                installedAt: capturedActive.installedAt
+            ),
+            "the launch view keeps the launching fields and drops only the install source"
+        )
+
         print("effective-home=\(home.path)")
         print("swift launch context harness passed")
     }

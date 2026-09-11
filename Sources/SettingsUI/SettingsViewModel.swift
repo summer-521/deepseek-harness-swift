@@ -1085,7 +1085,7 @@ public final class SettingsViewModel: ObservableObject {
             self.alphaVersion = res.alpha
             self.availableVersions = res.versions
             self.installedVersions = DshVersionManager.shared.listInstalledVersions()
-            backfillActiveRuntimeChannel(from: res.versions)
+            backfillActiveRuntimeChannel(from: res.versions, registry: registry)
         } catch {
             if requestGeneration == catalogRequestGeneration,
                DshVersionManager.normalizedRegistry(npmRegistry) == registry {
@@ -1100,12 +1100,22 @@ public final class SettingsViewModel: ObservableObject {
     /// that exact version under a single npm tag. See
     /// `DshRuntimeState.installSourceBackfill` for why several tags stay
     /// unrecorded.
-    private func backfillActiveRuntimeChannel(from catalog: [DshVersionItem]) {
-        guard let active = DshStateManager.shared.current.runtimeState.active,
+    ///
+    /// The catalog is keyed by the registry it came from: tags fetched from a
+    /// different registry (the user changed the update registry after
+    /// installing) say nothing about where this Runtime came from, so they are
+    /// never recorded. Only a settled Runtime is backfilled; an open
+    /// transaction owns its descriptor.
+    private func backfillActiveRuntimeChannel(from catalog: [DshVersionItem], registry: String) {
+        let state = DshStateManager.shared.current
+        guard let active = state.runtimeState.active,
               active.channel == nil,
+              DshVersionManager.normalizedRegistry(registry)
+                  == DshVersionManager.normalizedRegistry(active.registry),
+              isRuntimeStateSettled(state),
               let item = catalog.first(where: { $0.version == active.version }),
               let channel = DshRuntimeState.installSourceBackfill(
-                  for: DshStateManager.shared.current.runtimeState,
+                  for: state.runtimeState,
                   catalogTagsForVersion: item.tags
               ) else { return }
         DshStateManager.shared.update { state in
@@ -1114,6 +1124,9 @@ public final class SettingsViewModel: ObservableObject {
             guard let current = state.runtimeState.active,
                   current.channel == nil,
                   current.version == active.version,
+                  DshVersionManager.normalizedRegistry(current.registry)
+                      == DshVersionManager.normalizedRegistry(registry),
+                  self.isRuntimeStateSettled(state),
                   DshRuntimeState.installSourceBackfill(
                       for: state.runtimeState,
                       catalogTagsForVersion: item.tags
@@ -1128,6 +1141,19 @@ public final class SettingsViewModel: ObservableObject {
         }
         // Re-read so the published install source reflects the durable record.
         loadFromState()
+    }
+
+    /// True while no Runtime or Profile transaction owns `runtimeState`. The
+    /// backfill only ever rewrites display metadata, and it must not touch a
+    /// descriptor that a commit/rollback/recovery is still deciding about. A
+    /// retained snapshot id is cleanup debt rather than an open transaction, so
+    /// it does not block the backfill.
+    private func isRuntimeStateSettled(_ state: DshStateConfig) -> Bool {
+        state.runtimeState.phase == .idle
+            && state.runtimeState.pending == nil
+            && state.runtimeState.previous == nil
+            && state.runtimeState.transactionID == nil
+            && state.pendingProfileSwitch == nil
     }
 
     public func refreshPlugins() {
