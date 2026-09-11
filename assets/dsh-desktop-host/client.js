@@ -414,6 +414,170 @@ window.__ModuleLoader__.load({
           if (host.debug) host.debug("sessions-subscribe-error " + (error && error.message ? error.message : String(error)))
         }
 
+        // --- Needs-input bridge ---
+        // Approvals and user questions are host answerer waterfalls
+        // (`approval/request`, `user-questions/request`). While one is pending
+        // the turn stays open, so the session keeps reporting `running: true`
+        // and the running→idle edge above never fires: a hidden window would
+        // wait for an answer with no signal at all. `ctx.uiSession` publishes
+        // exactly that state — the interaction the UI is currently waiting on,
+        // keyed by session — so a new entry means "the user must answer now".
+        //
+        // `ctx.get` is an immediate read of an *active* service. This plugin can
+        // finish applying before the Session UI bundle provides `uiSession`
+        // (plugin client modules load after the app's own bundles), and a
+        // one-shot read that returns undefined would silently leave the bridge
+        // unattached. `ctx.inject(["uiSession"], …)` is the dependency-aware
+        // path and is therefore the primary one; the immediate read only avoids
+        // the extra fiber when the service is already there.
+        var pendingNotified = Object.create(null) // sessionId -> interaction kind
+        var offPending = null
+        var pendingBridgeAttached = false
+
+        var pendingDiagnostic = function (state) {
+          if (typeof document !== "undefined" && document.documentElement &&
+              typeof document.documentElement.setAttribute === "function") {
+            try {
+              document.documentElement.setAttribute("data-dsh-desktop-pending-bridge", state)
+            } catch (error) {
+              // Diagnostics must never break the bridge.
+            }
+          }
+          if (state !== "attached" && typeof console !== "undefined" && console.warn) {
+            console.warn("[dsh-desktop-host] pending-interaction bridge " + state)
+          }
+        }
+
+        var sessionSummary = function (sessionId) {
+          try {
+            var state = ctx.sessions && ctx.sessions.list && ctx.sessions.list.getSnapshot()
+            var byId = state && state.byId
+            return byId ? byId[sessionId] : null
+          } catch (error) {
+            return null
+          }
+        }
+        // Bridge kind per interaction domain: an approval prompt asks for a
+        // decision on a tool action, a plan review asks to approve a plan, and
+        // a question waits for an answer. Each has its own notification title.
+        var bridgeKindForPending = function (interaction) {
+          var kind = interaction && interaction.kind
+          if (kind === "approval") return "needs-approval"
+          if (kind === "plan-review") return "needs-review"
+          return "needs-input"
+        }
+        var describePending = function (interaction) {
+          if (!interaction) return null
+          if (typeof interaction.reason === "string" && interaction.reason.trim()) {
+            return interaction.reason.trim()
+          }
+          if (typeof interaction.toolName === "string" && interaction.toolName) {
+            return "工具 " + interaction.toolName + " 需要确认"
+          }
+          var questions = interaction.questions
+          if (questions && questions.length) {
+            var first = questions[0]
+            // A plan review carries the whole plan as `detail`, and its first
+            // markdown heading names it far better than the generic review
+            // question.
+            if (first && typeof first.detail === "string") {
+              var heading = first.detail.match(/^\s*#\s+(.+)$/m)
+              if (heading && heading[1].trim()) return heading[1].trim()
+            }
+            if (first && typeof first.question === "string" && first.question.trim()) {
+              return first.question.trim()
+            }
+          }
+          return null
+        }
+        var reportPending = function (pendingInteractions) {
+          var snapshot = pendingInteractions.getSnapshot()
+          var stillPending = Object.create(null)
+          if (snapshot && typeof snapshot.forEach === "function") {
+            snapshot.forEach(function (interaction, sessionId) {
+              if (!sessionId) return
+              stillPending[sessionId] = true
+              // One domain is visible per session (highest precedence wins) and
+              // a remount republishes the same interaction with a new key, so
+              // the domain kind — not the render key — decides whether this is
+              // news.
+              var key = interaction && interaction.kind ? String(interaction.kind) : String(sessionId)
+              if (pendingNotified[sessionId] === key) return
+              pendingNotified[sessionId] = key
+              var summary = sessionSummary(sessionId)
+              host.notify({
+                kind: bridgeKindForPending(interaction),
+                sessionId: sessionId,
+                reason: describePending(interaction),
+                title: summary && summary.displayTitle ? summary.displayTitle : null,
+                cwd: summary && summary.cwd ? summary.cwd : null
+              })
+            })
+          }
+          // Forget sessions whose interaction was answered, so the next prompt
+          // in that session notifies again.
+          for (var known in pendingNotified) {
+            if (Object.prototype.hasOwnProperty.call(pendingNotified, known) && !stillPending[known]) {
+              delete pendingNotified[known]
+            }
+          }
+        }
+        // The pending-interaction store of one `uiSession` service value. The
+        // caller resolves the service (see below): a plain property read only
+        // works inside a scope that injects the service.
+        var attachPendingBridge = function (uiSession) {
+          if (pendingBridgeAttached) return null
+          var pendingInteractions = uiSession && uiSession.pendingInteractions
+          if (!pendingInteractions ||
+              typeof pendingInteractions.subscribe !== "function" ||
+              typeof pendingInteractions.getSnapshot !== "function") {
+            return null
+          }
+          try {
+            reportPending(pendingInteractions)
+            var off = pendingInteractions.subscribe(function () {
+              reportPending(pendingInteractions)
+            })
+            pendingBridgeAttached = true
+            pendingDiagnostic("attached")
+            return off
+          } catch (error) {
+            if (typeof console !== "undefined" && console.warn) {
+              console.warn("[dsh-desktop-host] pending-interaction attach failed", error)
+            }
+            return null
+          }
+        }
+        try {
+          // Fast path: `ctx.get` is the reflect accessor that reads a service
+          // without declaring an inject requirement. A plain `ctx.uiSession`
+          // read would throw here ("cannot get property without inject"),
+          // because this plugin deliberately does not require the service.
+          var immediateUiSession = typeof ctx.get === "function" ? ctx.get("uiSession") : null
+          offPending = attachPendingBridge(immediateUiSession)
+          if (!offPending && typeof ctx.inject === "function") {
+            ctx.inject(["uiSession"], function (scope) {
+              offPending = attachPendingBridge(scope.uiSession)
+              return function () {
+                if (offPending) {
+                  try {
+                    offPending()
+                  } catch (error) {
+                    // Best-effort unsubscribe.
+                  }
+                  offPending = null
+                }
+              }
+            })
+          } else if (!offPending) {
+            pendingDiagnostic("unavailable: ctx.inject missing")
+          }
+        } catch (error) {
+          if (typeof console !== "undefined" && console.warn) {
+            console.warn("[dsh-desktop-host] pending-interaction bridge setup failed", error)
+          }
+        }
+
         // All bridge subscriptions are installed before readiness is reported.
         // The native shell still performs its own readiness check as a
         // fallback, but this signal now means the actual web UI is visible.
@@ -460,6 +624,13 @@ window.__ModuleLoader__.load({
               offThemeCss()
             } catch (error) {
               // Best-effort removal of the hero glow color override.
+            }
+          }
+          if (offPending) {
+            try {
+              offPending()
+            } catch (error) {
+              // Best-effort unsubscribe.
             }
           }
           if (offSessions) {

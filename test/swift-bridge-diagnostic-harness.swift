@@ -92,6 +92,49 @@ struct DshBridgeDiagnosticHarness {
             require(false, "a null externalTheme should be accepted")
         }
 
+        // The desktop-host bridge also reports a task that is blocked waiting
+        // for the user (an approval prompt or an agent question) with the same
+        // payload plus `kind`/`reason`. Those must reach the notification path
+        // instead of being rejected as unknown fields.
+        let needsInput = validator.validate(incoming(body: makeBody(
+            type: "notify", launchID: launchID, generationID: generationID,
+            payload: ["sessionId": "s1", "kind": "needs-input", "reason": "需要执行 sudo 命令"]
+        )))
+        if case .success(let message) = needsInput {
+            require(message.type == .notify, "a needs-input notification must stay a notify message")
+        } else {
+            require(false, "a needs-input notification should be accepted")
+        }
+
+        let needsApproval = validator.validate(incoming(body: makeBody(
+            type: "notify", launchID: launchID, generationID: generationID,
+            payload: ["sessionId": "s1", "kind": "needs-approval", "reason": "覆盖文件需要确认"]
+        )))
+        if case .success(let message) = needsApproval {
+            require(message.type == .notify, "a needs-approval notification must stay a notify message")
+        } else {
+            require(false, "a needs-approval notification should be accepted")
+        }
+
+        let needsReview = validator.validate(incoming(body: makeBody(
+            type: "notify", launchID: launchID, generationID: generationID,
+            payload: ["sessionId": "s1", "kind": "needs-review", "reason": "通知去重方案"]
+        )))
+        if case .success(let message) = needsReview {
+            require(message.type == .notify, "a needs-review notification must stay a notify message")
+        } else {
+            require(false, "a needs-review notification should be accepted")
+        }
+
+        let completionOnly = validator.validate(incoming(body: makeBody(
+            type: "notify", launchID: launchID, generationID: generationID,
+            payload: ["title": "任务", "sessionId": "s1", "completedAt": 1234]
+        )))
+        require(
+            { if case .success = completionOnly { return true }; return false }(),
+            "a completion notification without kind/need must stay accepted"
+        )
+
         func failure(_ result: Result<DshBridgeValidatedMessage, DshBridgeMessageValidationError>, _ expected: DshBridgeMessageValidationError, _ label: String) {
             guard case .failure(let error) = result else {
                 require(false, "\(label) should be rejected")
@@ -122,6 +165,12 @@ struct DshBridgeDiagnosticHarness {
         failure(validator.validate(incoming(body: makeBody(
             type: "notify", launchID: launchID, generationID: generationID,
             payload: ["title": 42]))), .invalidPayload, "wrong payload value type")
+        failure(validator.validate(incoming(body: makeBody(
+            type: "notify", launchID: launchID, generationID: generationID,
+            payload: ["kind": "unknown-kind"]))), .invalidPayload, "unknown notify kind")
+        failure(validator.validate(incoming(body: makeBody(
+            type: "notify", launchID: launchID, generationID: generationID,
+            payload: ["kind": "needs-input", "reason": 7]))), .invalidPayload, "non-string notify reason")
         failure(validator.validate(incoming(body: makeBody(
             type: "unknown", launchID: launchID, generationID: generationID))), .unknownType, "unknown message")
         failure(validator.validate(incoming(body: makeBody(

@@ -326,15 +326,19 @@ public final class DshBridgeMessageValidator: @unchecked Sendable {
             }
 
             if type == .notify {
-                // The desktop-host bridge plugin reports task completion
-                // verbatim: { title?, cwd?, sessionId, completedAt }. Its
-                // nullable strings and numeric timestamp are part of the
-                // contract; only these fields are accepted.
-                let notifyFields: Set<String> = ["title", "cwd", "sessionId", "completedAt"]
+                // The desktop-host bridge plugin reports either a completed
+                // task — { title?, cwd?, sessionId, completedAt } — or a task
+                // that is blocked waiting for the user — the same fields plus
+                // { kind: "needs-input", reason? }. Its nullable strings and
+                // numeric timestamp are part of the contract; only these
+                // fields are accepted.
+                let notifyFields: Set<String> = [
+                    "title", "cwd", "sessionId", "completedAt", "kind", "reason"
+                ]
                 for key in object.keys where !notifyFields.contains(key) {
                     return .failure(.unsupportedPayloadField(key))
                 }
-                for key in ["title", "cwd", "sessionId"] {
+                for key in ["title", "cwd", "sessionId", "reason"] {
                     guard let value = object[key], !(value is NSNull) else { continue }
                     guard let string = value as? String else { return .failure(.invalidPayload) }
                     guard Data(string.utf8).count <= Self.maximumStringBytes else {
@@ -343,6 +347,19 @@ public final class DshBridgeMessageValidator: @unchecked Sendable {
                 }
                 if let completedAt = object["completedAt"], !(completedAt is NSNumber) {
                     return .failure(.invalidPayload)
+                }
+                if let kind = object["kind"], !(kind is NSNull) {
+                    // Omitting `kind` means task completion. Only these three
+                    // extensions exist, so anything else is a contract
+                    // violation rather than a silently ignored field:
+                    // `needs-input` (question), `needs-approval` (tool
+                    // approval) and `needs-review` (plan review).
+                    guard let value = kind as? String,
+                          value == "needs-input"
+                            || value == "needs-approval"
+                            || value == "needs-review" else {
+                        return .failure(.invalidPayload)
+                    }
                 }
                 return .success(())
             }

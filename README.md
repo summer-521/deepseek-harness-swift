@@ -148,7 +148,7 @@ npm test
 ## 已知限制
 
 - 当前使用本地自签名证书签名（`scripts/setup-local-codesign-cert.sh` 创建，`DSH_CODESIGN_IDENTITY` 可切换到其它身份或 `-` 回退 ad-hoc），未提供 Developer ID 签名和 notarization。
-- 通知点击恢复隐藏主窗口等少数系统交互仍有待完善。
+- 通知点击恢复隐藏主窗口等少数系统交互仍有待完善。窗口隐藏或失焦时，任务完成会发送通知；任务中途等待用户确认（工具审批）或等待回答（提问、计划确认）时同样会通知，避免应用在后台被卡住却毫无提示。
 - 应用更新和 DSH npm 运行时更新是两套独立流程。
 - 当前只提供从已安装 Runtime 向 npm `latest`/`next`/`alpha` tag 的单向升级；默认仅通知不自动安装，`next` 和 `alpha` 只能由用户明确选择；更新失败的版本会抑制到 npm tag 变化、应用升级或用户手动重试；旧版本会保留到新 Runtime 连续两次成功启动后自动清理，暂不提供任意版本切换、卸载或降级入口。
 - App 默认使用独立的 `profiles/swift-desktop`，终端 `dsh web` 继续使用 `profiles/web`；旧版 App 的 `profiles/desktop` 会在首次启动时安全复制到新目录；通用设置中切换到 `web` 后，两者会共享插件和依赖，升级或插件变更可能影响终端启动。

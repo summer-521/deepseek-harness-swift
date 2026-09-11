@@ -109,8 +109,23 @@ public final class DshBridgeHandler: NSObject, WKScriptMessageHandler {
         case "notify":
             let title = payload?["title"] as? String
             let cwd = payload?["cwd"] as? String
+            // The bridge reports four kinds of event: a completed task (no
+            // `kind`), a question (`needs-input`), a tool approval
+            // (`needs-approval`) and a plan review (`needs-review`). A hidden
+            // window must be told about the last three: the turn stays open
+            // while it waits, so the completion edge never arrives.
+            let reason = payload?["reason"] as? String
             if !MainWindowController.shared.isFocusedForNotifications {
-                NotificationManager.shared.showTaskDoneNotification(title: title, cwd: cwd)
+                switch payload?["kind"] as? String {
+                case "needs-approval":
+                    NotificationManager.shared.showNeedsApprovalNotification(title: title, reason: reason)
+                case "needs-review":
+                    NotificationManager.shared.showNeedsReviewNotification(title: title, reason: reason)
+                case "needs-input":
+                    NotificationManager.shared.showNeedsInputNotification(title: title, reason: reason)
+                default:
+                    NotificationManager.shared.showTaskDoneNotification(title: title, cwd: cwd)
+                }
             }
 
         case "windowDragPrepare":

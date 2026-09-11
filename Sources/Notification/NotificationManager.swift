@@ -29,22 +29,64 @@ public final class NotificationManager: NSObject, UNUserNotificationCenterDelega
 
     /// Display a task completion notification.
     public func showTaskDoneNotification(title: String?, cwd: String?) {
-        let sessionLabel = (title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+        var lines = [sessionLabel(from: title)]
+        if let workspace = workspaceName(from: cwd) {
+            lines.append("工作区：\(workspace)")
+        }
+        deliver(title: "任务完成", body: lines.joined(separator: "\n"))
+    }
+
+    /// Display a notification for a task that is blocked waiting on the user:
+    /// an approval prompt or a question the agent asked. While one of those is
+    /// pending the turn stays open, so no completion event exists to react to.
+    ///
+    /// The body is the prompt itself. The session name and workspace are
+    /// deliberately omitted here: the user just triggered this in the app, and
+    /// the prompt is the only thing they need to decide whether to come back.
+    /// The session name is kept as a fallback for a prompt that carries no text
+    /// (an approval without a reason).
+    public func showNeedsInputNotification(title: String?, reason: String?) {
+        deliver(title: "需要你的输入", body: promptBody(title: title, reason: reason))
+    }
+
+    /// Display a notification for a tool approval the agent is waiting on.
+    /// It has its own title because the user is asked to *decide* on an action,
+    /// not to answer a question.
+    public func showNeedsApprovalNotification(title: String?, reason: String?) {
+        deliver(title: "需要你的批准", body: promptBody(title: title, reason: reason))
+    }
+
+    /// Display a notification for a plan the agent submitted for review. The
+    /// body names the plan (its heading) so the user knows what they are being
+    /// asked to approve.
+    public func showNeedsReviewNotification(title: String?, reason: String?) {
+        deliver(title: "需要你的确认", body: promptBody(title: title, reason: reason))
+    }
+
+    /// Body shared by the two prompt notifications: the prompt itself, with the
+    /// session name only as a fallback for a prompt that carries no text.
+    private func promptBody(title: String?, reason: String?) -> String {
+        let detail = reason?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (detail?.isEmpty == false) ? String(detail!.prefix(240)) : sessionLabel(from: title)
+    }
+
+    private func sessionLabel(from title: String?) -> String {
+        (title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
             ? title!.trimmingCharacters(in: .whitespacesAndNewlines)
             : "会话"
+    }
 
-        var workspace: String?
-        if let cwd = cwd?.trimmingCharacters(in: .whitespacesAndNewlines), !cwd.isEmpty {
-            workspace = URL(fileURLWithPath: cwd).lastPathComponent
+    private func workspaceName(from cwd: String?) -> String? {
+        guard let cwd = cwd?.trimmingCharacters(in: .whitespacesAndNewlines), !cwd.isEmpty else {
+            return nil
         }
+        return URL(fileURLWithPath: cwd).lastPathComponent
+    }
 
+    private func deliver(title: String, body: String) {
         let content = UNMutableNotificationContent()
-        content.title = "任务完成"
-        if let workspace = workspace {
-            content.body = "\(sessionLabel)\n工作区：\(workspace)"
-        } else {
-            content.body = sessionLabel
-        }
+        content.title = title
+        content.body = body
         content.sound = .default
 
         let center = UNUserNotificationCenter.current()
