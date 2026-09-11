@@ -1362,13 +1362,15 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
     /// must never turn a startup pass into an arbitrary recursive delete.
     ///
     /// Refused (and reported as `false`, so the debt is kept) when the path is
-    /// not exactly this app's displaced-tree name for `expectedSnapshotID`, or
-    /// when the target is not a real directory (a symlink would otherwise
-    /// redirect the recursive delete).
+    /// not exactly this app's displaced-tree name for `expectedSnapshotID`, when
+    /// its parent is not the expected `profiles` root, or when the target is not
+    /// a real directory (a symlink would otherwise redirect the recursive
+    /// delete).
     @discardableResult
     public func removeDisplacedProfileTree(
         at url: URL,
-        expectedSnapshotID: String
+        expectedSnapshotID: String,
+        expectedParent: URL
     ) async -> Bool {
         await Task.detached(priority: .utility) {
             let fileManager = FileManager.default
@@ -1379,6 +1381,14 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
             ) else {
                 print(
                     "[DshPluginManager] Refusing to reclaim displaced Profile tree with an unexpected name:",
+                    standardized.path
+                )
+                return false
+            }
+            guard standardized.deletingLastPathComponent().path
+                    == expectedParent.standardizedFileURL.path else {
+                print(
+                    "[DshPluginManager] Refusing to reclaim displaced Profile tree outside its Profile root:",
                     standardized.path
                 )
                 return false

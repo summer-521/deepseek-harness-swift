@@ -410,6 +410,16 @@ test('R12 keeps displaced Profile trees behind a durable completion proof', () =
   )
   assert.match(STATE_SOURCE, /public static func mayReclaim\(/)
   assert.match(STATE_SOURCE, /cleanup\.completed\s*\n\s*&& cleanup\.hasWellFormedDisplacedName/)
+  // Round-6: a directory merely named `profiles` is not evidence. The record
+  // must sit directly inside a Profile root this app creates.
+  assert.match(STATE_SOURCE, /public func displacedRootIsTrusted\(_ trustedRoots: \[URL\]\) -> Bool/)
+  assert.match(
+    STATE_SOURCE,
+    /cleanup\.displacedRootIsTrusted\(trustedProfilesRoots\)\s*\n\s*&& canonicalProfileIsRealDirectory/
+  )
+  assert.match(STATE_SOURCE, /trustedProfilesRoots: \[URL\]/)
+  // The version-string inference must stay gone: unknown is reported as unknown.
+  assert.doesNotMatch(STATE_SOURCE, /hasWellFormedDisplacedName[\s\S]{0,300}lastPathComponent == "profiles"/)
 
   // Round-4 R12: the decision is derived from the record itself. The record
   // lives in Application Support, which every DSH_HOME shares, so the current
@@ -427,8 +437,15 @@ test('R12 keeps displaced Profile trees behind a durable completion proof', () =
   // recorded path is user-writable state, so a mismatch must never turn a
   // startup pass into an arbitrary recursive delete.
   assert.match(PLUGIN_SOURCE, /expectedSnapshotID: String/)
+  assert.match(PLUGIN_SOURCE, /expectedParent: URL/)
   assert.match(PLUGIN_SOURCE, /static func isDisplacedProfileRestoreName\(_ name: String, snapshotID: String\)/)
-  assert.match(PLUGIN_SOURCE, /func removeDisplacedProfileTree\([\s\S]{0,120}expectedSnapshotID/)
+  assert.match(PLUGIN_SOURCE, /UUID\(uuidString: snapshotID\) != nil/)
+  assert.match(PLUGIN_SOURCE, /func removeDisplacedProfileTree\([\s\S]{0,160}expectedSnapshotID/)
+  assert.match(
+    PLUGIN_SOURCE,
+    /deletingLastPathComponent\(\)\.path\s*\n\s*== expectedParent\.standardizedFileURL\.path/,
+    'the deletion entry point must verify the tree is inside the expected Profile root'
+  )
 
   // The debt is recorded before a restore can displace the live Profile, and
   // settled afterwards with the proof the restore itself cannot write.
@@ -461,6 +478,23 @@ test('R12 keeps displaced Profile trees behind a durable completion proof', () =
     'every recorded debt must be considered'
   )
   assert.match(retryBody, /DshPluginManager\.isRealDirectory\(/)
+  assert.match(retryBody, /DshPluginManager\.isRealDirectory\(at: cleanup\.profilesRootURL\)/)
+  assert.match(retryBody, /trustedProfileRoots/)
+  assert.match(retryBody, /expectedParent: cleanup\.profilesRootURL/)
+  const trustedRoots = SETTINGS_SOURCE.slice(
+    SETTINGS_SOURCE.indexOf('private static var trustedProfileRoots'),
+    SETTINGS_SOURCE.indexOf('public func retryPendingProfileRestoreCleanup()')
+  )
+  assert.match(
+    trustedRoots,
+    /DshLaunchContext\.profileDirectory\(for: \.desktop\)[\s\S]{0,120}deletingLastPathComponent\(\)/,
+    'the trusted root must be the app-owned `profiles` directory of the configured DSH home'
+  )
+  assert.doesNotMatch(
+    trustedRoots,
+    /displacedPath/,
+    'the trusted root must not be derived from the untrusted record'
+  )
   assert.ok(
     retryBody.indexOf('mayReclaim(') < retryBody.indexOf('removeDisplacedProfileTree('),
     'the reclamation pass must require the proof before deleting anything'

@@ -256,7 +256,21 @@ struct WebProfileSnapshotHarness {
         try fileManager.createDirectory(at: foreignTree, withIntermediateDirectories: true)
         let mismatchReclaimed = await manager.removeDisplacedProfileTree(
             at: foreignTree,
-            expectedSnapshotID: "9C2A7B86-1E4D-4C21-9F0B-6D1E5A7C3B48"
+            expectedSnapshotID: "9C2A7B86-1E4D-4C21-9F0B-6D1E5A7C3B48",
+            expectedParent: reclaimRoot
+        )
+        let outsideRootReclaimed = await manager.removeDisplacedProfileTree(
+            at: wellFormedTree,
+            expectedSnapshotID: "9C2A7B86-1E4D-4C21-9F0B-6D1E5A7C3B48",
+            expectedParent: reclaimRoot.deletingLastPathComponent()
+        )
+        require(
+            !outsideRootReclaimed,
+            "a well-formed tree must not be reclaimed through a different Profile root"
+        )
+        require(
+            fileManager.fileExists(atPath: wellFormedTree.path),
+            "a refused reclamation must leave the tree untouched"
         )
         require(!mismatchReclaimed, "a recorded path with another snapshot id must be refused")
         require(fileManager.fileExists(atPath: foreignTree.path), "a refused reclamation must leave the tree untouched")
@@ -267,7 +281,8 @@ struct WebProfileSnapshotHarness {
         try fileManager.createSymbolicLink(atPath: symlinkTree.path, withDestinationPath: wellFormedTree.path)
         let symlinkReclaimed = await manager.removeDisplacedProfileTree(
             at: symlinkTree,
-            expectedSnapshotID: "5E6F7A8B-9C0D-4E1F-2A3B-4C5D6E7F8A9B"
+            expectedSnapshotID: "5E6F7A8B-9C0D-4E1F-2A3B-4C5D6E7F8A9B",
+            expectedParent: reclaimRoot
         )
         require(!symlinkReclaimed, "a symlink at the recorded path must be refused")
         require(fileManager.fileExists(atPath: wellFormedTree.path), "the symlink target must survive")
@@ -278,7 +293,8 @@ struct WebProfileSnapshotHarness {
         try? fileManager.removeItem(at: symlinkTree)
         let reclaimed = await manager.removeDisplacedProfileTree(
             at: wellFormedTree,
-            expectedSnapshotID: "9C2A7B86-1E4D-4C21-9F0B-6D1E5A7C3B48"
+            expectedSnapshotID: "9C2A7B86-1E4D-4C21-9F0B-6D1E5A7C3B48",
+            expectedParent: reclaimRoot
         )
         require(reclaimed, "a well-formed displaced tree must be reclaimed")
         require(!fileManager.fileExists(atPath: wellFormedTree.path), "a reclaimed tree must be gone")

@@ -346,11 +346,19 @@ struct RuntimeRecoveryHarness {
             completed: false
         )
         require(
-            !DshProfileRestoreCleanup.mayReclaim(unproven, canonicalProfileIsRealDirectory: true),
+            !DshProfileRestoreCleanup.mayReclaim(
+                unproven,
+                canonicalProfileIsRealDirectory: true,
+                trustedProfilesRoots: [profilesRoot]
+            ),
             "an unproven restore must never be reclaimed"
         )
         require(
-            !DshProfileRestoreCleanup.mayReclaim(unproven, canonicalProfileIsRealDirectory: false),
+            !DshProfileRestoreCleanup.mayReclaim(
+                unproven,
+                canonicalProfileIsRealDirectory: false,
+                trustedProfilesRoots: [profilesRoot]
+            ),
             "an unproven restore must never be reclaimed"
         )
 
@@ -380,11 +388,19 @@ struct RuntimeRecoveryHarness {
         var proven = unproven
         proven.completed = true
         require(
-            DshProfileRestoreCleanup.mayReclaim(proven, canonicalProfileIsRealDirectory: true),
+            DshProfileRestoreCleanup.mayReclaim(
+                proven,
+                canonicalProfileIsRealDirectory: true,
+                trustedProfilesRoots: [profilesRoot]
+            ),
             "a proven restore with a canonical Profile may be reclaimed"
         )
         require(
-            !DshProfileRestoreCleanup.mayReclaim(proven, canonicalProfileIsRealDirectory: false),
+            !DshProfileRestoreCleanup.mayReclaim(
+                proven,
+                canonicalProfileIsRealDirectory: false,
+                trustedProfilesRoots: [profilesRoot]
+            ),
             "a missing canonical Profile must keep the displaced tree"
         )
 
@@ -398,19 +414,27 @@ struct RuntimeRecoveryHarness {
         ).path
         require(!foreignTree.hasWellFormedDisplacedName, "a foreign displaced name must be rejected")
         require(
-            !DshProfileRestoreCleanup.mayReclaim(foreignTree, canonicalProfileIsRealDirectory: true),
+            !DshProfileRestoreCleanup.mayReclaim(
+                foreignTree,
+                canonicalProfileIsRealDirectory: true,
+                trustedProfilesRoots: [profilesRoot]
+            ),
             "a snapshot-id mismatch must never be reclaimed"
         )
         var arbitraryPath = proven
         arbitraryPath.displacedPath = "/Users/someone/Documents"
         require(
-            !DshProfileRestoreCleanup.mayReclaim(arbitraryPath, canonicalProfileIsRealDirectory: true),
+            !DshProfileRestoreCleanup.mayReclaim(
+                arbitraryPath,
+                canonicalProfileIsRealDirectory: true,
+                trustedProfilesRoots: [profilesRoot]
+            ),
             "an arbitrary absolute path must never be reclaimed"
         )
-        // Round-5 hardening: the snapshot id must be a UUID and the tree must
-        // live directly inside a `profiles` directory. A user-writable state
-        // file must not be able to point the reclaim at an unrelated tree that
-        // merely shares the name pattern.
+
+        // Round-5 hardening: the snapshot id must be a UUID, and the enclosing
+        // directory must be one of the Profile roots this app creates. A bare
+        // `profiles` name is not evidence (round-6 reproduction below).
         var nonUUID = proven
         nonUUID.displacedPath = profilesRoot.appendingPathComponent(
             DshProfileRestoreCleanup.displacedNamePrefix + "snapshot-r12",
@@ -418,22 +442,62 @@ struct RuntimeRecoveryHarness {
         ).path
         require(!nonUUID.hasWellFormedDisplacedName, "a non-UUID snapshot id must be rejected")
         require(
-            !DshProfileRestoreCleanup.mayReclaim(nonUUID, canonicalProfileIsRealDirectory: true),
+            !DshProfileRestoreCleanup.mayReclaim(
+                nonUUID,
+                canonicalProfileIsRealDirectory: true,
+                trustedProfilesRoots: [profilesRoot]
+            ),
             "a non-UUID snapshot id must never authorise a delete"
         )
-        var foreignRoot = proven
-        foreignRoot.displacedPath = URL(fileURLWithPath: "/Users/someone/Documents", isDirectory: true)
+        var outsideRoot = proven
+        outsideRoot.displacedPath = URL(fileURLWithPath: "/Users/someone/Documents", isDirectory: true)
             .appendingPathComponent(
                 DshProfileRestoreCleanup.displacedNamePrefix + "3F2504E0-4F89-41D3-9A0C-0305E82C3301",
                 isDirectory: true
             ).path
         require(
-            !foreignRoot.hasWellFormedDisplacedName,
-            "a displaced tree outside a profiles directory must be rejected"
+            !outsideRoot.displacedRootIsTrusted([profilesRoot]),
+            "a displaced tree outside the app's Profile root must not be trusted"
         )
         require(
-            !DshProfileRestoreCleanup.mayReclaim(foreignRoot, canonicalProfileIsRealDirectory: true),
-            "a displaced tree outside a profiles directory must never be reclaimed"
+            !DshProfileRestoreCleanup.mayReclaim(
+                outsideRoot,
+                canonicalProfileIsRealDirectory: true,
+                trustedProfilesRoots: [profilesRoot]
+            ),
+            "a displaced tree outside the app's Profile root must never be reclaimed"
+        )
+
+        // Round-6 reproduction: a directory merely *named* `profiles` is not
+        // evidence. This record is fully well-formed by name — UUID snapshot and
+        // the exact displaced name — but it points at an unrelated project
+        // directory, so reclamation must refuse it even when a sibling canonical
+        // Profile exists there.
+        let unrelatedRoot = URL(fileURLWithPath: "/tmp/unrelated-project/profiles", isDirectory: true)
+        let unrelatedRecord = DshProfileRestoreCleanup(
+            profile: .web,
+            snapshotID: "3F2504E0-4F89-41D3-9A0C-0305E82C3301",
+            displacedPath: unrelatedRoot.appendingPathComponent(
+                DshProfileRestoreCleanup.displacedNamePrefix + "3F2504E0-4F89-41D3-9A0C-0305E82C3301",
+                isDirectory: true
+            ),
+            completed: true
+        )
+        require(
+            unrelatedRecord.hasWellFormedDisplacedName,
+            "the name check alone accepts the unrelated tree, which is why the root must be verified"
+        )
+        require(
+            !unrelatedRecord.displacedRootIsTrusted([profilesRoot]),
+            "a profiles directory outside the app's DSH home is not a trusted root"
+        )
+        require(
+            !DshProfileRestoreCleanup.mayReclaim(
+                unrelatedRecord,
+                canonicalProfileIsRealDirectory: true,
+                trustedProfilesRoots: [profilesRoot]
+            ),
+            "an unrelated profiles directory must never authorise a recursive delete"
         )
 
         // Debt is a collection: a later restore must not drop the reference to a

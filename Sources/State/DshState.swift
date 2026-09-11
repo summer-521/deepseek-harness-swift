@@ -118,18 +118,25 @@ public struct DshProfileRestoreCleanup: Codable, Equatable, Sendable {
         profilesRootURL.appendingPathComponent(profile.runtimeProfileName, isDirectory: true)
     }
 
-    /// True when the record still identifies a tree this app could have
-    /// created: the deterministic displaced name for a **UUID** snapshot,
-    /// directly inside a `profiles` directory. `dsh-state.json` is
-    /// user-writable, so a record that fails this must never authorise deleting
-    /// anything — the UUID and the fixed root name are the only structural
-    /// evidence available without re-reading the current `DSH_HOME`.
+    /// True when the record carries this app's deterministic displaced name for
+    /// a **UUID** snapshot. `dsh-state.json` is user-writable, so a record that
+    /// fails this must never authorise deleting anything.
+    ///
+    /// The enclosing directory is verified separately by
+    /// `displacedRootIsTrusted`: a directory merely *named* `profiles` is not
+    /// evidence — any project directory can be called that (round-6
+    /// reproduction: `/tmp/unrelated-project/profiles/
+    /// .dsh-profile-restore-<uuid>` passed the name check).
     public var hasWellFormedDisplacedName: Bool {
-        guard UUID(uuidString: snapshotID) != nil,
-              displacedURL.lastPathComponent == Self.displacedNamePrefix + snapshotID else {
-            return false
-        }
-        return profilesRootURL.lastPathComponent == "profiles"
+        UUID(uuidString: snapshotID) != nil
+            && displacedURL.lastPathComponent == Self.displacedNamePrefix + snapshotID
+    }
+
+    /// True when the displaced tree sits directly inside one of `trustedRoots`,
+    /// i.e. the `profiles` directory of a DSH home this app creates itself.
+    public func displacedRootIsTrusted(_ trustedRoots: [URL]) -> Bool {
+        let root = profilesRootURL.standardizedFileURL.path
+        return trustedRoots.contains { $0.standardizedFileURL.path == root }
     }
 
     public func matches(profile: DshAppProfile, snapshotID: String) -> Bool {
@@ -138,15 +145,18 @@ public struct DshProfileRestoreCleanup: Codable, Equatable, Sendable {
 
     /// A displaced tree may only be reclaimed when the restore provably
     /// finished, the recorded path still identifies this app's displaced tree,
-    /// and the canonical Profile it was moved aside from is a real directory in
-    /// the same `profiles` root. Otherwise the tree can be the only complete
-    /// copy of the user's Profile, and a wrong answer deletes it irreversibly.
+    /// that tree sits inside a Profile root this app creates (`trustedRoots`),
+    /// and the canonical Profile it was moved aside from is a real directory.
+    /// Otherwise the tree can be the only complete copy of the user's Profile,
+    /// and a wrong answer deletes it irreversibly.
     public static func mayReclaim(
         _ cleanup: DshProfileRestoreCleanup,
-        canonicalProfileIsRealDirectory: Bool
+        canonicalProfileIsRealDirectory: Bool,
+        trustedProfilesRoots: [URL]
     ) -> Bool {
         cleanup.completed
             && cleanup.hasWellFormedDisplacedName
+            && cleanup.displacedRootIsTrusted(trustedProfilesRoots)
             && canonicalProfileIsRealDirectory
     }
 }

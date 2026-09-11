@@ -2064,29 +2064,45 @@ public final class SettingsViewModel: ObservableObject {
     /// canonical Profile back in place: without either, the displaced tree can
     /// be the only complete copy of the user's Profile, so it is kept and
     /// reported instead.
+    /// Profile roots this app creates itself: the `profiles` directory of the
+    /// DSH home the app is currently configured to use. A recorded displaced
+    /// path is only reclaimable when it sits directly inside one of them.
+    private static var trustedProfileRoots: [URL] {
+        [DshLaunchContext.profileDirectory(for: .desktop)
+            .deletingLastPathComponent()
+            .standardizedFileURL]
+    }
+
     public func retryPendingProfileRestoreCleanup() async throws {
         let state = DshStateManager.shared.current
         guard !state.pendingProfileRestoreCleanups.isEmpty else { return }
         var retained: [String] = []
         var failed: [String] = []
+        // The record lives in Application Support, which is shared by every
+        // DSH_HOME, so the record itself is untrusted input: reclamation only
+        // accepts a tree that sits inside a Profile root this app creates
+        // (`<DSH home>/profiles`), whose own `profiles` entry is a real
+        // directory rather than a symlink pointing somewhere else. A directory
+        // that merely carries the name `profiles` proves nothing (round-6
+        // reproduction: an unrelated project directory passed that check).
+        let trustedRoots = Self.trustedProfileRoots
         for cleanup in state.pendingProfileRestoreCleanups {
-            // Every check is derived from the record itself, never from the
-            // current DSH_HOME (R12): the record lives in Application Support,
-            // which is shared by every DSH_HOME, so the canonical Profile of a
-            // *different* home must not authorise deleting this tree.
             let canonicalIsRealDirectory = DshPluginManager.isRealDirectory(
                 at: cleanup.canonicalProfileURL
             )
-            guard DshProfileRestoreCleanup.mayReclaim(
-                cleanup,
-                canonicalProfileIsRealDirectory: canonicalIsRealDirectory
-            ) else {
+            guard DshPluginManager.isRealDirectory(at: cleanup.profilesRootURL),
+                  DshProfileRestoreCleanup.mayReclaim(
+                      cleanup,
+                      canonicalProfileIsRealDirectory: canonicalIsRealDirectory,
+                      trustedProfilesRoots: trustedRoots
+                  ) else {
                 retained.append(cleanup.displacedPath)
                 continue
             }
             let reclaimed = await DshPluginManager.shared.removeDisplacedProfileTree(
                 at: cleanup.displacedURL,
-                expectedSnapshotID: cleanup.snapshotID
+                expectedSnapshotID: cleanup.snapshotID,
+                expectedParent: cleanup.profilesRootURL
             )
             guard reclaimed else {
                 failed.append(cleanup.displacedPath)
