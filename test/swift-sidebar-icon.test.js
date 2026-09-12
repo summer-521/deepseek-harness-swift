@@ -21,8 +21,11 @@ const windowControllerSource = fs.readFileSync(
 
 test("settings sidebar draws the SF Symbol with the macOS 26 colours", () => {
   assert.doesNotMatch(settingsViewSource, /Label\(panel\.navTitle, systemImage: panel\.icon\)/);
-  assert.match(settingsViewSource, /SettingsSidebarLabel\(title: panel\.navTitle, isSelected: panel == currentPanel\)/);
-  assert.match(settingsViewSource, /SettingsSidebarIcon\(symbol: panel\.icon, isSelected: panel == currentPanel\)/);
+  assert.match(settingsViewSource, /SettingsSidebarLabel\(\s*title: panel\.navTitle,\s*isSelected: panel == currentPanel,\s*sidebarFocused: sidebarFocused\s*\)/);
+  assert.match(settingsViewSource, /SettingsSidebarIcon\(\s*symbol: panel\.icon,\s*isSelected: panel == currentPanel,\s*sidebarFocused: sidebarFocused\s*\)/);
+  // The sidebar list reports its own focus; the capsule's emphasis follows it.
+  assert.match(settingsViewSource, /@FocusState private var sidebarFocused: Bool/);
+  assert.match(settingsViewSource, /\.focused\(\$sidebarFocused\)/);
   // The four symbols from before the experiment stay in place.
   assert.match(settingsViewSource, /case \.general: return "gearshape"/);
   assert.match(settingsViewSource, /case \.versions: return "shippingbox"/);
@@ -37,8 +40,17 @@ test("sidebar labels pin the macOS 26 colour and weight", () => {
   assert.match(iconSource, /\.font\(\.system\(size: SettingsSidebarIconRenderer\.labelPointSize, weight: \.regular\)\)/);
   assert.match(iconSource, /static let labelPointSize: CGFloat = 13/);
   assert.match(iconSource, /foregroundStyle\(Color\(nsColor: SettingsSidebarIconRenderer\.color\(/);
-  assert.match(iconSource, /static func isEmphasized\(isSelected: Bool, controlActiveState: ControlActiveState\) -> Bool/);
-  assert.match(iconSource, /isSelected && controlActiveState == \.key/);
+});
+
+test("row colours follow the capsule's emphasis, not just the window's key state", () => {
+  // Clicking a text field greys the capsule while the window stays key; the
+  // content must fall back to the label colour instead of staying white.
+  assert.match(
+    iconSource,
+    /static func isEmphasized\(\s*isSelected: Bool,\s*controlActiveState: ControlActiveState,\s*sidebarFocused: Bool\s*\) -> Bool/,
+  );
+  assert.match(iconSource, /isSelected && controlActiveState == \.key && sidebarFocused/);
+  assert.match(iconSource, /let sidebarFocused: Bool/);
 });
 
 test("sidebar icons are non-template bitmaps that invert on an emphasised selection", () => {

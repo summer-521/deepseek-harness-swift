@@ -37,11 +37,19 @@ enum SettingsSidebarIconRenderer {
         return appearance == .dark ? darkLabelColor : lightLabelColor
     }
 
-    /// Whether a row draws with the inverted (white) content: selected *and*
-    /// inside the key window. An unfocused window keeps the label colour, which
-    /// is how macOS 26 renders the grey capsule state.
-    static func isEmphasized(isSelected: Bool, controlActiveState: ControlActiveState) -> Bool {
-        isSelected && controlActiveState == .key
+    /// Whether a row draws with the inverted (white) content: the selected row,
+    /// in the key window, while the sidebar list itself holds focus.
+    ///
+    /// That last condition matters because the capsule's emphasis follows the
+    /// *list's* focus, not just the window's key state: clicking a text field in
+    /// the detail pane greys the capsule while the window stays key. Tying the
+    /// content to the window alone put white glyphs on a grey capsule.
+    static func isEmphasized(
+        isSelected: Bool,
+        controlActiveState: ControlActiveState,
+        sidebarFocused: Bool
+    ) -> Bool {
+        isSelected && controlActiveState == .key && sidebarFocused
     }
 
     /// The icon for one state, rendered once and cached. Only ever called from
@@ -117,14 +125,17 @@ struct SettingsSidebarIcon: View {
     @Environment(\.controlActiveState) private var controlActiveState
 
     let symbol: String
-    /// Whether this row is the selected one. The inversion only applies while
-    /// the window is key, matching macOS 26.
+    /// Whether this row is the selected one.
     let isSelected: Bool
+    /// Whether the sidebar list holds focus, which is what decides the
+    /// capsule's emphasis.
+    let sidebarFocused: Bool
 
     var body: some View {
         let emphasized = SettingsSidebarIconRenderer.isEmphasized(
             isSelected: isSelected,
-            controlActiveState: controlActiveState
+            controlActiveState: controlActiveState,
+            sidebarFocused: sidebarFocused
         )
         if let image = SettingsSidebarIconRenderer.image(
             symbol: symbol,
@@ -153,11 +164,15 @@ struct SettingsSidebarLabel: View {
     let title: String
     /// Whether this row is the selected one.
     let isSelected: Bool
+    /// Whether the sidebar list holds focus, which is what decides the
+    /// capsule's emphasis.
+    let sidebarFocused: Bool
 
     var body: some View {
         let emphasized = SettingsSidebarIconRenderer.isEmphasized(
             isSelected: isSelected,
-            controlActiveState: controlActiveState
+            controlActiveState: controlActiveState,
+            sidebarFocused: sidebarFocused
         )
         Text(title)
             .font(.system(size: SettingsSidebarIconRenderer.labelPointSize, weight: .regular))
