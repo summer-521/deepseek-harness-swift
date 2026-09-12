@@ -78,6 +78,10 @@ public final class SettingsWindowController: NSWindowController, NSWindowDelegat
         ) { [weak self] notification in
             guard let panel = notification.object as? SettingsPanel else { return }
             self?.updateTitle(for: panel.rawValue)
+            // Selecting a row must leave the sidebar focused: otherwise the
+            // row highlight stays grey after focus moved to a control in the
+            // detail pane. No-op while another window is key.
+            self?.focusSidebar()
         }
         appearanceObserver = NotificationCenter.default.addObserver(
             forName: DshNativeAppearance.didChangeNotification,
@@ -116,15 +120,52 @@ public final class SettingsWindowController: NSWindowController, NSWindowDelegat
         NSApp.activate(ignoringOtherApps: true)
         // SwiftUI may select the first TextField when the settings window
         // becomes key. Settings should open as a browsing surface instead of
-        // immediately entering port-edit mode.
-        window?.makeFirstResponder(nil)
+        // immediately entering port-edit mode — but clearing focus to the
+        // window itself makes AppKit mark the sidebar selection unemphasised,
+        // which paints the selected row grey even while the window is key.
+        // Focusing the sidebar list satisfies both: no text field takes focus,
+        // and the selection keeps the accent colour. See focusSidebar().
+        focusSidebar()
         DispatchQueue.main.async { [weak self] in
-            self?.window?.makeFirstResponder(nil)
+            self?.focusSidebar()
         }
     }
 
     public func updateTitle(for index: Int) {
         window?.title = SettingsPanel(rawValue: index)?.title ?? "设置"
+    }
+
+    /// Focuses the navigation split view's leading list, which is the leftmost
+    /// table view in the window.
+    ///
+    /// The row highlight follows the list's focus, not just the window's key
+    /// state: with the window as first responder AppKit reports
+    /// `NSTableRowView.isEmphasized == false`, so the capsule renders grey.
+    /// Falls back to the previous "clear focus" behaviour if the list cannot
+    /// be located.
+    private func focusSidebar() {
+        guard let window, window.isKeyWindow else { return }
+        guard let sidebar = Self.sidebarList(in: window) else {
+            window.makeFirstResponder(nil)
+            return
+        }
+        window.makeFirstResponder(sidebar)
+    }
+
+    private static func sidebarList(in window: NSWindow) -> NSTableView? {
+        guard let contentView = window.contentView else { return nil }
+        var best: (table: NSTableView, minX: CGFloat)?
+        func walk(_ view: NSView) {
+            if let table = view as? NSTableView {
+                let minX = table.convert(table.bounds, to: nil).minX
+                if best == nil || minX < best!.minX {
+                    best = (table, minX)
+                }
+            }
+            for subview in view.subviews { walk(subview) }
+        }
+        walk(contentView)
+        return best?.table
     }
 
     private func applyNativeAppearance() {

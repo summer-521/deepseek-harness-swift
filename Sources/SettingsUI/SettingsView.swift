@@ -262,8 +262,12 @@ public struct SettingsView: View {
 
     private var macOS26Sidebar: some View {
         List(SettingsPanel.allCases, selection: selection) { panel in
-            Label(panel.navTitle, systemImage: panel.icon)
-                .tag(panel)
+            Label {
+                SettingsSidebarLabel(title: panel.navTitle, isSelected: panel == currentPanel)
+            } icon: {
+                SettingsSidebarIcon(symbol: panel.icon, isSelected: panel == currentPanel)
+            }
+            .tag(panel)
         }
         .listStyle(.sidebar)
         .navigationSplitViewColumnWidth(min: 230, ideal: 250, max: 270)
