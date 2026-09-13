@@ -149,10 +149,6 @@ public struct SettingsView: View {
     @ObservedObject var viewModel = SettingsViewModel.shared
     @State private var backStack: [SettingsPanel] = []
     @State private var forwardStack: [SettingsPanel] = []
-    /// Mirrors the sidebar list's focus, which is what AppKit uses to emphasise
-    /// the selected row. The row colours have to follow it or they end up white
-    /// on a grey capsule once a detail-pane control takes focus.
-    @FocusState private var sidebarFocused: Bool
 
     public init() {}
 
@@ -266,23 +262,10 @@ public struct SettingsView: View {
 
     private var macOS26Sidebar: some View {
         List(SettingsPanel.allCases, selection: selection) { panel in
-            Label {
-                SettingsSidebarLabel(
-                    title: panel.navTitle,
-                    isSelected: panel == currentPanel,
-                    sidebarFocused: sidebarFocused
-                )
-            } icon: {
-                SettingsSidebarIcon(
-                    symbol: panel.icon,
-                    isSelected: panel == currentPanel,
-                    sidebarFocused: sidebarFocused
-                )
-            }
-            .tag(panel)
+            Label(panel.navTitle, systemImage: panel.icon)
+                .tag(panel)
         }
         .listStyle(.sidebar)
-        .focused($sidebarFocused)
         .navigationSplitViewColumnWidth(min: 230, ideal: 250, max: 270)
         .toolbar(removing: .sidebarToggle)
     }
