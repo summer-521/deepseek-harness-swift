@@ -397,7 +397,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openHelp() {
-        if let url = URL(string: "https://github.com/summer-521/deepseek-harness-desktop") {
+        // The same project page the About tab links to. This used to point at
+        // `deepseek-harness-desktop`, the archived Electron shell it replaced.
+        if let url = URL(string: "https://github.com/summer-521/deepseek-harness-swift") {
             NSWorkspace.shared.open(url)
         }
     }

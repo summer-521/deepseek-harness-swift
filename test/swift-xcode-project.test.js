@@ -18,6 +18,10 @@ const VERSION_CONFIG_SOURCE = fs.readFileSync(
   new URL('../Version.xcconfig', import.meta.url),
   'utf8',
 )
+const APP_DELEGATE_SOURCE = fs.readFileSync(
+  new URL('../Sources/AppDelegate.swift', import.meta.url),
+  'utf8',
+)
 const BUILD_SOURCE = fs.readFileSync(
   new URL('../scripts/build-app.sh', import.meta.url),
   'utf8',
@@ -142,6 +146,19 @@ test('Swift build delegates compilation to xcodebuild and keeps the app metadata
   assert.match(ABOUT_TAB_SOURCE, /CFBundleShortVersionString/)
   assert.doesNotMatch(ABOUT_TAB_SOURCE, /CFBundleVersion|appBuild|appVersionDisplay|AboutValueRow/)
   assert.match(ABOUT_TAB_SOURCE, /Text\("版本 \\\(appVersion\)"\)/)
+})
+
+test('the Help menu opens the same project page the About tab links to', () => {
+  const projectURL = ABOUT_TAB_SOURCE.match(/projectURL = URL\(string: "([^"]+)"\)!/)
+  assert.ok(projectURL, 'could not read the About tab project URL')
+  const helpURL = APP_DELEGATE_SOURCE.match(/@objc private func openHelp\(\)[\s\S]*?URL\(string: "([^"]+)"\)/)
+  assert.ok(helpURL, 'could not read the Help menu URL')
+  assert.equal(helpURL[1], projectURL[1])
+  // `deepseek-harness-desktop` is the archived shell this project replaced, so
+  // no URL may point at it.
+  const archivedRepoURL = /URL\(string: "[^"]*deepseek-harness-desktop[^"]*"\)/
+  assert.doesNotMatch(APP_DELEGATE_SOURCE, archivedRepoURL)
+  assert.doesNotMatch(ABOUT_TAB_SOURCE, archivedRepoURL)
 })
 
 test('Swift application build, packaging, and bundled Node are arm64-only', () => {
