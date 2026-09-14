@@ -89,13 +89,16 @@ test('Profile switches are recoverable across force-quit and commit only after a
     SETTINGS_SOURCE.indexOf('public func setAppProfile'),
     SETTINGS_SOURCE.indexOf('    /// Change the live Node policy', SETTINGS_SOURCE.indexOf('public func setAppProfile')),
   )
+  // Both profile-switch restarts go through the authentication-recovery
+  // wrapper. The call may carry the profile-bridge progress callback, so match
+  // the receiver and its first argument rather than the whole call.
   assert.equal(
-    (profileSwitchBoundary.match(/restartDshServiceWithAuthenticationRecoveryDuringOperation\(context: context\)/g) ?? []).length,
+    (profileSwitchBoundary.match(/restartDshServiceWithAuthenticationRecoveryDuringOperation\(\s*context: context\b/g) ?? []).length,
     2,
   )
-  assert.doesNotMatch(profileSwitchBoundary, /restartDshServiceDuringOperation\(context: context\)/)
-  assert.match(profileSwitchBoundary, /restartDshServiceWithAuthenticationRecoveryDuringOperation\(context: context\)[\s\S]*pendingProfileSwitch = cleanupError == nil \? nil : finalizingTransaction/)
-  assert.match(profileSwitchBoundary, /restartDshServiceWithAuthenticationRecoveryDuringOperation\(context: context\)[\s\S]*pendingProfileSwitch = cleanupError == nil \? nil : transaction/)
+  assert.doesNotMatch(profileSwitchBoundary, /restartDshServiceDuringOperation\(\s*context: context\b/)
+  assert.match(profileSwitchBoundary, /restartDshServiceWithAuthenticationRecoveryDuringOperation\(\s*context: context\b[\s\S]*pendingProfileSwitch = cleanupError == nil \? nil : finalizingTransaction/)
+  assert.match(profileSwitchBoundary, /restartDshServiceWithAuthenticationRecoveryDuringOperation\(\s*context: context\b[\s\S]*pendingProfileSwitch = cleanupError == nil \? nil : transaction/)
   assert.match(SETTINGS_SOURCE, /Bridge cleanup is app-owned housekeeping|桥接清理是 App 自有清理/)
   assert.match(SETTINGS_SOURCE, /pendingProfileSwitch = cleanupError == nil \? nil : transaction/)
   assert.match(WINDOW_SOURCE, /retryPendingProfileSwitchCleanup\(for: context\)/)
