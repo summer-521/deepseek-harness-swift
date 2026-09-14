@@ -125,6 +125,8 @@ test('P01 restart and rollback matrix stays fail-closed', () => {
     )
     runSingle(binaryPath, 'interrupted-restore-leftover')
     runSingle(binaryPath, 'm2-rollback-selection')
+    runSingle(binaryPath, 'version-picker-contract')
+    runSingle(binaryPath, 'activation-toggle')
     runSingle(binaryPath, 'staging-sweep')
     runSingle(binaryPath, 'selection-preserves-open-transaction')
     runSingle(binaryPath, 'selection-settles-unrecoverable')

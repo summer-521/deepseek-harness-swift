@@ -155,6 +155,11 @@ public enum DshPluginOperationAction: String, Codable, Equatable, Hashable, Send
     case update
     case updateAll
     case remove
+    /// Add or remove one installed plugin from the Profile's activation list.
+    /// The two directions are separate cases so the durable record says which
+    /// one was requested instead of leaving it to a flip at mutation time.
+    case enable
+    case disable
 }
 
 /// Durable phases for one plugin operation.  There is intentionally no
@@ -337,7 +342,7 @@ public struct DshPluginOperationState: Codable, Equatable, Sendable {
             return targetPackages.isEmpty && targetPackage.map {
                 DshPluginOperationInputValidation.isValidPackageSpecifier($0)
             } == true
-        case .update, .remove:
+        case .update, .remove, .enable, .disable:
             return targetPackages.isEmpty && targetPackage.map {
                 DshPluginOperationInputValidation.isValidPackageName($0)
             } == true

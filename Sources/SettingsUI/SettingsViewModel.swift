@@ -55,6 +55,8 @@ public enum DshPluginOperationDisplayPhase: Equatable, Sendable {
             case .update: return "正在更新插件"
             case .updateAll: return "正在更新全部插件"
             case .remove: return "正在卸载插件"
+            case .enable: return "正在启用插件"
+            case .disable: return "正在禁用插件"
             }
         case .verifying: return "正在验证插件状态"
         case .restoring: return "正在恢复原插件状态"
@@ -75,11 +77,40 @@ public enum DshPluginOperationDisplayPhase: Equatable, Sendable {
     }
 }
 
+/// The versions the plugin picker offers for one installed plugin.
+///
+/// The list comes from the registry packument rather than `pnpm outdated`, so a
+/// plugin that publishes only `next`/`alpha` — or never publishes `latest` at
+/// all — still shows its versions instead of making the user retype a
+/// `name@version` spec in the install field.
+public struct PluginVersionChoice: Identifiable, Equatable {
+    public let id = UUID()
+    public let name: String
+    public let installedVersion: String
+    /// Versions newer than the installed one, newest first.
+    public let newerVersions: [String]
+    /// Every published version, newest first.
+    public let allVersions: [String]
+    public let tags: [String: String]
+
+    public var latestVersion: String? { tags["latest"] }
+
+    /// What the list shows for the current toggle state.
+    public func visibleVersions(showsOlder: Bool) -> [String] {
+        showsOlder ? allVersions : newerVersions
+    }
+
+    /// Dist-tags a version is published under, for the row caption.
+    public func tagLine(for version: String) -> String? {
+        let names = tags.filter { $0.value == version }.map(\.key).sorted()
+        return names.isEmpty ? nil : names.joined(separator: ", ")
+    }
+}
+
 /// The outcome is separate from the phase so a failed mutation that was
 /// safely rolled back can be distinguished from an unresolved or externally
 /// modified Profile.
-public enum DshPluginOperationOutcome: Equatable, Sendable {
-    case succeeded
+public enum DshPluginOperationOutcome: Equatable, Sendable {    case succeeded
     case restored
     case recoveryRequired
     case externalModification
@@ -134,6 +165,8 @@ private extension DshPluginOperationAction {
         case .update: return "正在准备更新事务…"
         case .updateAll: return "正在准备批量更新事务…"
         case .remove: return "正在准备卸载事务…"
+        case .enable: return "正在准备启用事务…"
+        case .disable: return "正在准备禁用事务…"
         }
     }
 }
@@ -191,6 +224,12 @@ public final class SettingsViewModel: ObservableObject {
     @Published public var isLoadingCatalog: Bool = false
     @Published public var isRefreshingPlugins: Bool = false
     @Published public var isCheckingPluginUpdates: Bool = false
+    /// Version picker for one plugin, filled from the registry packument.
+    @Published public var pluginVersionChoice: PluginVersionChoice? = nil
+    @Published public var pluginVersionChoiceSelection: String? = nil
+    @Published public var pluginVersionChoiceShowsOlder: Bool = false
+    /// Plugin whose published versions are being fetched.
+    @Published public var loadingPluginVersionsFor: String? = nil
     @Published public var isOperatingPlugin: Bool = false
     @Published public var isSwitchingProfile: Bool = false
     @Published public private(set) var profileSwitchProgressText: String? = nil
@@ -336,6 +375,9 @@ public final class SettingsViewModel: ObservableObject {
         case .remove:
             guard let name = request.targetPackage else { return }
             accepted = startPluginRemove(name: name)
+        case .enable, .disable:
+            guard let name = request.targetPackage else { return }
+            accepted = startPluginActivation(name: name, enabled: request.action == .enable)
         }
         if accepted {
             retryablePluginOperation = nil
@@ -520,6 +562,18 @@ public final class SettingsViewModel: ObservableObject {
                         profileDirectory: request.profileDirectory,
                         profile: request.profile,
                         registry: registry
+                    )
+                case .enable, .disable:
+                    guard let name = request.targetPackage else {
+                        throw DshPluginOperationError.recoveryRequired("启用/禁用事务缺少插件名称")
+                    }
+                    // Composition only: the package, its version and the
+                    // lockfile stay in place, DSH just stops composing the
+                    // bundle.
+                    try DshPluginManager.shared.setPluginActivation(
+                        name: name,
+                        enabled: request.action == .enable,
+                        profileDirectory: request.profileDirectory
                     )
                 }
             },
@@ -1378,6 +1432,79 @@ public final class SettingsViewModel: ObservableObject {
             return
         }
         startPluginUpdateAll(ignoringMinimumReleaseAge: false)
+    }
+
+    /// Opens the version picker for one installed plugin.
+    ///
+    /// Reads every published version from the registry and offers the ones
+    /// newer than the installed version. When nothing is newer, reports that
+    /// instead of opening an empty picker.
+    public func choosePluginVersion(for plugin: DshPluginItem) {
+        guard loadingPluginVersionsFor == nil else { return }
+        guard pluginWritesAllowed else {
+            alertMessage = pluginMutationUnavailableReason
+            return
+        }
+        guard !isOperatingPlugin, !isSwitchingProfile else {
+            alertMessage = "当前已有插件操作排队，请稍后重试。"
+            return
+        }
+        loadingPluginVersionsFor = plugin.name
+        Task {
+            defer { self.loadingPluginVersionsFor = nil }
+            do {
+                let published = try await DshPluginManager.shared.publishedPluginVersions(for: plugin.name)
+                // Installed specs may carry a range operator; show and compare
+                // the bare version.
+                let installed = DshPackageVersion.normalizedInstalled(plugin.version ?? "")
+                let newer = published.newerThan(installed)
+                guard !newer.isEmpty else {
+                    let current = installed.isEmpty ? "未知" : installed
+                    let latest = published.latest.map { "，latest 指向 \($0)" } ?? "，registry 未发布 latest"
+                    self.alertMessage = "\(plugin.name) 没有更新的版本：当前 \(current)，"
+                        + "registry 上共 \(published.versions.count) 个版本\(latest)。"
+                    return
+                }
+                self.pluginVersionChoiceSelection = newer.first
+                self.pluginVersionChoiceShowsOlder = false
+                self.pluginVersionChoice = PluginVersionChoice(
+                    name: plugin.name,
+                    installedVersion: installed,
+                    newerVersions: newer,
+                    allVersions: published.versions,
+                    tags: published.tags
+                )
+            } catch {
+                self.alertMessage = "读取 \(plugin.name) 的版本列表失败：\(DshSettingsUIMessage.safe(error))"
+            }
+        }
+    }
+
+    /// Applies the version selected in the picker through the normal install
+    /// pipeline, so the downgrade confirmation and the release-age preflight
+    /// still apply.
+    public func confirmPluginVersionChoice() {
+        guard let choice = pluginVersionChoice,
+              let version = pluginVersionChoiceSelection else { return }
+        guard pluginWritesAllowed else {
+            alertMessage = pluginMutationUnavailableReason
+            return
+        }
+        guard let spec = DshPluginSpec.versioned(name: choice.name, version: version) else {
+            alertMessage = "版本号不合法：\(version)"
+            return
+        }
+        if startPluginInstall(spec: spec, ignoringMinimumReleaseAge: false, asUpdate: true) {
+            pluginVersionChoice = nil
+            pluginVersionChoiceSelection = nil
+            pluginVersionChoiceShowsOlder = false
+        }
+    }
+
+    public func cancelPluginVersionChoice() {
+        pluginVersionChoice = nil
+        pluginVersionChoiceSelection = nil
+        pluginVersionChoiceShowsOlder = false
     }
 
     public func confirmPendingPluginUpdate() {
@@ -2681,7 +2808,7 @@ public final class SettingsViewModel: ObservableObject {
     }
 
     @discardableResult
-    private func startPluginInstall(spec: String, ignoringMinimumReleaseAge: Bool, allowingDowngrade: Bool = false) -> Bool {
+    private func startPluginInstall(spec: String, ignoringMinimumReleaseAge: Bool, allowingDowngrade: Bool = false, asUpdate: Bool = false) -> Bool {
         let trimmedSpec = spec.trimmingCharacters(in: .whitespacesAndNewlines)
         guard pluginWritesAllowed else {
             alertMessage = "插件安装暂不可用；请求已保留，请完成恢复后重试。"
@@ -2695,7 +2822,9 @@ public final class SettingsViewModel: ObservableObject {
         clearRetryablePluginOperation()
         isOperatingPlugin = true
         clearPluginStatus()
-        operatingPluginName = DshSettingsUIMessage.safe("正在安装插件 \(trimmedSpec)…")
+        operatingPluginName = DshSettingsUIMessage.safe(
+            asUpdate ? "正在更新插件 \(trimmedSpec)…" : "正在安装插件 \(trimmedSpec)…"
+        )
         beginPluginOperationProgress(action: .install)
         Task {
             do {
@@ -2756,6 +2885,15 @@ public final class SettingsViewModel: ObservableObject {
 
     public func removePlugin(name: String) {
         _ = startPluginRemove(name: name)
+    }
+
+    /// Enable or disable one installed plugin.
+    ///
+    /// Disabling takes the package out of the Profile's activation list while
+    /// leaving it installed, so an incompatible plugin can be parked without
+    /// losing its version or having to reinstall it before turning it back on.
+    public func togglePluginActivation(name: String, enabled: Bool) {
+        _ = startPluginActivation(name: name, enabled: enabled)
     }
 
     /// Execute a resolver-approved recovery removal through the same P01
@@ -2881,6 +3019,47 @@ public final class SettingsViewModel: ObservableObject {
                 self.markRetryablePluginOperation(action: .remove, targetPackage: name)
                 self.alertMessage = self.pluginOperationFailureMessage(
                     actionDescription: "插件 \(name) 卸载",
+                    error: error
+                )
+                self.restoreServiceAfterFailedPluginOperationIfNeeded()
+            }
+        }
+        return true
+    }
+
+    private func startPluginActivation(name: String, enabled: Bool) -> Bool {
+        guard pluginWritesAllowed, !isOperatingPlugin, !isSwitchingProfile else { return false }
+        clearRetryablePluginOperation()
+        isOperatingPlugin = true
+        clearPluginStatus()
+        let verb = enabled ? "启用" : "禁用"
+        operatingPluginName = DshSettingsUIMessage.safe("正在\(verb)插件 \(name)…")
+        beginPluginOperationProgress(action: enabled ? .enable : .disable)
+        Task {
+            do {
+                _ = try await MainWindowController.shared.withRuntimeOperation {
+                    let context = try self.makeDesktopPluginOperationContext()
+                    return try await self.executeDesktopPluginOperation(
+                        context: context,
+                        action: enabled ? .enable : .disable,
+                        targetPackage: name
+                    )
+                }
+                self.isOperatingPlugin = false
+                self.operatingPluginName = nil
+                self.finishPluginOperationSuccessfully("插件 \(name) 已验证并提交")
+                self.refreshPlugins()
+                self.showPluginStatus("插件 \(name) 已\(verb)，服务已重启")
+            } catch {
+                self.isOperatingPlugin = false
+                self.operatingPluginName = nil
+                self.finishPluginOperationFailed(actionDescription: "插件 \(name) \(verb)", error: error)
+                self.markRetryablePluginOperation(
+                    action: enabled ? .enable : .disable,
+                    targetPackage: name
+                )
+                self.alertMessage = self.pluginOperationFailureMessage(
+                    actionDescription: "插件 \(name) \(verb)",
                     error: error
                 )
                 self.restoreServiceAfterFailedPluginOperationIfNeeded()

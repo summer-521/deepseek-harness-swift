@@ -180,3 +180,77 @@ test('M2 plugin UI gates shared web writes and isolates update targets', () => {
   assert.match(windowSource, /startupRecoveryIsPluginOperation = true/)
   assert.match(viewModel, /pending\?\.phase == \.committed[\s\S]*outcome = \.recoveryRequired/)
 })
+
+test('P03 plugin updates offer the registry versions instead of a typed spec', () => {
+  const viewModel = fs.readFileSync(viewModelPath, 'utf8')
+  const pluginsView = fs.readFileSync(pluginsViewPath, 'utf8')
+  const manager = fs.readFileSync(
+    path.join(repositoryDirectory, 'Sources', 'Plugins', 'DshPluginManager.swift'),
+    'utf8',
+  )
+
+  // The picker reads every published version, because `pnpm outdated` only
+  // ever reports `latest` — which is what these plugins do not publish.
+  assert.match(manager, /public func publishedPluginVersions\(/)
+  assert.match(manager, /document\["dist-tags"\]/)
+  assert.match(manager, /DshPackageVersion\.sortedNewestFirst/)
+  assert.match(manager, /public func newerThan\(_ installed: String\?\)/)
+
+  assert.match(viewModel, /public struct PluginVersionChoice/)
+  assert.match(viewModel, /public func choosePluginVersion\(for plugin: DshPluginItem\)/)
+  assert.match(viewModel, /DshPluginManager\.shared\.publishedPluginVersions\(for: plugin\.name\)/)
+  assert.match(viewModel, /没有更新的版本：当前/)
+  assert.match(viewModel, /public func confirmPluginVersionChoice\(\)/)
+  assert.match(viewModel, /public func cancelPluginVersionChoice\(\)/)
+  // Selecting a version still goes through the normal install pipeline, so the
+  // downgrade gate and the release-age preflight keep applying.
+  assert.match(viewModel, /startPluginInstall\(spec: spec, ignoringMinimumReleaseAge: false, asUpdate: true\)/)
+
+  // The row opens the picker for every mutable plugin, not only those with a
+  // `latest`-based update, and the sheet lists the versions.
+  assert.match(pluginsView, /Button\("更新…"\) \{ viewModel\.choosePluginVersion\(for: plugin\) \}/)
+  assert.doesNotMatch(pluginsView, /Button\("更新"\) \{ viewModel\.updatePlugin\(name: plugin\.name\) \}/)
+  assert.match(pluginsView, /\.sheet\(item: Binding\([\s\S]*viewModel\.pluginVersionChoice/)
+  assert.match(pluginsView, /Toggle\("显示更早的版本"/)
+  assert.match(pluginsView, /choice\.tagLine\(for: version\)/)
+})
+
+test('P03 plugin rows can park a plugin without uninstalling it', () => {
+  const viewModel = fs.readFileSync(viewModelPath, 'utf8')
+  const pluginsView = fs.readFileSync(pluginsViewPath, 'utf8')
+  const manager = fs.readFileSync(
+    path.join(repositoryDirectory, 'Sources', 'Plugins', 'DshPluginManager.swift'),
+    'utf8',
+  )
+  const state = fs.readFileSync(
+    path.join(repositoryDirectory, 'Sources', 'Plugins', 'DshPluginOperationState.swift'),
+    'utf8',
+  )
+
+  // Activation is a composition edit, not an install: the manifest entry is
+  // the only thing removed.
+  assert.match(manager, /public func setPluginActivation\(/)
+  assert.match(manager, /try updateProfileBundle\(trimmed, removing: !enabled, profileDir: profileDir\)/)
+  assert.match(manager, /public let isEnabled: Bool/)
+  assert.match(manager, /isEnabled: isManaged \|\| bundles\.map \{ \$0\.contains\(name\) \} \?\? true/)
+  assert.match(manager, /内置桥接插件由 DSH Desktop 维护，不能启用或禁用/)
+
+  // Both directions are durable actions, so a recovered record says which one
+  // was requested instead of flipping whatever it finds.
+  assert.match(state, /case enable/)
+  assert.match(state, /case disable/)
+  assert.match(state, /case \.update, \.remove, \.enable, \.disable:/)
+
+  assert.match(viewModel, /public func togglePluginActivation\(name: String, enabled: Bool\)/)
+  assert.match(viewModel, /action: enabled \? \.enable : \.disable/)
+  assert.match(viewModel, /正在\\\(verb\)插件 \\\(name\)…/)
+
+  // The row keeps the order 更新… / 启用-禁用 / 卸载 and marks the parked state.
+  const updateIndex = pluginsView.indexOf('viewModel.choosePluginVersion(for: plugin)')
+  const toggleIndex = pluginsView.indexOf('viewModel.togglePluginActivation(')
+  const removeIndex = pluginsView.indexOf('viewModel.removePlugin(name: plugin.name)')
+  assert.ok(updateIndex > 0 && toggleIndex > updateIndex && removeIndex > toggleIndex,
+    'enable/disable must sit between update and uninstall')
+  assert.match(pluginsView, /Button\(plugin\.isEnabled \? "禁用" : "启用"\)/)
+  assert.match(pluginsView, /Text\("已禁用"\)/)
+})

@@ -23,20 +23,33 @@ public struct DshPluginItem: Identifiable, Equatable {
     public let description: String?
     public let isManaged: Bool
     public let isLocal: Bool
+    /// Whether the Profile still composes this plugin. Disabling keeps the
+    /// package installed and only removes it from `dsh.profile.bundles`.
+    public let isEnabled: Bool
 
+    /// True only when the registry's `latest` is genuinely newer than what is
+    /// installed.
+    ///
+    /// Several plugins publish an older version under `latest` than they do
+    /// under `next`/`alpha` (`@deepseek-ai/dsh-subagent-codex` currently points
+    /// `latest` at 0.0.1-rc.1 while `next` carries 0.1.5-rc.2). Comparing the
+    /// strings reported that as an available update and offered a downgrade, so
+    /// this compares versions instead.
     public var hasUpdate: Bool {
-        guard let latest = latestVersion, let current = version else { return false }
-        let cleanCurrent = current.replacingOccurrences(of: "^", with: "").replacingOccurrences(of: "~", with: "")
-        return latest != cleanCurrent && !isLocal && !isManaged
+        guard let latest = latestVersion, let current = version, !isLocal, !isManaged else { return false }
+        let installed = DshPackageVersion.normalizedInstalled(current)
+        guard !installed.isEmpty else { return false }
+        return DshPackageVersion.isNewer(latest, than: installed)
     }
 
-    public init(name: String, version: String? = nil, latestVersion: String? = nil, description: String? = nil, isManaged: Bool = false, isLocal: Bool = false) {
+    public init(name: String, version: String? = nil, latestVersion: String? = nil, description: String? = nil, isManaged: Bool = false, isLocal: Bool = false, isEnabled: Bool = true) {
         self.name = name
         self.version = version
         self.latestVersion = latestVersion
         self.description = description
         self.isManaged = isManaged
         self.isLocal = isLocal
+        self.isEnabled = isEnabled
     }
 }
 
@@ -60,6 +73,97 @@ public struct DshPendingPluginDowngrade: Equatable, Sendable {
         self.name = name
         self.installedVersion = installedVersion
         self.candidateVersion = candidateVersion
+    }
+}
+
+/// Every version a registry publishes for one plugin.
+///
+/// `pnpm outdated` only reports the `latest` dist-tag, which is exactly what
+/// plugins that never publish `latest` do not have. The settings UI lists these
+/// versions so the user picks one instead of retyping a `name@version` spec.
+public struct DshPublishedPluginVersions: Equatable, Sendable {
+    public let name: String
+    /// Newest first, including prereleases and non-`latest` channels.
+    public let versions: [String]
+    /// Registry dist-tags, e.g. `latest`, `next`, `alpha`.
+    public let tags: [String: String]
+
+    public var latest: String? { tags["latest"] }
+
+    public init(name: String, versions: [String], tags: [String: String]) {
+        self.name = name
+        self.versions = versions
+        self.tags = tags
+    }
+
+    /// Versions newer than `installed`, newest first. An installed spec may
+    /// carry a range operator (`^1.2.3`), which is stripped before comparing.
+    public func newerThan(_ installed: String?) -> [String] {
+        guard let installed, !installed.isEmpty else { return versions }
+        let current = DshPackageVersion.normalizedInstalled(installed)
+        guard !current.isEmpty else { return versions }
+        return versions.filter { DshPackageVersion.isNewer($0, than: current) }
+    }
+
+    /// The dist-tag a version is published under, if any.
+    public func tags(for version: String) -> [String] {
+        tags.filter { $0.value == version }.map(\.key).sorted()
+    }
+}
+
+/// npm version precedence for the plugin version picker.
+///
+/// The Runtime selector's channel policy is not involved here: plugin picks
+/// only need semver ordering over whatever the registry publishes, so this
+/// reuses `DshSemanticVersion`'s precedence rules and falls back to a plain
+/// string comparison for versions it will not parse (npm also allows `1.2`,
+/// `v1.0.0`, and other shapes its strict reader rejects).
+public enum DshPackageVersion {
+    /// Compares two npm version strings by semver precedence.
+    public static func compare(_ lhs: String, _ rhs: String) -> ComparisonResult {
+        if let left = DshSemanticVersion(lhs), let right = DshSemanticVersion(rhs) {
+            if left == right { return .orderedSame }
+            return left < right ? .orderedAscending : .orderedDescending
+        }
+        if lhs == rhs { return .orderedSame }
+        return lhs < rhs ? .orderedAscending : .orderedDescending
+    }
+
+    public static func isNewer(_ candidate: String, than current: String) -> Bool {
+        compare(candidate, current) == .orderedDescending
+    }
+
+    /// Strips the range operator an installed spec may carry (`^1.2.3`,
+    /// `~1.2.3`, `>=1.2.3`, `v1.2.3`) so it can be compared as a version.
+    public static func normalizedInstalled(_ value: String) -> String {
+        var text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        while let first = text.first, "^~>=vV ".contains(first) {
+            text.removeFirst()
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Sorts newest first; the input order breaks version ties.
+    public static func sortedNewestFirst(_ versions: [String]) -> [String] {
+        versions.sorted { compare($0, $1) == .orderedDescending }
+    }
+}
+
+/// Builds the `name@version` spec the install pipeline consumes from a version
+/// the user picked out of the published list.
+public enum DshPluginSpec {
+    /// Returns nil when the version cannot be a dist-tag or semver selector.
+    public static func versioned(name: String, version: String) -> String? {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedVersion = version.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty,
+              trimmedVersion.range(
+                  of: #"^[0-9A-Za-z^~][0-9A-Za-z._+^-]*$"#,
+                  options: .regularExpression
+              ) != nil else {
+            return nil
+        }
+        return "\(trimmedName)@\(trimmedVersion)"
     }
 }
 
@@ -1599,6 +1703,15 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
             return []
         }
 
+        // A Profile without an activation list is unknown rather than empty;
+        // showing every plugin as disabled there would be wrong.
+        let bundles: Set<String>? = {
+            guard let dsh = json["dsh"] as? [String: Any],
+                  let profile = dsh["profile"] as? [String: Any],
+                  let list = profile["bundles"] as? [String] else { return nil }
+            return Set(list)
+        }()
+
         var list: [DshPluginItem] = []
         for (name, spec) in deps {
             guard !Self.internalPluginDependencyNames.contains(name) else { continue }
@@ -1612,7 +1725,8 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                 latestVersion: latest,
                 description: description,
                 isManaged: isManaged,
-                isLocal: isLocal
+                isLocal: isLocal,
+                isEnabled: isManaged || bundles.map { $0.contains(name) } ?? true
             ))
         }
 
@@ -2426,6 +2540,42 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         try updated.write(to: packageURL, options: .atomic)
     }
 
+    /// Add or remove one installed plugin from the Profile's activation list.
+    ///
+    /// DSH composes the bundles listed under `dsh.profile.bundles`, so this
+    /// changes the running composition without touching `dependencies`,
+    /// `node_modules` or the lockfile: the plugin stays installed at its exact
+    /// version and can be enabled again at any time.
+    public func setPluginActivation(
+        name: String,
+        enabled: Bool,
+        profileDirectory: URL? = nil
+    ) throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed != Self.desktopHostPluginName,
+              !Self.internalPluginDependencyNames.contains(trimmed) else {
+            throw NSError(
+                domain: "DshPluginManager",
+                code: -11,
+                userInfo: [NSLocalizedDescriptionKey: "内置桥接插件由 DSH Desktop 维护，不能启用或禁用"]
+            )
+        }
+        let profileDir = profileDirectory ?? Self.activeProfileDirectory
+        let packageURL = profileDir.appendingPathComponent("package.json")
+        guard let data = try? Data(contentsOf: packageURL),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let dependencies = root["dependencies"] as? [String: Any],
+              dependencies[trimmed] != nil else {
+            throw NSError(
+                domain: "DshPluginManager",
+                code: -12,
+                userInfo: [NSLocalizedDescriptionKey: "未安装 \(trimmed)，无法切换启用状态"]
+            )
+        }
+        try updateProfileBundle(trimmed, removing: !enabled, profileDir: profileDir)
+    }
+
     /// Remove the desktop shell bridge from an explicitly selected profile.
     /// This is used only when leaving the shared web profile so terminal
     /// `dsh web` is returned to its normal upstream dependency tree.
@@ -2680,6 +2830,53 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                 userInfo: [NSLocalizedDescriptionKey: "未找到 npm 包 \(name)（HTTP 404），请检查拼写或确认该包已发布到当前镜像"]
             )
         }
+    }
+
+    /// Every version the registry publishes for one plugin, newest first.
+    ///
+    /// Unlike `checkOutdatedPlugins`, this reads the packument directly so the
+    /// settings UI can offer versions that are only published under a channel
+    /// tag (`next`, `alpha`, …) or that never carry `latest` at all.
+    public func publishedPluginVersions(
+        for name: String,
+        registry: String? = nil
+    ) async throws -> DshPublishedPluginVersions {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            throw NSError(
+                domain: "DshPluginManager",
+                code: -8,
+                userInfo: [NSLocalizedDescriptionKey: "插件名为空，无法查询版本列表"]
+            )
+        }
+        let capturedRegistry = DshVersionManager.normalizedRegistry(
+            registry ?? DshStateManager.shared.current.npmRegistry
+        )
+        let (document, status) = await fetchPackument(name: trimmedName, registry: capturedRegistry)
+        if status == 404 {
+            throw NSError(
+                domain: "DshPluginManager",
+                code: -7,
+                userInfo: [NSLocalizedDescriptionKey: "未找到 npm 包 \(trimmedName)（HTTP 404），请检查拼写或确认该包已发布到当前镜像"]
+            )
+        }
+        guard let document else {
+            throw NSError(
+                domain: "DshPluginManager",
+                code: -9,
+                userInfo: [NSLocalizedDescriptionKey: "无法从 \(capturedRegistry) 读取 \(trimmedName) 的版本列表，请检查网络或更换镜像"]
+            )
+        }
+        let versions = (document["versions"] as? [String: Any]).map { Array($0.keys) } ?? []
+        let rawTags = document["dist-tags"] as? [String: Any] ?? [:]
+        let tags = rawTags.reduce(into: [String: String]()) { result, entry in
+            if let value = entry.value as? String { result[entry.key] = value }
+        }
+        return DshPublishedPluginVersions(
+            name: trimmedName,
+            versions: DshPackageVersion.sortedNewestFirst(versions),
+            tags: tags
+        )
     }
 
     /// Fetch a registry packument without failing the caller on transport

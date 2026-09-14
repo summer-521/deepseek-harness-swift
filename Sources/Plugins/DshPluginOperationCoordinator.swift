@@ -943,7 +943,7 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
                   DshPluginOperationInputValidation.isValidPackageSpecifier(package) else {
                 throw DshPluginOperationError.unsafeProfileDirectory
             }
-        case .update, .remove:
+        case .update, .remove, .enable, .disable:
             guard let package = request.targetPackage,
                   request.targetPackages.isEmpty,
                   DshPluginOperationInputValidation.isValidPackageName(package) else {

@@ -167,6 +167,12 @@ public struct PluginsTabView: View {
                 await viewModel.inspectPlugins()
             }
         }
+        .sheet(item: Binding(
+            get: { viewModel.pluginVersionChoice },
+            set: { if $0 == nil { viewModel.cancelPluginVersionChoice() } }
+        )) { choice in
+            pluginVersionPicker(choice)
+        }
     }
 
     @ViewBuilder
@@ -336,6 +342,11 @@ public struct PluginsTabView: View {
                     Text(formatPluginVersion(plugin))
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.secondary)
+                    if !plugin.isEnabled && !plugin.isManaged {
+                        Text("已禁用")
+                            .font(.system(size: 8.5, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
                     if let latest = plugin.latestVersion, plugin.hasUpdate {
                         Text("可更新至 \(latest)")
                             .font(.system(size: 8.5, weight: .semibold))
@@ -358,11 +369,35 @@ public struct PluginsTabView: View {
                     .help("应用内置核心插件，由桌面宿主统一管理")
             } else {
                 HStack(spacing: 6) {
-                    if plugin.hasUpdate {
-                        Button("更新") { viewModel.updatePlugin(name: plugin.name) }
+                    if viewModel.loadingPluginVersionsFor == plugin.name {
+                        ProgressView()
+                            .controlSize(.small)
+                            .help("正在读取 " + plugin.name + " 的版本列表…")
+                    } else if plugin.hasUpdate {
+                        Button("更新…") { viewModel.choosePluginVersion(for: plugin) }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
-                            .help(viewModel.pluginMutationUnavailableReason ?? ("更新 " + plugin.name + " 到最新版本"))
+                            .help(viewModel.pluginMutationUnavailableReason
+                                ?? ("从 registry 列出 " + plugin.name + " 的更新版本并选择"))
+                    } else {
+                        Button("更新…") { viewModel.choosePluginVersion(for: plugin) }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .help(viewModel.pluginMutationUnavailableReason
+                                ?? ("检查 " + plugin.name + " 在 registry 上是否有更新版本"))
+                    }
+                    if !plugin.isLocal {
+                        Button(plugin.isEnabled ? "禁用" : "启用") {
+                            viewModel.togglePluginActivation(
+                                name: plugin.name,
+                                enabled: !plugin.isEnabled
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help(plugin.isEnabled
+                            ? "停止组合 " + plugin.name + "，保留已安装的版本和文件"
+                            : "重新组合 " + plugin.name + "，无需重新安装")
                     }
                     Button("卸载") { viewModel.removePlugin(name: plugin.name) }
                         .buttonStyle(.bordered)
@@ -375,6 +410,71 @@ public struct PluginsTabView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+    }
+
+    /// Version picker filled from the registry packument, so a plugin that only
+    /// publishes `next`/`alpha` (or never publishes `latest`) can still be
+    /// updated without retyping a `name@version` spec.
+    @ViewBuilder
+    private func pluginVersionPicker(_ choice: PluginVersionChoice) -> some View {
+        let versions = choice.visibleVersions(showsOlder: viewModel.pluginVersionChoiceShowsOlder)
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("更新 \(choice.name)")
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(choice.installedVersion.isEmpty
+                    ? "registry 上共 \(choice.allVersions.count) 个版本"
+                    : "当前 \(choice.installedVersion) · registry 上共 \(choice.allVersions.count) 个版本")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            List(selection: Binding(
+                get: { viewModel.pluginVersionChoiceSelection },
+                set: { viewModel.pluginVersionChoiceSelection = $0 }
+            )) {
+                ForEach(versions, id: \.self) { version in
+                    HStack(spacing: 8) {
+                        Text(version)
+                            .font(.system(size: 12, design: .monospaced))
+                        if let tags = choice.tagLine(for: version) {
+                            Text(tags)
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(.green)
+                        }
+                        Spacer(minLength: 6)
+                        if version == choice.installedVersion {
+                            Text("已安装")
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .tag(version)
+                }
+            }
+            .frame(height: 220)
+
+            Toggle("显示更早的版本", isOn: Binding(
+                get: { viewModel.pluginVersionChoiceShowsOlder },
+                set: { viewModel.pluginVersionChoiceShowsOlder = $0 }
+            ))
+            .font(.system(size: 11))
+            .help("选择更早的版本会走同一套降级确认流程")
+
+            HStack(spacing: 8) {
+                Spacer()
+                Button("取消") { viewModel.cancelPluginVersionChoice() }
+                    .keyboardShortcut(.cancelAction)
+                Button("更新") { viewModel.confirmPluginVersionChoice() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(viewModel.pluginVersionChoiceSelection == nil)
+            }
+        }
+        .padding(18)
+        .frame(width: 460)
     }
 
     private func formatPluginVersion(_ plugin: DshPluginItem) -> String {

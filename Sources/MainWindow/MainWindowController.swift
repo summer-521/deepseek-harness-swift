@@ -1931,6 +1931,10 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             actionName = "批量更新"
         case .remove:
             actionName = "卸载"
+        case .enable:
+            actionName = "启用"
+        case .disable:
+            actionName = "禁用"
         }
         let targetText = target.map { "「\($0)」" } ?? "插件"
         return [DshDiagnosticEvidence(

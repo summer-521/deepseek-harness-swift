@@ -1216,8 +1216,157 @@ private func runSnapshotCapacityContract() throws {
     )
 }
 
-private func runInstallDowngradeGate() throws {
-    // Exact pins need no network: the gate must decide purely.
+/// Disabling a plugin edits the Profile's activation list only: the package,
+/// its version and the lockfile stay installed, and the change runs through the
+/// same transaction (snapshot, digest, health check) as every other mutation.
+private func runActivationToggle() async throws {
+    try resetFixture()
+    let packageURL = profileURL().appendingPathComponent("package.json")
+    let manifest = "{\"dependencies\":{\"plugin\":\"1.0.0\"},"
+        + "\"dsh\":{\"profile\":{\"bundles\":[\"@deepseek-ai/dsh-base\",\"plugin\"]}}}"
+    try Data(manifest.utf8).write(to: packageURL, options: .atomic)
+
+    func bundles() throws -> [String] {
+        let root = try JSONSerialization.jsonObject(with: Data(contentsOf: packageURL)) as? [String: Any]
+        let dsh = root?["dsh"] as? [String: Any]
+        let profile = dsh?["profile"] as? [String: Any]
+        return profile?["bundles"] as? [String] ?? []
+    }
+    func dependencies() throws -> [String: Any] {
+        let root = try JSONSerialization.jsonObject(with: Data(contentsOf: packageURL)) as? [String: Any]
+        return root?["dependencies"] as? [String: Any] ?? [:]
+    }
+    func enabledFromList() -> Bool? {
+        DshPluginManager.shared
+            .listPlugins(at: profileURL(), outdatedMap: [:])
+            .first { $0.name == "plugin" }?
+            .isEnabled
+    }
+
+    require(enabledFromList() == true, "an activated plugin lists as enabled")
+
+    let coordinator = DshPluginOperationCoordinator(operationStoreURL: operationStoreURL())
+    let disabled = try await coordinator.perform(
+        DshPluginOperationRequest(
+            action: .disable,
+            profile: .desktop,
+            profileDirectory: profileURL(),
+            targetPackage: "plugin"
+        ),
+        hooks: DshPluginOperationHooks(mutate: { request in
+            try DshPluginManager.shared.setPluginActivation(
+                name: "plugin",
+                enabled: false,
+                profileDirectory: request.profileDirectory
+            )
+        })
+    )
+    // A committed record owns the transaction until it is finalized.
+    try await coordinator.finalizeCommittedOperation(operationID: disabled.operationID)
+    let afterDisable = try bundles()
+    let dependenciesAfterDisable = try dependencies()
+    require(!afterDisable.contains("plugin"), "disabling removes the plugin from the activation list")
+    require(dependenciesAfterDisable["plugin"] != nil, "disabling keeps the installed dependency")
+    require(enabledFromList() == false, "a disabled plugin lists as disabled")
+
+    let enabled = try await coordinator.perform(
+        DshPluginOperationRequest(
+            action: .enable,
+            profile: .desktop,
+            profileDirectory: profileURL(),
+            targetPackage: "plugin"
+        ),
+        hooks: DshPluginOperationHooks(mutate: { request in
+            try DshPluginManager.shared.setPluginActivation(
+                name: "plugin",
+                enabled: true,
+                profileDirectory: request.profileDirectory
+            )
+        })
+    )
+    try await coordinator.finalizeCommittedOperation(operationID: enabled.operationID)
+    let afterEnable = try bundles()
+    require(afterEnable.contains("plugin"), "enabling restores the activation entry")
+    require(enabledFromList() == true, "an enabled plugin lists as enabled")
+
+    // Refusals keep the manifest untouched.
+    var refused = 0
+    for name in ["plugin-not-installed", "dsh-desktop-host"] {
+        do {
+            try DshPluginManager.shared.setPluginActivation(
+                name: name,
+                enabled: false,
+                profileDirectory: profileURL()
+            )
+        } catch {
+            refused += 1
+        }
+    }
+    require(refused == 2, "unknown and built-in plugins cannot be toggled, got \(refused)")
+    let dependenciesAfterRefusals = try dependencies()
+    require(dependenciesAfterRefusals["plugin"] != nil, "refused toggles leave the manifest alone")
+
+    print("plugin operation scenario activation-toggle passed")
+}
+
+/// The version picker offers whatever the registry publishes, so the ordering
+/// has to be real semver precedence rather than "latest wins".
+private func runVersionPickerContract() throws {
+    // Prereleases sort below their release, and channel tags do not matter.
+    require(DshPackageVersion.isNewer("0.1.5", than: "0.1.5-rc.2"), "release outranks its prerelease")
+    require(DshPackageVersion.isNewer("0.1.5-rc.10", than: "0.1.5-rc.9"), "prerelease numbers compare numerically")
+    require(DshPackageVersion.isNewer("0.2.0-alpha.1", than: "0.1.9"), "higher core wins across channels")
+    require(!DshPackageVersion.isNewer("0.1.4", than: "0.1.5-rc.2"), "older core is not newer")
+    require(!DshPackageVersion.isNewer("0.1.5-rc.2", than: "0.1.5-rc.2"), "same version is not newer")
+    require(!DshPackageVersion.isNewer("1.0.0-1", than: "1.0.0-alpha"), "numeric prerelease ranks below alphanumeric")
+
+    let sorted = DshPackageVersion.sortedNewestFirst(["0.1.5-rc.2", "0.2.0", "0.1.10", "0.1.9", "0.2.0-alpha.1"])
+    require(sorted == ["0.2.0", "0.2.0-alpha.1", "0.1.10", "0.1.9", "0.1.5-rc.2"],
+            "versions must sort newest first, got \(sorted)")
+    require(DshPackageVersion.compare("weird", "weird") == .orderedSame, "identical strings are equal")
+    require(DshPackageVersion.normalizedInstalled("^0.1.5-rc.2") == "0.1.5-rc.2", "range operators are stripped")
+    require(DshPackageVersion.normalizedInstalled("~1.2.3") == "1.2.3", "tilde ranges are stripped")
+
+    // A `latest` tag that sits below the installed version is not an update.
+    // @deepseek-ai/dsh-subagent-codex publishes latest 0.0.1-rc.1 while next
+    // carries 0.1.5-rc.2, which is what made the real plugin look updatable.
+    let behindLatest = DshPluginItem(
+        name: "@deepseek-ai/dsh-subagent-codex",
+        version: "0.1.5-rc.2",
+        latestVersion: "0.0.1-rc.1"
+    )
+    require(behindLatest.hasUpdate == false, "a stale latest tag is not an update")
+    let realUpdate = DshPluginItem(name: "plugin", version: "^1.0.0", latestVersion: "1.0.1")
+    require(realUpdate.hasUpdate == true, "a genuinely newer latest tag is an update")
+    let sameVersion = DshPluginItem(name: "plugin", version: "^1.0.0", latestVersion: "1.0.0")
+    require(sameVersion.hasUpdate == false, "a range prefix must not fake an update")
+
+    // The picker filters by what is installed; a plugin without `latest` still
+    // gets its channel versions.
+    let published = DshPublishedPluginVersions(
+        name: "@scope/plugin",
+        versions: ["0.3.0", "0.2.0", "0.1.5-rc.2"],
+        tags: ["latest": "0.2.0", "next": "0.3.0"]
+    )
+    require(published.newerThan("0.1.5-rc.2") == ["0.3.0", "0.2.0"], "newer versions are offered newest first")
+    require(published.newerThan("0.3.0").isEmpty, "no newer version offers nothing")
+    require(published.newerThan(nil) == published.versions, "an unknown installed version offers everything")
+    require(published.tags(for: "0.3.0") == ["next"], "non-latest channels are still labelled")
+    require(published.latest == "0.2.0", "latest is read from dist-tags")
+
+    // The spec handed to the install pipeline is built from the picked version.
+    require(DshPluginSpec.versioned(name: "@scope/plugin", version: "0.3.0") == "@scope/plugin@0.3.0",
+            "the picker builds name@version")
+    require(DshPluginSpec.versioned(name: "plugin", version: "next") == "plugin@next", "dist-tags are allowed")
+    require(DshPluginSpec.versioned(name: "plugin", version: " ") == nil, "a blank version is rejected")
+    require(DshPluginSpec.versioned(name: "plugin", version: "1.0.0 --force") == nil, "option-looking versions are rejected")
+    require(DshPluginSpec.versioned(name: "plugin", version: "@/etc/passwd") == nil, "path-like versions are rejected")
+    require(DshPluginSpec.versioned(name: "", version: "1.0.0") == nil, "an empty name is rejected")
+
+    print("plugin operation scenario version-picker-contract passed")
+}
+
+private func runInstallDowngradeGate() throws {    // Exact pins need no network: the gate must decide purely.
     let splitLatest = DshPluginOperationInputValidation.splitInstallSpecifier("@deepseek-ai/dsh-subagent-codex@latest")
     require(splitLatest?.name == "@deepseek-ai/dsh-subagent-codex", "scoped spec must split the name")
     require(splitLatest?.pinned == "latest", "scoped spec must split the tag")
@@ -1443,6 +1592,8 @@ struct PluginOperationHarness {
         case "adopt-unhealthy": try await recoverAdoptUnhealthy()
         case "adopt-rejects-committed": try await recoverAdoptRejectsCommitted()
         case "adopt-gating-matrix": try runAdoptGatingMatrix()
+        case "version-picker-contract": try runVersionPickerContract()
+        case "activation-toggle": try await runActivationToggle()
         case "verifying-setup": try await setupVerifying()
         case "verifying-commit-recover": try await recoverVerifyingCommit()
         case "verifying-restore-recover": try await recoverVerifyingRestore()
