@@ -2432,7 +2432,8 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
     public func removeDesktopHostArtifacts(
         from profile: DshAppProfile,
         profileDirectory: URL? = nil,
-        registry: String? = nil
+        registry: String? = nil,
+        progress: (@Sendable (String) -> Void)? = nil
     ) async throws {
         guard profile == .web else { return }
         let stateSnapshot = DshStateManager.shared.current
@@ -2525,6 +2526,10 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: pnpm)
             proc.currentDirectoryURL = profileDir
+            // pnpm 11's `remove` parser rejects fetch policy CLI options even
+            // when they precede the subcommand. Pass the equivalent npm config
+            // through the environment so cleanup uses the same network policy
+            // without giving `remove` unsupported arguments.
             proc.arguments = ["remove"] + dependenciesToRemove + [
                 "--config.minimum-release-age=0",
                 "--reporter=append-only"
@@ -2533,6 +2538,9 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
             var env = NodeRuntime.shared.buildEnvironment()
             env["DSH_NODE_BIN"] = node
             env["npm_config_registry"] = capturedRegistry
+            env["npm_config_network_concurrency"] = "4"
+            env["npm_config_fetch_timeout"] = "300000"
+            env["npm_config_fetch_retries"] = "2"
             proc.environment = env
 
             let stdout = Pipe()
@@ -2544,6 +2552,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                 proc,
                 stdout: stdout,
                 stderr: stderr,
+                onProgressLine: progress,
                 maximumRuntime: Self.profileBridgeProcessMaximumRuntime
             )
             guard result.status == 0 else {
@@ -2898,10 +2907,11 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
     }
 
     /// A silent download is not proof of an idle network connection. Keep a
-    /// generous wall-clock safety bound for ordinary plugin operations, but
-    /// never derive liveness from stdout/stderr activity. Profile bridge
-    /// materialization uses the shorter dedicated bound below so switching
-    /// Profiles cannot leave the UI waiting indefinitely on pnpm.
+    /// generous wall-clock safety bound for package operations, but never
+    /// derive liveness from stdout/stderr activity. A Profile bridge add can
+    /// reconcile the same full hoisted graph as an ordinary plugin install,
+    /// so it needs the same production budget. Tests can still shorten the
+    /// bridge deadline to exercise rollback deterministically.
     private static let processMaximumRuntime: TimeInterval = 30 * 60
     private static var profileBridgeProcessMaximumRuntime: TimeInterval {
 #if DSH_TESTING
@@ -2910,7 +2920,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
             return value
         }
 #endif
-        return 5 * 60
+        return processMaximumRuntime
     }
 
     private static let processOutputByteLimit = 32 * 1024
@@ -3186,7 +3196,8 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         registry: String? = nil,
         profileDirectory: URL? = nil,
         profile: DshAppProfile? = nil,
-        runtimeVersion: String? = nil
+        runtimeVersion: String? = nil,
+        progress: (@Sendable (String) -> Void)? = nil
     ) async throws -> Bool {
         let stateSnapshot = DshStateManager.shared.current
         let targetProfile = profile ?? stateSnapshot.appProfile
@@ -3320,22 +3331,21 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: pnpm)
         proc.currentDirectoryURL = profileDir
-        proc.arguments = hostIsInstalled
+        let packageArguments = hostIsInstalled
             ? [
                 "add",
-                "@deepseek-ai/dsh-host-webserver@\(dshVersion)",
-                "--config.minimum-release-age=0",
-                "--registry", capturedRegistry,
-                "--reporter=append-only"
+                "@deepseek-ai/dsh-host-webserver@\(dshVersion)"
             ]
             : [
                 "add",
                 "file:\(hostBundle)",
-                "@deepseek-ai/dsh-host-webserver@\(dshVersion)",
-                "--config.minimum-release-age=0",
-                "--registry", capturedRegistry,
-                "--reporter=append-only"
+                "@deepseek-ai/dsh-host-webserver@\(dshVersion)"
             ]
+        proc.arguments = packageArguments + Self.thinLinkFetchArguments + [
+            "--config.minimum-release-age=0",
+            "--registry", capturedRegistry,
+            "--reporter=append-only"
+        ]
 
         let stdout = Pipe()
         let stderr = Pipe()
@@ -3352,6 +3362,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                 proc,
                 stdout: stdout,
                 stderr: stderr,
+                onProgressLine: progress,
                 maximumRuntime: Self.profileBridgeProcessMaximumRuntime
             )
         } catch {

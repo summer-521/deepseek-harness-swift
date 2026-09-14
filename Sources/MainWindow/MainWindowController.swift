@@ -883,7 +883,8 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
 
     /// Called by a caller that already holds `withRuntimeOperation`.
     public func restartDshServiceDuringOperation(
-        context providedContext: DshLaunchContext? = nil
+        context providedContext: DshLaunchContext? = nil,
+        profileBridgeProgress: (@Sendable (String) -> Void)? = nil
     ) async throws -> DshServiceSession {
         if let detail = DshStateManager.shared.loadResult.failureDescription {
             throw DshStatePersistenceError.stateUnavailable(detail)
@@ -1057,7 +1058,8 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                 registry: context.runtimeDescriptor.registry,
                 profileDirectory: context.profileDirectory,
                 profile: context.profile,
-                runtimeVersion: context.runtimeDescriptor.version
+                runtimeVersion: context.runtimeDescriptor.version,
+                progress: profileBridgeProgress
             )
             _ = try await DshPluginManager.shared.repairProfileDependenciesIfNeeded(
                 registry: context.runtimeDescriptor.registry,
@@ -1166,12 +1168,16 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     /// launch gets a fresh Runtime generation, Renderer cookie, upstream
     /// token, and navigation. The caller already owns runtimeOperationGate.
     public func restartDshServiceWithAuthenticationRecoveryDuringOperation(
-        context: DshLaunchContext
+        context: DshLaunchContext,
+        profileBridgeProgress: (@Sendable (String) -> Void)? = nil
     ) async throws -> DshServiceSession {
         var recoveryCount = 0
         while true {
             do {
-                return try await restartDshServiceDuringOperation(context: context)
+                return try await restartDshServiceDuringOperation(
+                    context: context,
+                    profileBridgeProgress: profileBridgeProgress
+                )
             } catch {
                 guard isAuthenticationRecoveryFailure(error),
                       recoveryCount < Self.maxAutomaticAuthenticationRecoveries else {

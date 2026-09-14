@@ -107,6 +107,28 @@ public struct GeneralTabView: View {
                         || viewModel.isInstallingVersion
                         || viewModel.isRuntimeRecoveryPending)
                 }
+
+                if viewModel.isSwitchingProfile {
+                    SettingsDivider()
+                    HStack(alignment: .top, spacing: 9) {
+                        ProgressView()
+                            .controlSize(.small)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("正在切换 Profile")
+                                .font(.system(size: 11.5, weight: .medium))
+                            if let progress = viewModel.profileSwitchProgressText,
+                               !progress.isEmpty {
+                                Text(progress)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                }
             }
 
             SettingsSection(

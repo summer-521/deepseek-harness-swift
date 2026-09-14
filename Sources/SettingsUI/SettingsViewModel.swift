@@ -193,6 +193,7 @@ public final class SettingsViewModel: ObservableObject {
     @Published public var isCheckingPluginUpdates: Bool = false
     @Published public var isOperatingPlugin: Bool = false
     @Published public var isSwitchingProfile: Bool = false
+    @Published public private(set) var profileSwitchProgressText: String? = nil
     @Published public var operatingPluginName: String? = nil
     @Published public private(set) var pendingPluginInstallSpec: String? = nil
     @Published public private(set) var pendingPluginUpdate: DshPendingPluginUpdate? = nil
@@ -3011,7 +3012,14 @@ public final class SettingsViewModel: ObservableObject {
         refreshPlugins()
         saveGeneralSettings()
         isSwitchingProfile = true
+        profileSwitchProgressText = "正在准备 \(profile.rawValue) Profile…"
         clearPluginStatus()
+
+        let reportProfileProgress: @Sendable (String) -> Void = { [weak self] line in
+            Task { @MainActor in
+                self?.noteProfileSwitchProgress(line)
+            }
+        }
 
         Task { [self] in
             do {
@@ -3028,7 +3036,10 @@ public final class SettingsViewModel: ObservableObject {
                     // same single bounded recovery used by ordinary starts,
                     // Runtime updates and plugin verification.
                     _ = try await MainWindowController.shared
-                        .restartDshServiceWithAuthenticationRecoveryDuringOperation(context: context)
+                        .restartDshServiceWithAuthenticationRecoveryDuringOperation(
+                            context: context,
+                            profileBridgeProgress: reportProfileProgress
+                        )
 
                     var cleanupError: Error?
                     var finalizingTransaction = transaction
@@ -3042,9 +3053,11 @@ public final class SettingsViewModel: ObservableObject {
                             state.pendingProfileSwitch = finalizingTransaction
                         }
                         do {
+                            self.profileSwitchProgressText = "正在清理 web Profile 的桌面桥接…"
                             try await DshPluginManager.shared.removeDesktopHostArtifacts(
                                 from: .web,
-                                registry: context.runtimeDescriptor.registry
+                                registry: context.runtimeDescriptor.registry,
+                                progress: reportProfileProgress
                             )
                         } catch {
                             cleanupError = error
@@ -3077,6 +3090,7 @@ public final class SettingsViewModel: ObservableObject {
                 }
                 self.refreshPlugins()
                 self.isSwitchingProfile = false
+                self.profileSwitchProgressText = nil
                 if let cleanupError {
                     self.alertMessage = "已切换到 \(profile.rawValue) Profile，服务已重启，但 web 桥接清理失败，将在下次启动重试：\(DshSettingsUIMessage.safe(cleanupError))"
                 } else {
@@ -3098,11 +3112,13 @@ public final class SettingsViewModel: ObservableObject {
                     // Next-launch recovery restores the healthy Profile from
                     // the retained transaction marker.
                     self.isSwitchingProfile = false
+                    self.profileSwitchProgressText = nil
                     self.alertMessage = "切换到 \(profile.rawValue) Profile 失败，且回滚标记写入失败：\(DshSettingsUIMessage.safe(error))。请重启应用，启动时会自动恢复 \(previous.rawValue) Profile。"
                     return
                 }
                 self.appProfile = previous
                 self.saveGeneralSettings()
+                self.profileSwitchProgressText = "切换失败，正在恢复 \(previous.rawValue) Profile…"
                 var restoreError: Error?
                 var restoreCleanupError: Error?
                 do {
@@ -3116,7 +3132,8 @@ public final class SettingsViewModel: ObservableObject {
                             do {
                                 try await DshPluginManager.shared.removeDesktopHostArtifacts(
                                     from: .web,
-                                    registry: context.runtimeDescriptor.registry
+                                    registry: context.runtimeDescriptor.registry,
+                                    progress: reportProfileProgress
                                 )
                             } catch {
                                 // Bridge cleanup is app-owned housekeeping. It
@@ -3130,7 +3147,10 @@ public final class SettingsViewModel: ObservableObject {
                         // as the forward switch. A stale response must not
                         // prevent the known-good Profile from being restored.
                         _ = try await MainWindowController.shared
-                            .restartDshServiceWithAuthenticationRecoveryDuringOperation(context: context)
+                            .restartDshServiceWithAuthenticationRecoveryDuringOperation(
+                                context: context,
+                                profileBridgeProgress: reportProfileProgress
+                            )
                         try DshStateManager.shared.updateOrThrow { state in
                             guard state.pendingProfileSwitch == transaction else { return }
                             state.appProfile = previous
@@ -3143,15 +3163,25 @@ public final class SettingsViewModel: ObservableObject {
                     restoreError = error
                 }
                 self.isSwitchingProfile = false
+                self.profileSwitchProgressText = nil
                 if let restoreError {
                     self.alertMessage = "切换到 \(profile.rawValue) Profile 失败，原 Profile 也无法恢复：\(DshSettingsUIMessage.safe(restoreError))"
                 } else if let restoreCleanupError {
-                    self.alertMessage = "切换到 \(profile.rawValue) Profile 失败，已恢复 \(previous.rawValue) Profile，但 web 桥接清理失败，将在下次启动重试：\(DshSettingsUIMessage.safe(restoreCleanupError))"
+                    self.alertMessage = "切换到 \(profile.rawValue) Profile 失败，已恢复 \(previous.rawValue) Profile。原始错误：\(DshSettingsUIMessage.safe(error))；web 桥接清理也失败，将在下次启动重试：\(DshSettingsUIMessage.safe(restoreCleanupError))"
                 } else {
                     self.alertMessage = "切换到 \(profile.rawValue) Profile 失败，已恢复 \(previous.rawValue) Profile：\(DshSettingsUIMessage.safe(error))"
                 }
             }
         }
+    }
+
+    private func noteProfileSwitchProgress(_ line: String) {
+        guard isSwitchingProfile else { return }
+        var text = DshSecretRedactor().redact(line)
+        if text.count > 140 {
+            text = String(text.prefix(140)) + "…"
+        }
+        profileSwitchProgressText = text
     }
 
     /// Change the live Node policy and persist the setting in the order
