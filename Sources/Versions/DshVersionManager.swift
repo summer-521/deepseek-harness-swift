@@ -104,6 +104,14 @@ public final class DshVersionManager {
     /// user-facing arbitrary switch action, so retaining unreferenced history
     /// only leaves stale disk state. Never collect while a transaction is
     /// pending, and preserve every exact active/previous/candidate reference.
+    ///
+    /// A Runtime is also kept when the Profile still resolves through it: the
+    /// Profile's dependency links point into the Runtime that installed them,
+    /// so deleting that tree is what turns a working Profile into `Cannot find
+    /// package …` while the Host loads its plugin tree. Links every retained
+    /// Runtime can satisfy are re-pointed together first; when even one link
+    /// has no substitute, nothing moves and the version stays, because a
+    /// Profile split across two Runtimes is the state that breaks loading.
     @discardableResult
     public func cleanupUnreferencedVersions() -> [String] {
         let state = DshStateManager.shared.current
@@ -116,17 +124,59 @@ public final class DshVersionManager {
         guard !retained.isEmpty else { return [] }
 
         let fileManager = FileManager.default
+        let versionsDirectory = DshStateManager.versionsDirectory
+
         var removed: [String] = []
         for version in listInstalledVersions() where !retained.contains(version) {
-            let target = DshStateManager.versionsDirectory.appendingPathComponent(version, isDirectory: true)
+            let target = versionsDirectory.appendingPathComponent(version, isDirectory: true)
+            let repair = moveProfileLinksOff(version: version)
+            guard repair.canRemoveSourceRuntime else {
+                retained.insert(version)
+                print(
+                    "[DshVersionManager] Retaining Runtime \(version): \(repair.unresolved.count) Profile link(s) still resolve through it"
+                )
+                continue
+            }
             do {
                 try fileManager.removeItem(at: target)
                 removed.append(version)
+                if !repair.repointed.isEmpty {
+                    print(
+                        "[DshVersionManager] Moved \(repair.repointed.count) Profile link(s) off Runtime \(version) before removing it"
+                    )
+                }
             } catch {
                 print("[DshVersionManager] Failed to remove legacy Runtime \(version):", error)
             }
         }
         return removed
+    }
+
+    /// Move every Profile link that resolves through `version` onto a Runtime
+    /// the state still references.
+    ///
+    /// The move is all-or-nothing inside `DshProfileLinkRepair`: when one link
+    /// has no substitute, nothing moves and the caller keeps `version` on disk,
+    /// because a Profile resolving through two Runtimes at once is the state
+    /// that breaks plugin loading — worse than keeping an unreferenced tree.
+    private func moveProfileLinksOff(version: String) -> DshProfileLinkRepair.Outcome {
+        let state = DshStateManager.shared.current
+        let versionsDirectory = DshStateManager.versionsDirectory
+        let candidates = [
+            state.runtimeState.active?.version,
+            state.selectedVersion,
+            state.runtimeState.previous?.version,
+        ]
+        .compactMap { $0 }
+        .filter { $0 != version }
+        .map { versionsDirectory.appendingPathComponent($0, isDirectory: true) }
+        return DshProfileLinkRepair.repointLinks(
+            profilesRoot: DshLaunchContext.defaultDshHome
+                .appendingPathComponent("profiles", isDirectory: true),
+            versionsDirectory: versionsDirectory,
+            fromVersion: version,
+            toCandidates: candidates
+        )
     }
 
     /// Establish the initial selection only when the state has no selection.
@@ -757,11 +807,24 @@ public final class DshVersionManager {
     /// Remove a specifically named candidate during transaction recovery.
     /// Unlike the user-facing uninstall path, this is only used for a
     /// persisted, non-active update candidate.
+    ///
+    /// The candidate can have been launched long enough for the Profile to
+    /// link its packages into that tree, so the same rule as
+    /// `cleanupUnreferencedVersions` applies: a tree the Profile still resolves
+    /// through is not disposable, and a Profile half-moved onto another Runtime
+    /// is worse than an unreferenced directory left on disk.
     public func discardInstalledVersion(_ version: String) throws {
         guard Self.isValidVersion(version),
               DshStateManager.shared.current.selectedVersion != version else { return }
         let target = DshStateManager.versionsDirectory.appendingPathComponent(version, isDirectory: true)
         guard FileManager.default.fileExists(atPath: target.path) else { return }
+        let repair = moveProfileLinksOff(version: version)
+        guard repair.canRemoveSourceRuntime else {
+            print(
+                "[DshVersionManager] Retaining discarded Runtime \(version): \(repair.unresolved.count) Profile link(s) still resolve through it"
+            )
+            return
+        }
         try FileManager.default.removeItem(at: target)
     }
 

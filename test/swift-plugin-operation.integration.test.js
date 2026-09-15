@@ -21,6 +21,7 @@ const sources = [
   path.join(repositoryDirectory, 'Sources', 'Service', 'DshLaunchContext.swift'),
   path.join(repositoryDirectory, 'Sources', 'Service', 'DshSecretRedactor.swift'),
   path.join(repositoryDirectory, 'Sources', 'Versions', 'DshVersionManager.swift'),
+  path.join(repositoryDirectory, 'Sources', 'Versions', 'DshProfileLinkRepair.swift'),
   path.join(repositoryDirectory, 'Sources', 'Versions', 'DshFamilyClosure.swift'),
   statePath,
   path.join(repositoryDirectory, 'Sources', 'Plugins', 'DshPluginManager.swift'),
@@ -127,6 +128,7 @@ test('P01 restart and rollback matrix stays fail-closed', () => {
     runSingle(binaryPath, 'interrupted-restore-leftover')
     runSingle(binaryPath, 'm2-rollback-selection')
     runSingle(binaryPath, 'version-picker-contract')
+    runSingle(binaryPath, 'cleanup-retains-referenced-runtime')
     runSingle(binaryPath, 'activation-toggle')
     runSingle(binaryPath, 'staging-sweep')
     runSingle(binaryPath, 'selection-preserves-open-transaction')

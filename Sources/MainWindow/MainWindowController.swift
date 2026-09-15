@@ -1066,6 +1066,29 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                 profileDirectory: context.profileDirectory,
                 profile: context.profile
             )
+            // A link pointing at a Runtime that an earlier cleanup removed only
+            // surfaces later as `Cannot find package …` while the Host loads its
+            // plugin tree, which the App then observes as a handshake timeout.
+            // Re-point whatever the Runtime about to launch can supply — in the
+            // Profile this launch owns and in the workspace's shared hoisted
+            // `node_modules`, never inside another Profile's own tree (the
+            // `web` Profile is shared with the terminal CLI).
+            let linkRepair = DshProfileLinkRepair.repairDanglingLinks(
+                profilesRoot: context.profileDirectory.deletingLastPathComponent(),
+                versionsDirectory: DshStateManager.versionsDirectory,
+                toRuntime: DshStateManager.versionsDirectory.appendingPathComponent(
+                    context.runtimeDescriptor.version,
+                    isDirectory: true
+                ),
+                restrictingTo: [context.profileDirectory]
+            )
+            if !linkRepair.isNoop {
+                _ = diagnosticStore.appendLog(
+                    "F04 profile link repair: repointed=\(linkRepair.repointed.count) unresolved=\(linkRepair.unresolved.count)",
+                    launchID: context.launchID,
+                    source: .pluginInspector
+                )
+            }
         }
         setDiagnosticPhase(.startingService, launchID: context.launchID)
         let session = try await DshService.shared.start(context: context)
@@ -1960,6 +1983,13 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                 return (.startupTimeout, "等待 DSH 服务就绪超时。", .retryable, .processOutput)
             case .processExited:
                 return (.processExited, "DSH 服务在完成启动握手前退出。", .retryable, .processOutput)
+            case .runtimeBootstrapFailed:
+                return (
+                    .pluginConfigurationInvalid,
+                    "Runtime 插件树加载失败：Profile 插件依赖的宿主包不完整。",
+                    .retryable,
+                    .processOutput
+                )
             case .generationMismatch:
                 return (.generationMismatch, "DSH 服务报告了过期的启动代际。", .notRetryable, .controlProtocol)
             case .policyMismatch:

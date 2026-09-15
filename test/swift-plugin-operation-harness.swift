@@ -1309,6 +1309,91 @@ private func runActivationToggle() async throws {
     print("plugin operation scenario activation-toggle passed")
 }
 
+/// A Runtime the Profile still resolves through must survive cleanup. Deleting
+/// it turns every link into `Cannot find package …` while the Host loads its
+/// plugin tree, which the App can only observe as a handshake timeout.
+private func runCleanupRetainsReferencedRuntime() throws {
+    try resetFixture()
+    try installFakeRuntime(version: "0.1.4")
+    try installFakeRuntime(version: "0.1.5-rc.2")
+    try installFakeRuntime(version: "0.1.6-alpha.1")
+
+    let versions = DshStateManager.versionsDirectory
+    let profilesRoot = DshLaunchContext.defaultDshHome
+        .appendingPathComponent("profiles", isDirectory: true)
+    let workspaceScope = profilesRoot
+        .appendingPathComponent("node_modules/@earendil-works", isDirectory: true)
+    let profileScope = profilesRoot
+        .appendingPathComponent("swift-desktop/node_modules/@deepseek-ai", isDirectory: true)
+    for directory in [workspaceScope, profileScope] {
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    func packageFile(_ version: String, _ relativePath: String) throws -> URL {
+        let url = versions
+            .appendingPathComponent(version, isDirectory: true)
+            .appendingPathComponent(relativePath, isDirectory: true)
+        try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+        try Data("package".utf8).write(to: url.appendingPathComponent("package.json"), options: .atomic)
+        return url
+    }
+
+    let carriedOld = try packageFile("0.1.5-rc.2", "node_modules/@earendil-works/pi-ai")
+    let carriedNew = try packageFile("0.1.6-alpha.1", "node_modules/@earendil-works/pi-ai")
+    // The pnpm virtual-store shape: the directory embeds the version and an
+    // install hash, so the retained Runtime carries the package elsewhere.
+    let hashedOld = try packageFile(
+        "0.1.5-rc.2",
+        "node_modules/.pnpm/@deepseek-ai+tool-x@0.1.5-alpha.1_aaaa/node_modules/@deepseek-ai/tool-x"
+    )
+    let hashedNew = try packageFile("0.1.6-alpha.1", "node_modules/.pnpm/node_modules/@deepseek-ai/tool-x")
+    let onlyOld = try packageFile(
+        "0.1.5-rc.2",
+        "node_modules/.pnpm/node_modules/@deepseek-ai/dsh-workflow-worker-thread"
+    )
+    let movable = workspaceScope.appendingPathComponent("pi-ai")
+    let movableHash = profileScope.appendingPathComponent("tool-x")
+    let pinned = profileScope.appendingPathComponent("dsh-workflow-worker-thread")
+    try fileManager.createSymbolicLink(atPath: movable.path, withDestinationPath: carriedOld.path)
+    try fileManager.createSymbolicLink(atPath: movableHash.path, withDestinationPath: hashedOld.path)
+    try fileManager.createSymbolicLink(atPath: pinned.path, withDestinationPath: onlyOld.path)
+
+    let stateJSON = """
+    {"appProfile":"desktop","selectedVersion":"0.1.6-alpha.1","runtimeState":{\
+    "phase":"idle","profile":"desktop",\
+    "active":{"version":"0.1.6-alpha.1","registry":"https://registry.npmjs.org","installedAt":0}}}
+    """
+    try writeAppState(stateJSON)
+
+    // One link no retained Runtime can satisfy keeps the whole Profile on the
+    // Runtime it was installed against: no link moves, so nothing resolves
+    // through two Runtimes at once.
+    let firstPass = DshVersionManager.shared.cleanupUnreferencedVersions()
+    require(firstPass.contains("0.1.4"),
+            "an unreferenced Runtime no link names must still be collected, removed=\(firstPass)")
+    require(!firstPass.contains("0.1.5-rc.2"),
+            "a Runtime the Profile resolves through must be retained, removed=\(firstPass)")
+    require(fileManager.fileExists(atPath: versions.appendingPathComponent("0.1.5-rc.2").path),
+            "the retained Runtime must stay on disk")
+    require((try? fileManager.destinationOfSymbolicLink(atPath: movable.path)) == carriedOld.path,
+            "a retained Runtime must leave the Profile's other links where they were")
+    require((try? fileManager.destinationOfSymbolicLink(atPath: movableHash.path)) == hashedOld.path,
+            "the virtual-store link must stay where it was too")
+    require((try? fileManager.destinationOfSymbolicLink(atPath: pinned.path)) == onlyOld.path,
+            "a link no retained Runtime can satisfy must stay as it was")
+
+    // Once nothing pins it, the version goes and every link follows the
+    // retained Runtime — including the pnpm virtual-store one.
+    try fileManager.removeItem(at: pinned)
+    let secondPass = DshVersionManager.shared.cleanupUnreferencedVersions()
+    require(secondPass.contains("0.1.5-rc.2"),
+            "nothing pins the old Runtime any more, removed=\(secondPass)")
+    require((try? fileManager.destinationOfSymbolicLink(atPath: movable.path)) == carriedNew.path,
+            "the movable link must follow the retained Runtime")
+    require((try? fileManager.destinationOfSymbolicLink(atPath: movableHash.path)) == hashedNew.path,
+            "the virtual-store link must follow the package, not the old store path")
+}
+
 /// The version picker offers whatever the registry publishes, so the ordering
 /// has to be real semver precedence rather than "latest wins".
 private func runVersionPickerContract() throws {
@@ -1593,6 +1678,7 @@ struct PluginOperationHarness {
         case "adopt-rejects-committed": try await recoverAdoptRejectsCommitted()
         case "adopt-gating-matrix": try runAdoptGatingMatrix()
         case "version-picker-contract": try runVersionPickerContract()
+        case "cleanup-retains-referenced-runtime": try runCleanupRetainsReferencedRuntime()
         case "activation-toggle": try await runActivationToggle()
         case "verifying-setup": try await setupVerifying()
         case "verifying-commit-recover": try await recoverVerifyingCommit()

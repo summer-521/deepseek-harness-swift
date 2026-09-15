@@ -19,6 +19,7 @@ struct ProcessIOHarness {
         let shortJSONSamples = #"{"token":"abc"} {"cookie":"sid=abc"} {"authorization":"Bearer abc"}"#
         let conflict = CommandLine.arguments.contains("--conflict")
         let lateWait = CommandLine.arguments.contains("--late-wait")
+        let bootstrapFailure = CommandLine.arguments.contains("--bootstrap-failure")
 
         let legacy = try? DshWebEndpoint.parse(
             URL(string: "http://127.0.0.1:3187/")!,
@@ -55,7 +56,14 @@ struct ProcessIOHarness {
         let secondReady = conflict
             ? "printf 'dsh web: http://127.0.0.1:3187/?token=second-token\\n';"
             : ""
-        let script = """
+        // The producer writes this line to stderr (`assets/dsh-runtime-bootstrap.mjs`)
+        // and then exits; the fixture keeps the process alive so the reported
+        // reason is the line rather than the exit.
+        let bootstrapScript = """
+        printf '%s\\n' "dsh runtime bootstrap failed: dsh: plugin tree failed to load: failed to import loader entry codex-subscription (dsh-codex-subscription): Cannot find package '@earendil-works/pi-ai' imported from /tmp/plugin.js" >&2;
+        sleep 5
+        """
+        let script = bootstrapFailure ? bootstrapScript : """
         printf 'dsh web: http://127.0.0.1:3187/?token=\(launchToken)';
         printf '\\033[32m\\n';
         printf 'Cookie: dsh_swift_renderer=\(rendererToken); dsh-auth-fixture=\(cookieSecret)\\n' >&2;
@@ -90,6 +98,34 @@ struct ProcessIOHarness {
         } catch {
             fputs("FAIL: unable to run fixture: \(error)\n", stderr)
             exit(1)
+        }
+
+        if bootstrapFailure {
+            let started = Date()
+            do {
+                _ = try await io.waitForReady(timeout: 8)
+                require(false, "a bootstrap failure must never be reported as ready")
+            } catch let error as DshProcessIOError {
+                let message = error.localizedDescription
+                require(
+                    message.contains("Runtime 插件树加载失败"),
+                    "bootstrap failure must name the Runtime plugin tree, saw: \(message)"
+                )
+                require(
+                    message.contains("@earendil-works/pi-ai"),
+                    "bootstrap failure must name the package the Host could not import"
+                )
+                require(
+                    Date().timeIntervalSince(started) < 5,
+                    "bootstrap failure must fail fast instead of waiting for the handshake timeout"
+                )
+            } catch {
+                require(false, "unexpected bootstrap error: \(error)")
+            }
+            process.terminate()
+            while process.isRunning { usleep(10_000) }
+            print("swift process IO endpoint and redaction harness passed")
+            return
         }
 
         if conflict {

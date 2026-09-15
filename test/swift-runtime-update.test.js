@@ -130,6 +130,23 @@ test('npm runtime updates use SemVer ordering and a staging candidate', () => {
   assert.match(VERSION_MANAGER_SOURCE, /\["alpha", "rc"\]/)
   assert.match(VERSION_MANAGER_SOURCE, /public func discardInstalledVersion\(/)
   assert.match(VERSION_MANAGER_SOURCE, /public func cleanupUnreferencedVersions\(\)/)
+  // Removing a Runtime the Profile resolves through is what turned a working
+  // install into `Cannot find package …` at Host bootstrap: both deletion
+  // paths move the Profile's links first, and keep the tree when even one link
+  // has no substitute.
+  assert.match(
+    VERSION_MANAGER_SOURCE,
+    /private func moveProfileLinksOff\(version: String\) -> DshProfileLinkRepair\.Outcome/
+  )
+  assert.match(VERSION_MANAGER_SOURCE, /DshProfileLinkRepair\.repointLinks\(/)
+  assert.match(
+    VERSION_MANAGER_SOURCE,
+    /guard repair\.canRemoveSourceRuntime else \{\n\s*retained\.insert\(version\)/
+  )
+  assert.match(
+    VERSION_MANAGER_SOURCE,
+    /public func discardInstalledVersion\(_ version: String\) throws \{[\s\S]*?moveProfileLinksOff\(version: version\)[\s\S]*?guard repair\.canRemoveSourceRuntime else \{/
+  )
   assert.match(VERSION_MANAGER_SOURCE, /let alignedFamily = try await resolveAlignedFamily\(version: version, registry: reg\)/)
   assert.match(VERSION_MANAGER_SOURCE, /activateWhenMissing: Bool = true/)
   assert.match(VERSION_MANAGER_SOURCE, /private func verifyNpmIntegrity\(/)

@@ -49,6 +49,23 @@ test("Swift ProcessIO rejects a conflicting second ready URL", () => {
   }
 });
 
+test("Swift ProcessIO reports a Runtime bootstrap failure instead of a handshake timeout", () => {
+  const binaryPath = path.join(os.tmpdir(), `dsh-process-io-bootstrap-${process.pid}`);
+  try {
+    const compile = spawnSync("xcrun", ["swiftc", ...sources, "-o", binaryPath], {
+      encoding: "utf8",
+      timeout: 120000,
+    });
+    assert.equal(compile.status, 0, compile.stderr || compile.stdout);
+
+    const run = spawnSync(binaryPath, ["--bootstrap-failure"], { encoding: "utf8", timeout: 20000 });
+    assert.equal(run.status, 0, run.stderr || run.stdout);
+    assert.match(run.stdout, /endpoint and redaction harness passed/);
+  } finally {
+    try { fs.unlinkSync(binaryPath); } catch { /* no binary after failed compile */ }
+  }
+});
+
 test("DshWebEndpoint applies the strict origin and query contract", () => {
   const endpointSource = fs.readFileSync(path.join(testDirectory, "..", "Sources", "Service", "DshWebEndpoint.swift"), "utf8");
   assert.match(endpointSource, /expectedPort/);

@@ -61,6 +61,7 @@ const SWIFT_SOURCES = [
   'Service/DshProcessIO.swift',
   'Versions/DshVersionManager.swift',
   'Versions/DshFamilyClosure.swift',
+  'Versions/DshProfileLinkRepair.swift',
   'Plugins/DshPluginManager.swift',
   'Notification/NotificationManager.swift',
   'Bridge/DshBridgeHandler.swift',

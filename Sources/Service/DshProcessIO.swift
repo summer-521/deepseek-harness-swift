@@ -3,6 +3,7 @@ import Foundation
 public enum DshProcessIOError: Error, LocalizedError, Sendable {
     case timedOut(String)
     case processExited(String)
+    case runtimeBootstrapFailed(String)
     case generationMismatch
     case policyMismatch
     case endpointConflict
@@ -14,6 +15,10 @@ public enum DshProcessIOError: Error, LocalizedError, Sendable {
             return detail.isEmpty ? "等待 DSH 桌面控制握手超时。" : "等待 DSH 桌面控制握手超时：\n\n\(detail)"
         case .processExited(let detail):
             return "DSH 进程在完成桌面控制握手前退出：\n\n\(detail)"
+        case .runtimeBootstrapFailed(let detail):
+            return detail.isEmpty
+                ? "Runtime 插件树加载失败。"
+                : "Runtime 插件树加载失败：\n\n\(detail)"
         case .generationMismatch:
             return "DSH 桌面控制代际不匹配。"
         case .policyMismatch:
@@ -36,6 +41,17 @@ public final class DshProcessIO: @unchecked Sendable {
     )
     private static let controlReadyRegex = try! NSRegularExpression(
         pattern: #"dsh desktop control ready: ([0-9A-Fa-f-]{36})\b"#
+    )
+    /// A Runtime that cannot load its plugin tree reports this and then stays
+    /// alive without ever completing the handshake. Recognizing it turns a
+    /// timeout with an unreadable output blob into the reason the Host died.
+    /// Anchored at the line start: the producer writes the line itself, so a
+    /// longer line that merely quotes it is not a failure.
+    private static let bootstrapFailedRegex = try! NSRegularExpression(
+        pattern: #"^dsh runtime bootstrap failed:\s*(.+)"#
+    )
+    private static let missingPackageRegex = try! NSRegularExpression(
+        pattern: #"Cannot find package '([^']+)'"#
     )
     private static let policyRegex = try! NSRegularExpression(
         pattern: #"dsh desktop policy applied: ([0-9A-Fa-f-]{36}) (\d+) (true|false) (loopback|lan)\b"#
@@ -137,6 +153,21 @@ public final class DshProcessIO: @unchecked Sendable {
         return String(data: ringBuffer, encoding: .utf8) ?? ""
     }
 
+    /// One readable reason out of the Runtime's bootstrap failure line: the
+    /// missing package when the failure names one, then the line itself, both
+    /// capped so a single long line cannot fill the diagnostic panel.
+    private static func bootstrapFailureDetail(_ reason: String) -> String {
+        let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let capped = trimmed.count > 600 ? String(trimmed.prefix(600)) + "…" : trimmed
+        let range = NSRange(capped.startIndex..., in: capped)
+        guard let match = missingPackageRegex.firstMatch(in: capped, range: range),
+              let packageRange = Range(match.range(at: 1), in: capped) else {
+            return capped
+        }
+        return "找不到包 \(String(capped[packageRange]))。\n\n\(capped)"
+    }
+
     public func waitForPolicyApplied(
         generation: UUID,
         revision: Int,
@@ -224,9 +255,29 @@ public final class DshProcessIO: @unchecked Sendable {
         }
     }
 
+    /// Whether this process already completed the handshake, either through a
+    /// pending wait or before one was registered. A bootstrap failure reported
+    /// after that cannot describe this launch, and treating it as terminal
+    /// would fail the policy acknowledgement that follows readiness.
+    private var hasCompletedHandshake: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return readySettled || (webEndpoint != nil && controlReadyGeneration == expectedGeneration)
+    }
+
     private func inspect(_ line: String) {
         let normalizedLine = DshSecretRedactor.stripANSI(line)
         let range = NSRange(normalizedLine.startIndex..., in: normalizedLine)
+        if let match = Self.bootstrapFailedRegex.firstMatch(in: normalizedLine, range: range),
+           let detailRange = Range(match.range(at: 1), in: normalizedLine),
+           !hasCompletedHandshake {
+            failReady(
+                DshProcessIOError.runtimeBootstrapFailed(
+                    Self.bootstrapFailureDetail(String(normalizedLine[detailRange]))
+                )
+            )
+            return
+        }
         if let match = Self.readyRegex.firstMatch(in: normalizedLine, range: range),
            let urlRange = Range(match.range(at: 1), in: normalizedLine),
            let url = URL(string: String(normalizedLine[urlRange])) {

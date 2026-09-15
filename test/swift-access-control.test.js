@@ -171,6 +171,14 @@ test('WebKit receives a strict, HttpOnly, session-only host cookie for each gene
   assert.match(WINDOW_SOURCE, /ensureDesktopHostPlugin\([\s\S]*profileDirectory:\s*context\.profileDirectory[\s\S]*profile:\s*context\.profile/)
   assert.match(WINDOW_SOURCE, /try\s+await\s+rendererCookieStore\.install\(for: session\)/)
   assert.match(WINDOW_SOURCE, /let firstNavigationURL = session\.endpoint\.bootstrapURL \?\? session\.originURL/)
+  // A dangling Profile link is repaired before the Host starts, scoped to the
+  // Profile this launch owns so the CLI-shared `web` Profile is never written.
+  assert.match(
+    WINDOW_SOURCE,
+    /DshProfileLinkRepair\.repairDanglingLinks\([\s\S]*?profilesRoot:\s*context\.profileDirectory\.deletingLastPathComponent\(\)[\s\S]*?restrictingTo:\s*\[context\.profileDirectory\]/
+  )
+  assert.match(WINDOW_SOURCE, /F04 profile link repair: repointed=/)
+  assert.match(WINDOW_SOURCE, /case \.runtimeBootstrapFailed:[\s\S]*?\.pluginConfigurationInvalid/)
   assert.match(WINDOW_SOURCE, /URLRequest\([\s\S]*url:\s*firstNavigationURL,[\s\S]*cachePolicy:\s*\.reloadIgnoringLocalCacheData[\s\S]*\)/)
   assert.match(WINDOW_SOURCE, /webView\?\.load\(bootstrapRequest\)/)
   assert.match(UPSTREAM_COOKIE_SOURCE, /dsh-auth-/)
