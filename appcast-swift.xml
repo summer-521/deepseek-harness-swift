@@ -6,6 +6,59 @@
         <description>Updates for the native Swift shell of DSH Desktop.</description>
         <language>zh-CN</language>
         <item>
+            <title>1.2.5</title>
+            <pubDate>Tue, 15 Sep 2026 21:15:13 +0800</pubDate>
+            <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.5</link>
+            <sparkle:version>16</sparkle:version>
+            <sparkle:shortVersionString>1.2.5</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[
+## 新增
+
+### 插件管理
+
+- 「更新…」现在可以选择 registry 上的具体版本，也可以查看更早的版本（降级仍会确认）。
+- 插件支持**禁用 / 启用**：只是从当前组合中移出，安装的包和版本都保留，可以随时启用。
+
+### 安装过程提示
+
+- 切换 Profile、安装桥接依赖时会显示当前阶段，不再长时间没有任何反馈。
+
+## 修复
+
+### 升级 Runtime 后无法启动
+
+- 修复升级或切换 Runtime 后 App 可能完全无法启动的问题：清理旧 Runtime 时不再删掉当前 Profile 仍在使用的内容，必要时会保留旧版本。
+- 启动时会自动修复指向已删除 Runtime 的 Profile 依赖链接，升级后不需要手动重装插件。
+- 启动失败时不再只提示「等待 DSH 桌面控制握手超时」，而是直接说明原因（缺少哪个包、由哪个插件引入）。
+
+### 新 Runtime 安装失败
+
+- 修复 `0.1.6-alpha.1` 等新版本装不上的问题：旧版的固定校验名单不再能否决官方发布。
+- 网络超时或服务端错误不再被误报为「该版本不存在」，而是提示归档不可达、可稍后重试。
+- 已经安装好的 Runtime 不受影响，仍按它自己的记录校验。
+
+### 插件管理
+
+- 修复「可更新」误报：部分插件的 `latest` 指向比当前更旧的版本，不再把它当成更新并引导降级。
+
+### Profile 切换与安装
+
+- 网络较慢时不再因为单次超时整片失败，下载与重试策略更宽容。
+
+### 帮助菜单
+
+- 帮助菜单里的项目地址改为当前仓库，原先指向已经归档的旧项目。
+
+## 已知限制
+
+- 最低需要 macOS 26，只提供 Apple Silicon（arm64）安装包。
+- Swift 应用包更新与 DSH npm Runtime 更新是两套独立流程。
+]]></description>
+            <enclosure url="https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.2.5/DSH-Desktop-1.2.5-arm64.dmg" length="50425442" type="application/octet-stream" sparkle:edSignature="6Fpuqv3YdnFlA2Hx8C9tJ1M9LnQHyDi99A0vbhTRcI/637Kivw8t+ccS6DAuUe1/hIxOyw7F5cJX8J83X/PbBA=="/>
+        </item>
+        <item>
             <title>1.2.4</title>
             <pubDate>Fri, 11 Sep 2026 18:31:42 +0800</pubDate>
             <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.4</link>
