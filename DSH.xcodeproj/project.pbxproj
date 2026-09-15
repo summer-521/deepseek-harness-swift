@@ -16,6 +16,7 @@
 		E00000000000000000000006 /* DshSemanticVersion.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000015 /* DshSemanticVersion.swift */; };
 		E00000000000000000000007 /* DshService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000016 /* DshService.swift */; };
 		E00000000000000000000008 /* DshVersionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000017 /* DshVersionManager.swift */; };
+		E00000000000000000000055 /* DshFamilyClosure.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000080 /* DshFamilyClosure.swift */; };
 		E00000000000000000000009 /* DshPluginManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000018 /* DshPluginManager.swift */; };
 		E00000000000000000000010 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000019 /* NotificationManager.swift */; };
 		E00000000000000000000011 /* DshBridgeHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000020 /* DshBridgeHandler.swift */; };
@@ -76,6 +77,7 @@
 		D00000000000000000000015 /* DshSemanticVersion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshSemanticVersion.swift; sourceTree = "<group>"; };
 		D00000000000000000000016 /* DshService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshService.swift; sourceTree = "<group>"; };
 		D00000000000000000000017 /* DshVersionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshVersionManager.swift; sourceTree = "<group>"; };
+		D00000000000000000000080 /* DshFamilyClosure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshFamilyClosure.swift; sourceTree = "<group>"; };
 		D00000000000000000000018 /* DshPluginManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshPluginManager.swift; sourceTree = "<group>"; };
 		D00000000000000000000019 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
 		D00000000000000000000020 /* DshBridgeHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshBridgeHandler.swift; sourceTree = "<group>"; };
@@ -225,6 +227,7 @@
 			children = (
 				D00000000000000000000015 /* DshSemanticVersion.swift */,
 				D00000000000000000000017 /* DshVersionManager.swift */,
+				D00000000000000000000080 /* DshFamilyClosure.swift */,
 			);
 			path = Versions;
 			sourceTree = "<group>";
@@ -445,6 +448,7 @@
 				E00000000000000000000054 /* DshInstanceLock.swift in Sources */,
 				E00000000000000000000053 /* DshAsyncOperationGate.swift in Sources */,
 				E00000000000000000000008 /* DshVersionManager.swift in Sources */,
+				E00000000000000000000055 /* DshFamilyClosure.swift in Sources */,
 				E00000000000000000000009 /* DshPluginManager.swift in Sources */,
 				E00000000000000000000010 /* NotificationManager.swift in Sources */,
 				E00000000000000000000011 /* DshBridgeHandler.swift in Sources */,

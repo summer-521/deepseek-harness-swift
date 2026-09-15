@@ -47,6 +47,10 @@ public final class DshVersionManager {
     public static let defaultRegistry = "https://registry.npmjs.org"
     public static let mirrorRegistry = "https://registry.npmmirror.com"
 
+    /// A retry (or a candidate install followed by activation) re-resolves the
+    /// same version; only a complete derivation is memoized.
+    private static let familyClosureCache = DshFamilyClosureCache()
+
     private init() {
         cleanupStaleStagingDirs()
     }
@@ -361,6 +365,10 @@ public final class DshVersionManager {
         return (latest: latestTag, next: nextTag, alpha: alphaTag, versions: items)
     }
 
+    /// The frozen roster this shell inherited from the archived Electron
+    /// package's `package.json`. It is no longer the gate — see
+    /// `resolveAlignedFamily` — but it is still read for versions whose graph
+    /// still declares it, so a frozen list keeps cross-checking the derived one.
     private func loadDshFamilyPackages() throws -> [String] {
         guard let assetsDirectory = NodeRuntime.shared.resolveAssetsDirectory() else {
             throw NSError(
@@ -394,44 +402,52 @@ public final class DshVersionManager {
         return packages
     }
 
+    /// Resolve the family that has to be resolvable at the top level of the
+    /// managed tree for `version`.
+    ///
+    /// The set comes from the registry's own dependency graph, the same source
+    /// the archived Electron shell read through its bundled `package.json`.
+    /// Deriving it is what keeps an official release installable: the frozen
+    /// roster stopped describing the family the moment 0.1.6 replaced
+    /// `@deepseek-ai/dsh-code-runtime`, and a list that cannot be regenerated
+    /// would otherwise veto every later release. The roster is still applied to
+    /// versions whose graph declares all of it (`legacyShortfall`).
     private func resolveAlignedFamily(version: String, registry: String) async throws -> DshFamilyAlignment {
-        let packages = try loadDshFamilyPackages()
-        var registryBase = registry.trimmingCharacters(in: .whitespacesAndNewlines)
-        while registryBase.hasSuffix("/") { registryBase.removeLast() }
+        let closure = await DshFamilyGraph.resolve(
+            version: version,
+            registry: registry,
+            cache: Self.familyClosureCache
+        )
 
-        let results = await withTaskGroup(of: (String, Bool).self) { group in
-            for package in packages {
-                group.addTask {
-                    guard let url = URL(string: "\(registryBase)/\(package)") else {
-                        return (package, false)
-                    }
-                    var request = URLRequest(url: url)
-                    request.timeoutInterval = 10.0
-                    request.setValue("application/vnd.npm.install-v1+json", forHTTPHeaderField: "Accept")
-                    do {
-                        let (data, response) = try await URLSession.shared.data(for: request)
-                        guard let httpResponse = response as? HTTPURLResponse,
-                              (200...299).contains(httpResponse.statusCode),
-                              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                              let versions = root["versions"] as? [String: Any] else {
-                            return (package, false)
-                        }
-                        return (package, versions[version] != nil)
-                    } catch {
-                        return (package, false)
-                    }
-                }
-            }
-
-            var values: [(String, Bool)] = []
-            for await result in group { values.append(result) }
-            return values
+        guard closure.unresolvedRoots.isEmpty else {
+            throw NSError(
+                domain: "DshVersionManager",
+                code: -13,
+                userInfo: [NSLocalizedDescriptionKey: "无法从所选 Registry 解析 DSH \(version) 的插件族依赖图：\(closure.unresolvedRoots.joined(separator: ", "))"]
+            )
+        }
+        guard !closure.truncated else {
+            throw NSError(
+                domain: "DshVersionManager",
+                code: -13,
+                userInfo: [NSLocalizedDescriptionKey: "DSH \(version) 的插件族依赖图超出安全上限，未继续校验"]
+            )
+        }
+        guard closure.unreachable.isEmpty else {
+            throw NSError(
+                domain: "DshVersionManager",
+                code: -13,
+                userInfo: [NSLocalizedDescriptionKey: "无法从所选 Registry 读取 DSH \(version) 的插件族清单：\(closure.unreachable.joined(separator: ", "))"]
+            )
         }
 
-        return DshFamilyAlignment(
-            available: results.filter(\.1).map(\.0).sorted(),
-            missing: results.filter { !$0.1 }.map(\.0).sorted()
-        )
+        let roster = try loadDshFamilyPackages()
+        let missing = Array(
+            Set(closure.missing).union(
+                DshFamilyGraph.legacyShortfall(roster: roster, closure: closure)
+            )
+        ).sorted()
+        return DshFamilyAlignment(available: closure.available, missing: missing)
     }
 
     private func misalignedFamilyPackages(
@@ -549,10 +565,16 @@ public final class DshVersionManager {
                     ]
                 )
             }
+            // The tree was pinned by whichever build installed it: 1.2.x pinned
+            // the 18-name roster, this build pins the whole derived family.
+            // Verifying the tree's own pins keeps the reuse check honest without
+            // rejecting an install that predates the wider derivation; a tree
+            // with no readable manifest falls back to the full derived set.
+            let treePins = DshFamilyGraph.declaredPins(inInstallRoot: existingTarget)
             let misalignedPackages = misalignedFamilyPackages(
                 in: existingTarget,
                 version: version,
-                packages: alignedFamily.available
+                packages: treePins.isEmpty ? alignedFamily.available : treePins
             )
             guard misalignedPackages.isEmpty else {
                 throw NSError(
@@ -590,7 +612,6 @@ public final class DshVersionManager {
 
         onProgress(InstallProgress(version: version, phase: "正在检查 DSH 插件族...", detail: "目标版本：\(version)"))
         let alignedFamily = try await resolveAlignedFamily(version: version, registry: reg)
-        let familyTotal = alignedFamily.available.count + alignedFamily.missing.count
         guard alignedFamily.missing.isEmpty else {
             throw NSError(
                 domain: "DshVersionManager",
@@ -603,7 +624,7 @@ public final class DshVersionManager {
         onProgress(InstallProgress(
             version: version,
             phase: "正在从 npm 下载 DSH \(version)...",
-            detail: "插件族 \(alignedFamily.available.count)/\(familyTotal) 可对齐 · Registry: \(reg)"
+            detail: "插件族 \(alignedFamily.available.count) 个已按 Registry 依赖图对齐 · Registry: \(reg)"
         ))
 
         // pnpm 11 blocks dependency build scripts by default. Fetch the tree

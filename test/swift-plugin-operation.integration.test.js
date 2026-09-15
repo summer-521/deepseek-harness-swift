@@ -21,6 +21,7 @@ const sources = [
   path.join(repositoryDirectory, 'Sources', 'Service', 'DshLaunchContext.swift'),
   path.join(repositoryDirectory, 'Sources', 'Service', 'DshSecretRedactor.swift'),
   path.join(repositoryDirectory, 'Sources', 'Versions', 'DshVersionManager.swift'),
+  path.join(repositoryDirectory, 'Sources', 'Versions', 'DshFamilyClosure.swift'),
   statePath,
   path.join(repositoryDirectory, 'Sources', 'Plugins', 'DshPluginManager.swift'),
   coordinatorPath,

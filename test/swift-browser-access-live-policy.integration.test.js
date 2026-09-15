@@ -13,6 +13,7 @@ const sources = [
   path.join(repositoryDirectory, 'Sources', 'Versions', 'DshSemanticVersion.swift'),
   path.join(repositoryDirectory, 'Sources', 'Service', 'NodeRuntime.swift'),
   path.join(repositoryDirectory, 'Sources', 'Versions', 'DshVersionManager.swift'),
+  path.join(repositoryDirectory, 'Sources', 'Versions', 'DshFamilyClosure.swift'),
   path.join(repositoryDirectory, 'Sources', 'Service', 'DshLaunchContext.swift'),
   path.join(repositoryDirectory, 'Sources', 'Service', 'DshControlProtocol.swift'),
   path.join(repositoryDirectory, 'Sources', 'Service', 'DshWebEndpoint.swift'),

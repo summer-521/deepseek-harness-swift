@@ -15,6 +15,7 @@ const sources = [
   path.join(repositoryDirectory, 'Sources', 'Service', 'DshLaunchContext.swift'),
   path.join(repositoryDirectory, 'Sources', 'Service', 'DshSecretRedactor.swift'),
   path.join(repositoryDirectory, 'Sources', 'Versions', 'DshVersionManager.swift'),
+  path.join(repositoryDirectory, 'Sources', 'Versions', 'DshFamilyClosure.swift'),
   path.join(repositoryDirectory, 'Sources', 'Plugins', 'DshPluginOperationState.swift'),
   path.join(repositoryDirectory, 'Sources', 'Plugins', 'DshPluginManager.swift'),
   path.join(testDirectory, 'swift-plugin-process-lifecycle-harness.swift'),

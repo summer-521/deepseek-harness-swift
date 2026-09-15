@@ -160,6 +160,24 @@ test('npm runtime updates use SemVer ordering and a staging candidate', () => {
 
 test('runtime family installation fails closed and keeps npm registry metadata', () => {
   assert.match(VERSION_MANAGER_SOURCE, /guard alignedFamily\.missing\.isEmpty else/)
+  // The family is the release's own registry graph, not the frozen Electron-era
+  // roster: 0.1.6 replaced dsh-code-runtime, and a list that cannot be
+  // regenerated would veto every later release.
+  assert.match(VERSION_MANAGER_SOURCE, /await DshFamilyGraph\.resolve\(/)
+  assert.doesNotMatch(
+    VERSION_MANAGER_SOURCE,
+    /let packages = try loadDshFamilyPackages\(\)/,
+    'the frozen roster must not be the availability gate any more'
+  )
+  assert.match(VERSION_MANAGER_SOURCE, /DshFamilyGraph\.legacyShortfall\(roster: roster, closure: closure\)/)
+  assert.match(VERSION_MANAGER_SOURCE, /guard closure\.unresolvedRoots\.isEmpty else/)
+  assert.match(VERSION_MANAGER_SOURCE, /guard closure\.unreachable\.isEmpty else/)
+  assert.match(VERSION_MANAGER_SOURCE, /guard !closure\.truncated else/)
+  // Reusing an existing tree must verify the pins that tree was built with:
+  // 1.2.x trees pin the 18-name roster, and holding them to the wider derived
+  // set would strand every install that already exists.
+  assert.match(VERSION_MANAGER_SOURCE, /DshFamilyGraph\.declaredPins\(inInstallRoot: existingTarget\)/)
+  assert.match(VERSION_MANAGER_SOURCE, /treePins\.isEmpty \? alignedFamily\.available : treePins/)
   assert.match(VERSION_MANAGER_SOURCE, /integrity: dist\?\["integrity"\] as\? String/)
   assert.match(VERSION_MANAGER_SOURCE, /public static func normalizedRegistry\(/)
   assert.match(PLUGIN_SOURCE, /private func registryArguments\(_ registry: String\)/)
