@@ -1,0 +1,44 @@
+name: tests
+
+# The suite is hermetic: it compiles Swift harnesses with `xcrun swiftc` and
+# drives local stub registries and HTTP servers, so an arm64 macOS runner with
+# Xcode and Node is the whole requirement. This is the same `npm test` the
+# release checklist runs before `scripts/release-local.sh`, and it is the check
+# that would have caught the source-assertion breakage on main.
+#
+# The packaged app build stays in the release checklist: `scripts/build-app.sh`
+# fetches the Node runtime and codesigns the bundle, which needs a signing
+# identity a hosted runner does not have.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # Apple Silicon only: the shell is arm64-only, and the harnesses compile
+    # for the host architecture.
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Show the toolchain the harnesses compile with
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcrun swiftc --version
+          node --version
+
+      - name: Run the test suite
+        run: npm test
