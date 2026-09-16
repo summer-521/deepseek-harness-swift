@@ -320,11 +320,21 @@ test('P03 uninstalling asks first and says what is removed and what is kept', ()
   )
   assert.match(
     choose,
-    /guard self\.pluginVersionRequestGeneration == generation else \{ return \}\s*\n\s*self\.alertMessage/,
-    'a stale failure must not overwrite what the user is looking at now',
+    /guard self\.pluginVersionRequestGeneration == generation,\s*\n\s*self\.pluginWritesAllowed,\s*\n\s*self\.installedPlugins\.contains\(where: \{ \$0\.name == plugin\.name \}\) else \{\s*\n\s*return\s*\n\s*\}\s*\n\s*self\.alertMessage/,
+    'a failure needs the same validity proof as an answer before it reports anything',
   )
   const remove = functionBody(viewModel, 'private func startPluginRemove(name: String) -> Bool')
   assert.match(remove, /pluginVersionRequestGeneration \+= 1/, 'starting a removal invalidates a pending list')
+
+  // A Profile switch does not increment the generation by itself, so a request
+  // that belonged to the Profile being left behind would still be considered
+  // current — its failure included. The switch invalidates it explicitly.
+  const switchProfile = functionBody(viewModel, 'public func setAppProfile(_ profile: DshAppProfile)')
+  assert.match(
+    switchProfile,
+    /invalidateOutdatedPlugins\(refreshList: false\)\s*\n\s*pluginVersionRequestGeneration \+= 1/,
+    'a Profile switch invalidates a version list that is still in flight',
+  )
 
   // The message states what is deleted, what survives, and what reinstalling
   // costs, naming the plugin, its version and the Profile.

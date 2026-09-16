@@ -1532,9 +1532,17 @@ public final class SettingsViewModel: ObservableObject {
                     tags: published.tags
                 )
             } catch {
-                // A stale failure must not overwrite whatever the user is
-                // looking at now — an uninstall result, for instance.
-                guard self.pluginVersionRequestGeneration == generation else { return }
+                // A failure needs the same proof of validity as an answer. The
+                // request may have belonged to a Profile, a write gate or a
+                // plugin list that has since changed — a desktop-to-web Profile
+                // switch does not touch the generation on its own, so the same
+                // three conditions are asked here too. Otherwise a stale error
+                // reports into the surface the user is looking at now.
+                guard self.pluginVersionRequestGeneration == generation,
+                      self.pluginWritesAllowed,
+                      self.installedPlugins.contains(where: { $0.name == plugin.name }) else {
+                    return
+                }
                 self.alertMessage = "读取 \(plugin.name) 的版本列表失败：\(DshSettingsUIMessage.safe(error))"
             }
         }
@@ -3279,8 +3287,11 @@ public final class SettingsViewModel: ObservableObject {
         let previous = appProfile
         // A check result belongs to the old Profile. Invalidate it before
         // publishing the new selection so no stale badge can enable a write
-        // while the switch is being prepared.
+        // while the switch is being prepared. The same goes for a version list
+        // still being fetched: its answer, or its failure, describes the
+        // Profile being left behind and must not report into the new one.
         invalidateOutdatedPlugins(refreshList: false)
+        pluginVersionRequestGeneration += 1
         let leavingSharedWeb = previous == .web && profile == .desktop
         let transaction = DshProfileSwitchTransaction(from: previous, to: profile)
 
