@@ -7,12 +7,17 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 APP_NAME="DSH"
 SWIFT_VERSION_CONFIG="${PROJECT_DIR}/Version.xcconfig"
 APP_VERSION="$(sed -nE 's/^[[:space:]]*SWIFT_APP_VERSION[[:space:]]*=[[:space:]]*([^[:space:]]+).*/\1/p' "${SWIFT_VERSION_CONFIG}" | head -n 1)"
+BUNDLE_IDENTIFIER="$(sed -nE 's/^[[:space:]]*SWIFT_BUNDLE_IDENTIFIER[[:space:]]*=[[:space:]]*([^[:space:]]+).*/\1/p' "${SWIFT_VERSION_CONFIG}" | head -n 1)"
 DIST_DIR="${SWIFT_DIST_DIR:-${PROJECT_DIR}/dist}"
 BUILD_DIR="${PROJECT_DIR}/.build"
 VOLUME_NAME="DSH Desktop ${APP_VERSION}"
 
 if [ -z "${APP_VERSION}" ]; then
 	echo "Swift application version is missing: ${SWIFT_VERSION_CONFIG}" >&2
+	exit 1
+fi
+if [ -z "${BUNDLE_IDENTIFIER}" ]; then
+	echo "Swift application bundle identifier is missing: ${SWIFT_VERSION_CONFIG}" >&2
 	exit 1
 fi
 
@@ -50,6 +55,18 @@ for PACKAGE_ARCH in "${PACKAGE_ARCHES[@]}"; do
 	ACTUAL_ARCH="$(lipo -archs "${APP_BINARY}")"
 	if [ "${ACTUAL_ARCH}" != "${PACKAGE_ARCH}" ]; then
 		echo "Expected ${APP_BINARY} to contain only ${PACKAGE_ARCH}, found: ${ACTUAL_ARCH}" >&2
+		exit 1
+	fi
+
+	# Packaging may pick up a bundle an earlier build left behind, so the
+	# published artifact is gated here as well as in build-app.sh: a DMG whose
+	# app carries another identifier installs as a different app (its own
+	# cookies, TCC grants, and notification permission) and Sparkle would swap
+	# it in silently, because the EdDSA signature does not cover the identifier.
+	PACKAGED_BUNDLE_IDENTIFIER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${APP_DIR}/Contents/Info.plist")"
+	if [ "${PACKAGED_BUNDLE_IDENTIFIER}" != "${BUNDLE_IDENTIFIER}" ]; then
+		echo "Packaged bundle identifier '${PACKAGED_BUNDLE_IDENTIFIER}' does not match SWIFT_BUNDLE_IDENTIFIER '${BUNDLE_IDENTIFIER}' in ${SWIFT_VERSION_CONFIG}" >&2
+		echo "Rebuild with scripts/build-app.sh before packaging." >&2
 		exit 1
 	fi
 

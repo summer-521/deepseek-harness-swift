@@ -34,6 +34,7 @@ CODESIGN_IDENTITY="${DSH_CODESIGN_IDENTITY:-DSH Local Dev}"
 SWIFT_VERSION_CONFIG="${PROJECT_DIR}/Version.xcconfig"
 APP_VERSION="$(sed -nE 's/^[[:space:]]*SWIFT_APP_VERSION[[:space:]]*=[[:space:]]*([^[:space:]]+).*/\1/p' "${SWIFT_VERSION_CONFIG}" | head -n 1)"
 APP_BUILD="$(sed -nE 's/^[[:space:]]*SWIFT_APP_BUILD[[:space:]]*=[[:space:]]*([^[:space:]]+).*/\1/p' "${SWIFT_VERSION_CONFIG}" | head -n 1)"
+BUNDLE_IDENTIFIER="$(sed -nE 's/^[[:space:]]*SWIFT_BUNDLE_IDENTIFIER[[:space:]]*=[[:space:]]*([^[:space:]]+).*/\1/p' "${SWIFT_VERSION_CONFIG}" | head -n 1)"
 DIST_DIR="${SWIFT_DIST_DIR:-${PROJECT_DIR}/dist}"
 APP_ICON_SOURCE="${PROJECT_DIR}/app.icon"
 APP_ICON_NAME="app"
@@ -63,6 +64,10 @@ if [ -z "${APP_VERSION}" ]; then
 fi
 if [ -z "${APP_BUILD}" ]; then
 	echo "Swift application build number is missing: ${SWIFT_VERSION_CONFIG}" >&2
+	exit 1
+fi
+if [ -z "${BUNDLE_IDENTIFIER}" ]; then
+	echo "Swift application bundle identifier is missing: ${SWIFT_VERSION_CONFIG}" >&2
 	exit 1
 fi
 
@@ -150,6 +155,15 @@ for BUILD_ARCH in "${BUILD_ARCHES[@]}"; do
 	validate_thin_architecture "${RESOURCES_DIR}/node/bin/node" "${BUILD_ARCH}"
 	if [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "${APP_DIR}/Contents/Info.plist")" != "${APP_ICON_NAME}" ]; then
 		echo "Info.plist does not reference the packaged application icon" >&2
+		exit 1
+	fi
+	# The identifier decides which WebKit cookie store, TCC grant, notification
+	# permission, and Sparkle cache a build reads. A bundle that carries another
+	# identifier is not an update of this app, so refuse to build it rather than
+	# let a stale project setting reach a release.
+	PACKAGED_BUNDLE_IDENTIFIER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${APP_DIR}/Contents/Info.plist")"
+	if [ "${PACKAGED_BUNDLE_IDENTIFIER}" != "${BUNDLE_IDENTIFIER}" ]; then
+		echo "Packaged bundle identifier '${PACKAGED_BUNDLE_IDENTIFIER}' does not match SWIFT_BUNDLE_IDENTIFIER '${BUNDLE_IDENTIFIER}' in ${SWIFT_VERSION_CONFIG}" >&2
 		exit 1
 	fi
 

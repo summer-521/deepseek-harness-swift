@@ -82,7 +82,26 @@ const SWIFT_SOURCES = [
 
 test('Swift shell Xcode project owns the complete native app target', () => {
   assert.match(PROJECT_SOURCE, /productType = "com\.apple\.product-type\.application"/)
-  assert.match(PROJECT_SOURCE, /PRODUCT_BUNDLE_IDENTIFIER = "io\.github\.krystal-cao\.dsh-swift-shell"/)
+  // Both configurations take the identifier from Version.xcconfig, so a stale
+  // literal cannot survive in one of them, and no literal is left in the
+  // project file for a rebase to resurrect.
+  assert.equal(
+    (PROJECT_SOURCE.match(/PRODUCT_BUNDLE_IDENTIFIER = "\$\(SWIFT_BUNDLE_IDENTIFIER\)";/g) ?? [])
+      .length,
+    2,
+  )
+  const bundleIdentifier = VERSION_CONFIG_SOURCE.match(/^SWIFT_BUNDLE_IDENTIFIER = (\S+)$/m)?.[1]
+  assert.ok(bundleIdentifier, 'Version.xcconfig must define SWIFT_BUNDLE_IDENTIFIER')
+  // A self-signed app is labelled by the vendor of its reverse-DNS prefix, so
+  // `io.github.*` reports "Github" in third-party uninstallers.
+  assert.doesNotMatch(bundleIdentifier, /^io\.github\./)
+  assert.match(bundleIdentifier, /^[a-z0-9]+(?:\.[a-z0-9-]+)+$/)
+  // The packaging gates are what actually keep a wrong identifier out of a
+  // release, so require both entry points to compare the built bundle with it.
+  for (const source of [BUILD_SOURCE, PACKAGE_SOURCE]) {
+    assert.match(source, /SWIFT_BUNDLE_IDENTIFIER/)
+    assert.match(source, /Print :CFBundleIdentifier/)
+  }
   assert.match(PROJECT_SOURCE, /INFOPLIST_FILE = Info\.plist/)
   assert.match(PROJECT_SOURCE, /app\.icon in Resources/)
   assert.match(PROJECT_SOURCE, /ASSETCATALOG_COMPILER_APPICON_NAME = app/)

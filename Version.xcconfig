@@ -4,5 +4,15 @@ SWIFT_APP_BUILD = 16
 MARKETING_VERSION = $(SWIFT_APP_VERSION)
 CURRENT_PROJECT_VERSION = $(SWIFT_APP_BUILD)
 
+// The bundle identifier is the key every user-level record is filed under:
+// WebKit cookies and localStorage, TCC folder grants, notification permission,
+// Sparkle's update cache. It is defined here rather than in the project file so
+// the two build configurations cannot drift apart, and `build-app.sh` /
+// `package-dmg.sh` refuse to produce an artifact whose Info.plist disagrees with
+// this value. The vendor segment must stay a domain this project controls: a
+// third-party uninstaller labels a self-signed app with the reverse-DNS vendor,
+// and the previous `io.github.*` prefix made it report "Github".
+SWIFT_BUNDLE_IDENTIFIER = com.krystalcao.dsh-swift-shell
+
 // Sparkle's public Ed25519 key is stored in Info.plist. The private key must
 // remain in the release machine's Keychain and must never enter the repo.
