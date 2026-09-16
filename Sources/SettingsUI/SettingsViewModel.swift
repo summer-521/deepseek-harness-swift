@@ -1504,7 +1504,10 @@ public final class SettingsViewModel: ObservableObject {
                 // something the user just removed.
                 guard self.pluginVersionRequestGeneration == generation,
                       self.pluginWritesAllowed,
-                      self.filteredInstalledPlugins.contains(where: { $0.name == plugin.name }) else {
+                      // The unfiltered list: a search term or the exception
+                      // filter changing during the fetch says nothing about
+                      // whether the plugin is still installed.
+                      self.installedPlugins.contains(where: { $0.name == plugin.name }) else {
                     return
                 }
                 // Installed specs may carry a range operator; show and compare
@@ -1529,6 +1532,9 @@ public final class SettingsViewModel: ObservableObject {
                     tags: published.tags
                 )
             } catch {
+                // A stale failure must not overwrite whatever the user is
+                // looking at now — an uninstall result, for instance.
+                guard self.pluginVersionRequestGeneration == generation else { return }
                 self.alertMessage = "读取 \(plugin.name) 的版本列表失败：\(DshSettingsUIMessage.safe(error))"
             }
         }
@@ -2974,18 +2980,19 @@ public final class SettingsViewModel: ObservableObject {
 
     /// Run the uninstall the confirmation was asked for.
     ///
-    /// The request is cleared only when the removal was actually accepted: the
-    /// gate can change between asking and confirming — another window starts an
-    /// operation, the Runtime enters a confirmed window — and closing the dialog
-    /// on a refused start would leave the user believing a plugin was removed.
+    /// The request lives exactly as long as the confirmation: the alert clears
+    /// it on dismissal (see the page's binding) and this clears it on the
+    /// confirmed path. A start the gate refuses therefore shows its reason on
+    /// the page rather than leaving a request behind that nothing would present
+    /// again — the user asks again from the row.
     public func confirmPluginRemoval() {
         guard let pending = pendingPluginRemoval else { return }
+        pendingPluginRemoval = nil
         guard startPluginRemove(name: pending.name) else {
             alertMessage = pluginMutationUnavailableReason
                 ?? "插件写操作暂不可用，\(pending.name) 没有被卸载。"
             return
         }
-        pendingPluginRemoval = nil
     }
 
     public func cancelPluginRemoval() {

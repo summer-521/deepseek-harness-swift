@@ -187,6 +187,8 @@ public final class DshProcessIO: @unchecked Sendable {
         case architecture
         /// The `.node` binary the loader asked for is not there.
         case missingBinary
+        /// The `.node` binary is there, but a library it loads is not.
+        case missingDependency
 
         /// One line to lead the recovery surface with.
         public var summary: String {
@@ -197,11 +199,13 @@ public final class DshProcessIO: @unchecked Sendable {
                 return "插件的原生模块是另一个 CPU 架构的二进制。"
             case .missingBinary:
                 return "插件的原生模块缺失。"
+            case .missingDependency:
+                return "插件的原生模块缺少它依赖的库。"
             }
         }
 
-        /// The remedy is the same for all three: reinstall from the plugin page,
-        /// which fetches a binary built for this Node and this machine.
+        /// The remedy is the same for all four: reinstall from the plugin page,
+        /// which fetches binaries built for this Node and this machine.
         public var remedy: String {
             "在「设置 → 插件」重新安装受影响的插件即可获取匹配的二进制。"
         }
@@ -221,9 +225,17 @@ public final class DshProcessIO: @unchecked Sendable {
         if lowered.contains("incompatible architecture") {
             return .architecture
         }
-        // A `.node` binary that is absent fails at load time with `dlopen`; the
-        // path is part of the signal so a missing ordinary dylib is not filed
-        // here.
+        // "Library not loaded: …/libfoo.dylib" means the loader found the module
+        // and failed inside it, not that the module is gone. Checked before the
+        // missing-binary rule, whose text — `dlopen(<the .node path>)` plus
+        // `no such file or directory` — appears in this failure too.
+        let dependencySignals = ["library not loaded", "image not found"]
+        if dependencySignals.contains(where: lowered.contains) {
+            return .missingDependency
+        }
+        // A `.node` binary that is absent fails at load time with `dlopen`, and
+        // the path is part of the signal so a missing ordinary dylib is not
+        // filed here.
         if lowered.contains("dlopen"), lowered.contains(".node"), lowered.contains("no such file or directory") {
             return .missingBinary
         }

@@ -89,6 +89,16 @@ struct ProcessIOHarness {
             ) == .missingBinary,
             "a missing .node binary is a missing-binary failure"
         )
+        // A `.node` that exists but cannot load a library it needs reports the
+        // same `dlopen`/`no such file or directory` text as an absent module.
+        require(
+            DshProcessIO.nativeModuleFailure(
+                in: "Error: dlopen(/tmp/better_sqlite3.node, 0x0001): Library not loaded: /opt/homebrew/opt/sqlite/lib/libsqlite3.dylib\n"
+                    + "  Referenced from: /tmp/better_sqlite3.node\n"
+                    + "  Reason: tried: '/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib' (no such file or directory)"
+            ) == .missingDependency,
+            "a missing dependency library is not a missing module"
+        )
         require(
             DshProcessIO.isNativeModuleMismatch(
                 "Error: The module '/tmp/x.node' was compiled against a different Node.js version using NODE_MODULE_VERSION 115."
@@ -111,8 +121,9 @@ struct ProcessIOHarness {
             DshProcessIO.NativeModuleFailure.nodeVersion.summary,
             DshProcessIO.NativeModuleFailure.architecture.summary,
             DshProcessIO.NativeModuleFailure.missingBinary.summary,
+            DshProcessIO.NativeModuleFailure.missingDependency.summary,
         ]
-        require(Set(summaries).count == 3, "the three failures must read differently, saw \(summaries)")
+        require(Set(summaries).count == 4, "the four failures must read differently, saw \(summaries)")
         require(
             summaries.allSatisfy { !$0.isEmpty },
             "every failure needs a summary the recovery surface can lead with"

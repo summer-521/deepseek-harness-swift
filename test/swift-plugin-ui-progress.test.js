@@ -275,16 +275,18 @@ test('P03 uninstalling asks first and says what is removed and what is kept', ()
   assert.match(pluginsView, /Button\("卸载", role: \.destructive\)/)
   assert.match(pluginsView, /Text\(pending\.confirmationMessage\)/)
 
-  // The uninstall itself happens only in the confirmed branch, and only when the
-  // removal was actually accepted: the gate can close between asking and
-  // confirming, and closing the dialog on a refused start would look like a
-  // successful uninstall.
+  // The uninstall itself happens only in the confirmed branch. The request
+  // lives exactly as long as the confirmation — the alert clears it on
+  // dismissal and this clears it here — so a start the gate refuses reports its
+  // reason rather than leaving a request that nothing would present again.
   const confirm = functionBody(viewModel, 'public func confirmPluginRemoval()')
-  assert.match(confirm, /guard startPluginRemove\(name: pending\.name\) else/)
+  assert.match(confirm, /pendingPluginRemoval = nil\s*\n\s*guard startPluginRemove\(name: pending\.name\) else/)
   assert.match(confirm, /alertMessage = pluginMutationUnavailableReason/)
-  assert.match(confirm, /pendingPluginRemoval = nil\s*\n\s*\}/, 'the request clears only after an accepted start')
   assert.doesNotMatch(confirm, /removePlugin\(name: pending\.name\)/)
   assert.match(functionBody(viewModel, 'public func cancelPluginRemoval()'), /pendingPluginRemoval = nil/)
+  // The alert's dismissal is the other owner of the request; between them the
+  // request can never outlive the dialog it belongs to.
+  assert.match(pluginsView, /if !presented \{ viewModel\.cancelPluginRemoval\(\) \}/)
   // The request is gated exactly like the button it replaces.
   assert.match(
     functionBody(viewModel, 'public func requestPluginRemoval(name: String)'),
@@ -308,8 +310,18 @@ test('P03 uninstalling asks first and says what is removed and what is kept', ()
   assert.match(choose, /guard self\.pluginVersionRequestGeneration == generation/)
   assert.match(
     choose,
-    /self\.filteredInstalledPlugins\.contains\(where: \{ \$0\.name == plugin\.name \}\)/,
+    /self\.installedPlugins\.contains\(where: \{ \$0\.name == plugin\.name \}\)/,
     'the answer is dropped when the plugin is no longer installed',
+  )
+  assert.doesNotMatch(
+    choose,
+    /filteredInstalledPlugins/,
+    'the search term or the exception filter must not decide whether a paid-for answer is valid',
+  )
+  assert.match(
+    choose,
+    /guard self\.pluginVersionRequestGeneration == generation else \{ return \}\s*\n\s*self\.alertMessage/,
+    'a stale failure must not overwrite what the user is looking at now',
   )
   const remove = functionBody(viewModel, 'private func startPluginRemove(name: String) -> Bool')
   assert.match(remove, /pluginVersionRequestGeneration \+= 1/, 'starting a removal invalidates a pending list')
