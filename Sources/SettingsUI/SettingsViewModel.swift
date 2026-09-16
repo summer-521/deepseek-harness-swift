@@ -314,6 +314,28 @@ public final class SettingsViewModel: ObservableObject {
         return "插件写操作暂不可用。"
     }
 
+    /// The same reason, but only when this page has nothing else to say about it.
+    ///
+    /// `pluginMutationUnavailableReason` is non-nil whenever writes are
+    /// disabled, which includes the ordinary case of an operation that is
+    /// currently running — the controls are disabled for the duration, and the
+    /// progress panel is already explaining why. Leading the page with a
+    /// "writes are unavailable" banner while "正在卸载插件…" sits above it reads
+    /// as a contradiction, so the recovery panel uses this: it appears only
+    /// when an operation is not in flight and its outcome is not still on
+    /// screen, i.e. when the block is something the user has to act on.
+    public var pluginWriteRecoveryReason: String? {
+        guard let reason = pluginMutationUnavailableReason, !isOperatingPlugin else { return nil }
+        switch pluginOperationPhase {
+        case .preparing, .changing, .verifying, .restoring, .completed:
+            return nil
+        case .recoveryRequired:
+            return reason
+        case nil:
+            return reason
+        }
+    }
+
     /// The filtered view is derived from the current list and the latest
     /// inspector result, so filtering stays read-only and cannot mutate the
     /// Profile. Search covers the fields users can actually recognize in the

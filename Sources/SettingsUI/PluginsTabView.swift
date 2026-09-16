@@ -69,7 +69,11 @@ public struct PluginsTabView: View {
             // When writes are unavailable the page says why and offers the two
             // things that can actually change it, instead of leaving the user
             // with disabled buttons and a trip to another window.
-            if let reason = viewModel.pluginMutationUnavailableReason {
+            // When writes are unavailable *and* nothing on this page explains
+            // it, the panel says why and offers the two things that can change
+            // it. During an operation the progress panel above already owns the
+            // explanation, so this stays out of the way.
+            if let reason = viewModel.pluginWriteRecoveryReason {
                 pluginUnavailablePanel(reason)
             }
 

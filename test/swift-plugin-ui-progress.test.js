@@ -301,13 +301,28 @@ test('P03 the plugin page recovers in place and the picker names its mirror', ()
   const viewModel = fs.readFileSync(viewModelPath, 'utf8')
   const pluginsView = fs.readFileSync(pluginsViewPath, 'utf8')
 
-  // When writes are unavailable the page says why and offers the two actions
-  // that can change it, instead of leaving the user with disabled buttons and a
-  // trip to another window.
+  // The recovery panel is not driven by the raw "writes are unavailable" reason:
+  // that reason is non-nil during any ordinary operation (the controls really
+  // are disabled), and leading the page with it while "正在卸载插件…" is on
+  // screen reads as a contradiction.
   assert.match(
+    pluginsView,
+    /if let reason = viewModel\.pluginWriteRecoveryReason \{\s*\n\s*pluginUnavailablePanel\(reason\)/
+  )
+  assert.doesNotMatch(
     pluginsView,
     /if let reason = viewModel\.pluginMutationUnavailableReason \{\s*\n\s*pluginUnavailablePanel\(reason\)/
   )
+  // The footer keeps the raw reason: it explains the disabled controls.
+  assert.match(pluginsView, /viewModel\.pluginMutationUnavailableReason \?\? "安装指定的 npm 插件"/)
+  const recoveryReason = functionBody(viewModel, 'public var pluginWriteRecoveryReason: String?')
+  assert.match(
+    recoveryReason,
+    /guard let reason = pluginMutationUnavailableReason, !isOperatingPlugin else \{ return nil \}/
+  )
+  assert.match(recoveryReason, /case \.preparing, \.changing, \.verifying, \.restoring, \.completed:\s*\n\s*return nil/)
+  assert.match(recoveryReason, /case \.recoveryRequired:\s*\n\s*return reason/)
+  assert.match(recoveryReason, /case nil:\s*\n\s*return reason/)
   const panel = functionBody(pluginsView, 'private func pluginUnavailablePanel(_ reason: String)')
   assert.match(panel, /Text\(reason\)/)
   assert.match(panel, /Button\("重新检查插件"\)/)
