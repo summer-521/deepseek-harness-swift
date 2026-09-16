@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import test from 'node:test'
+import { countCalls, sliceBetween } from './source-assertions.mjs'
 
 const read = (path) => fs.readFileSync(new URL(path, import.meta.url), 'utf8')
 const STATE_SOURCE = read('../Sources/State/DshState.swift')
@@ -85,18 +86,28 @@ test('Profile switches are recoverable across force-quit and commit only after a
   assert.match(SETTINGS_SOURCE, /DshProfileSwitchTransaction\(from: previous, to: profile\)/)
   assert.match(SETTINGS_SOURCE, /finalizingTransaction\.phase = \.finalizing/)
   assert.match(SETTINGS_SOURCE, /pendingProfileSwitch = transaction/)
-  const profileSwitchBoundary = SETTINGS_SOURCE.slice(
-    SETTINGS_SOURCE.indexOf('public func setAppProfile'),
-    SETTINGS_SOURCE.indexOf('    /// Change the live Node policy', SETTINGS_SOURCE.indexOf('public func setAppProfile')),
+  const profileSwitchBoundary = sliceBetween(
+    SETTINGS_SOURCE,
+    'public func setAppProfile',
+    '    /// Change the live Node policy',
   )
   // Both profile-switch restarts go through the authentication-recovery
-  // wrapper. The call may carry the profile-bridge progress callback, so match
-  // the receiver and its first argument rather than the whole call.
+  // wrapper. `countCalls` matches the receiver and the first argument instead
+  // of the whole call, so the profile-bridge progress callback — or any later
+  // parameter — does not change these counts.
   assert.equal(
-    (profileSwitchBoundary.match(/restartDshServiceWithAuthenticationRecoveryDuringOperation\(\s*context: context\b/g) ?? []).length,
+    countCalls(profileSwitchBoundary, 'restartDshServiceWithAuthenticationRecoveryDuringOperation', {
+      firstArgument: /context: context\b/,
+    }),
     2,
   )
-  assert.doesNotMatch(profileSwitchBoundary, /restartDshServiceDuringOperation\(\s*context: context\b/)
+  assert.equal(
+    countCalls(profileSwitchBoundary, 'restartDshServiceDuringOperation', {
+      firstArgument: /context: context\b/,
+    }),
+    0,
+    'profile switches must not call the direct restart',
+  )
   assert.match(profileSwitchBoundary, /restartDshServiceWithAuthenticationRecoveryDuringOperation\(\s*context: context\b[\s\S]*pendingProfileSwitch = cleanupError == nil \? nil : finalizingTransaction/)
   assert.match(profileSwitchBoundary, /restartDshServiceWithAuthenticationRecoveryDuringOperation\(\s*context: context\b[\s\S]*pendingProfileSwitch = cleanupError == nil \? nil : transaction/)
   assert.match(SETTINGS_SOURCE, /Bridge cleanup is app-owned housekeeping|桥接清理是 App 自有清理/)

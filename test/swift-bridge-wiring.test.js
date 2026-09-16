@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { functionBody, sliceBetween } from './source-assertions.mjs'
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url))
 const handlerSource = fs.readFileSync(
@@ -31,10 +32,7 @@ test('WK bridge binds WebView, frame, origin and generation before dispatch', ()
 })
 
 test('page bridge API sends requests only; native shell owns identity binding', () => {
-  const scriptStart = handlerSource.indexOf('public static let scriptSource')
-  const scriptEnd = handlerSource.indexOf('    """', scriptStart)
-  assert.ok(scriptStart >= 0 && scriptEnd > scriptStart)
-  const script = handlerSource.slice(scriptStart, scriptEnd)
+  const script = sliceBetween(handlerSource, 'public static let scriptSource', '    """')
   assert.doesNotMatch(script, /launchID|generationID/)
   assert.match(shellSource, /updateBridgeValidationContext\(/)
   assert.match(shellSource, /clearBridgeValidationContext\(\)/)
@@ -62,9 +60,7 @@ test('the two halves of the bridge agree on one protocol version', () => {
   assert.ok(pageVersion, 'the page half must declare its protocol version')
   assert.equal(pageVersion, shellVersion, 'the shell and page halves must be bumped together')
 
-  const scriptStart = handlerSource.indexOf('public static let scriptSource')
-  const scriptEnd = handlerSource.indexOf('    """', scriptStart)
-  const script = handlerSource.slice(scriptStart, scriptEnd)
+  const script = sliceBetween(handlerSource, 'public static let scriptSource', '    """')
   assert.match(script, /protocolVersion: \\\(DshBridgeProtocol\.version\)/)
   assert.match(script, /ready: function\(payload\)/)
   assert.match(script, /if \(payload !== undefined && payload !== null\) \{ message\.payload = payload; \}/)
@@ -80,15 +76,7 @@ test('the two halves of the bridge agree on one protocol version', () => {
 })
 
 test('restart and safe-mode return invalidate stale bridge context at service boundaries', () => {
-  const restartStart = controllerSource.indexOf(
-    '    public func restartDshServiceDuringOperation('
-  )
-  const restartEnd = controllerSource.indexOf(
-    '    private func inspectDependenciesBeforeMutation',
-    restartStart,
-  )
-  assert.ok(restartStart >= 0 && restartEnd > restartStart)
-  const restartBody = controllerSource.slice(restartStart, restartEnd)
+  const restartBody = functionBody(controllerSource, 'public func restartDshServiceDuringOperation(')
   const clearIndex = restartBody.indexOf('webShell?.clearBridgeValidationContext()')
   const restartSessionNilIndex = restartBody.indexOf('serviceSession = nil')
   const launchIndex = restartBody.indexOf('launchContext = context')
@@ -96,13 +84,7 @@ test('restart and safe-mode return invalidate stale bridge context at service bo
   assert.ok(clearIndex >= 0 && clearIndex < restartSessionNilIndex)
   assert.ok(launchIndex > clearIndex && launchIndex < prepareIndex)
 
-  const returnStart = controllerSource.indexOf('    private func returnFromSafeMode()')
-  const returnEnd = controllerSource.indexOf(
-    '    private func handleRecoveryRetry',
-    returnStart,
-  )
-  assert.ok(returnStart >= 0 && returnEnd > returnStart)
-  const returnBody = controllerSource.slice(returnStart, returnEnd)
+  const returnBody = functionBody(controllerSource, 'private func returnFromSafeMode()')
   const stopIndex = returnBody.indexOf('DshService.shared.stopAndWait()')
   const firstClearIndex = returnBody.indexOf('webShell?.clearBridgeValidationContext()')
   const sessionNilIndex = returnBody.indexOf('self.serviceSession = nil')

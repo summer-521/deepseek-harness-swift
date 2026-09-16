@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import test from 'node:test'
+import { countCalls, sliceBetween } from './source-assertions.mjs'
 
 const read = (path) => fs.readFileSync(new URL(path, import.meta.url), 'utf8')
 const SERVICE_SOURCE = read('../Sources/Service/DshService.swift')
@@ -235,18 +236,28 @@ test('managed starts, Profile switches and plugin health verification retry one 
     WINDOW_SOURCE,
     /startAndLoadDsh[\s\S]*?restartDshServiceWithAuthenticationRecoveryDuringOperation/,
   )
-  const profileSwitchBoundary = SETTINGS_SOURCE.slice(
-    SETTINGS_SOURCE.indexOf('public func setAppProfile'),
-    SETTINGS_SOURCE.indexOf('    /// Change the live Node policy', SETTINGS_SOURCE.indexOf('public func setAppProfile')),
+  const profileSwitchBoundary = sliceBetween(
+    SETTINGS_SOURCE,
+    'public func setAppProfile',
+    '    /// Change the live Node policy',
   )
   // Both profile-switch restarts go through the authentication-recovery
-  // wrapper. The call may carry the profile-bridge progress callback, so match
-  // the receiver and its first argument rather than the whole call.
+  // wrapper. `countCalls` matches the receiver and the first argument instead
+  // of the whole call, so the profile-bridge progress callback — or any later
+  // parameter — does not change these counts.
   assert.equal(
-    (profileSwitchBoundary.match(/restartDshServiceWithAuthenticationRecoveryDuringOperation\(\s*context: context\b/g) ?? []).length,
+    countCalls(profileSwitchBoundary, 'restartDshServiceWithAuthenticationRecoveryDuringOperation', {
+      firstArgument: /context: context\b/,
+    }),
     2,
   )
-  assert.doesNotMatch(profileSwitchBoundary, /restartDshServiceDuringOperation\(\s*context: context\b/)
+  assert.equal(
+    countCalls(profileSwitchBoundary, 'restartDshServiceDuringOperation', {
+      firstArgument: /context: context\b/,
+    }),
+    0,
+    'profile switches must not call the direct restart',
+  )
 })
 
 test('first launch bootstraps the canonical profile and installs the host before DSH starts', () => {
