@@ -56,30 +56,11 @@ done
 fail() { echo "release-prepare: $1" >&2; exit 1; }
 step() { printf '\n=== %s ===\n' "$1"; }
 
-# Scratch space for the copied signing tool and the verification download. It is
-# removed on every exit path, including a failure.
+# Scratch space for the copied signing tool. Removed on every exit path,
+# including a failure.
 work_directory="$(mktemp -d "${TMPDIR:-/tmp}/dsh-release.XXXXXX")"
 cleanup() { rm -rf "$work_directory"; }
 trap cleanup EXIT
-
-# Fetch the asset back from the release and hash it. The feed is only pushed
-# afterwards, so a truncated or missing upload stops the release instead of
-# being advertised to every installed copy.
-verifyUploadedAsset() {
-	local release_tag="$1" local_dmg="$2" local_digest="$3"
-	local name downloaded size uploaded_digest
-	name="$(basename "$local_dmg")"
-	gh release download "$release_tag" --pattern "$name" --dir "$work_directory" --clobber
-	downloaded="$work_directory/$name"
-	[[ -f "$downloaded" ]] || fail "GitHub release $release_tag does not carry $name"
-	size="$(stat -f%z "$downloaded")"
-	[[ "$size" == "$(stat -f%z "$local_dmg")" ]] \
-		|| fail "uploaded $name is $size bytes, expected $(stat -f%z "$local_dmg")"
-	uploaded_digest="$(shasum -a 256 "$downloaded" | awk '{print $1}')"
-	[[ "$uploaded_digest" == "$local_digest" ]] \
-		|| fail "uploaded $name hashes to $uploaded_digest, expected $local_digest"
-	echo "verified uploaded asset: $name ($size bytes, sha256 $uploaded_digest)"
-}
 
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "version must look like 1.2.6, got: $version"
 [[ "$build" =~ ^[0-9]+$ ]] || fail "build must be a whole number, got: $build"
@@ -92,15 +73,27 @@ tag="v$version"
 dmg="$dist_directory/DSH-Desktop-$version-arm64.dmg"
 
 step "Preflight"
-[[ -z "$(git status --porcelain --untracked-files=no)" ]] || fail "the working tree has uncommitted tracked changes"
+# A resumed release is the normal case after any failure: prepare has already
+# rewritten these three files, so they may be dirty — but nothing else may be.
+release_files=(Version.xcconfig README.md appcast-swift.xml)
+while IFS= read -r line; do
+	[[ -z "$line" ]] && continue
+	path="${line:3}"
+	case " ${release_files[*]} " in
+		*" $path "*) ;;
+		*) fail "uncommitted changes outside the release files: $path" ;;
+	esac
+done < <(git status --porcelain --untracked-files=no)
 [[ "$(git rev-parse --abbrev-ref HEAD)" == main ]] || fail "releases are cut from main"
 git fetch --quiet origin main
-[[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] || fail "main is not up to date with origin/main"
+git merge-base --is-ancestor origin/main HEAD \
+	|| fail "local main has diverged from origin/main; fast-forward or rebase first"
+# The tag may already exist when a previous attempt died after tagging, but it
+# must not be moved: that is the only record of what was built.
 if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-	fail "tag $tag already exists"
-fi
-if git ls-remote --exit-code --tags origin "$tag" >/dev/null 2>&1; then
-	fail "tag $tag already exists on origin"
+	[[ "$(git rev-list -n 1 "$tag")" == "$(git rev-parse HEAD)" ]] \
+		|| fail "tag $tag already exists on another commit; refusing to move it"
+	echo "resuming: tag $tag already points at HEAD"
 fi
 echo "releasing $version (build $build) as $tag"
 
@@ -175,31 +168,46 @@ node --test "$repository_directory/test/swift-release-consistency.test.js"
 if ! $publish; then
 	step "Prepared, not published"
 	cat <<EOF
-Next steps (or re-run with --publish). The order matters: the artifact is
-uploaded and verified first, and main — which carries the appcast — is pushed
-last, so the feed never points at a download that does not exist yet.
-  git add Version.xcconfig README.md appcast-swift.xml
+Next steps — or re-run this script with --publish, which is resumable and does
+all of them. The order matters: the artifact is uploaded and verified first, and
+main — which carries the appcast — is pushed last, so the feed never points at a
+download that does not exist yet.
+  git add ${release_files[*]}
   git commit -m "release: prepare $version build $build"
   git tag -a $tag -m "DSH Swift $version"
   git push origin $tag
   gh release create $tag --title $tag --notes-file $notes_file "$dmg"
-  # verify the uploaded bytes, then:
+  bash scripts/release-verify-asset.sh $tag "$dmg" $digest
   git push origin main
 EOF
 	exit 0
 fi
 
 step "Publish"
-git add Version.xcconfig README.md appcast-swift.xml
-git commit -m "release: prepare $version build $build"
-git tag -a "$tag" -m "DSH Swift $version"
+# Every step here is safe to repeat: a release that died halfway is resumed by
+# running this script again with the same version and build.
+git add "${release_files[@]}"
+if git diff --cached --quiet; then
+	echo "release commit already exists: $(git log -1 --format=%s)"
+else
+	git commit -m "release: prepare $version build $build"
+fi
+if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+	echo "tag $tag already points at HEAD"
+else
+	git tag -a "$tag" -m "DSH Swift $version"
+fi
 
 # The artifact must exist, and be verified byte for byte, before the feed that
 # points at it becomes public: `main` carries the appcast, so pushing main
 # before the upload would publish an update whose download 404s.
 git push origin "$tag"
-gh release create "$tag" --title "$tag" --notes-file "$notes_file" "$dmg"
-verifyUploadedAsset "$tag" "$dmg" "$digest"
+if gh release view "$tag" >/dev/null 2>&1; then
+	gh release upload "$tag" "$dmg" --clobber
+else
+	gh release create "$tag" --title "$tag" --notes-file "$notes_file" "$dmg"
+fi
+bash "$repository_directory/scripts/release-verify-asset.sh" "$tag" "$dmg" "$digest"
 git push origin main
 
 printf '\nReleased %s\n  DMG:    %s\n  length: %s\n  sha256: %s\n' "$tag" "$dmg" "$length" "$digest"

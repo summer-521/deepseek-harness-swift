@@ -30,7 +30,10 @@ test('the release script is valid bash and refuses to run without arguments', ()
 
 test('the release script never stages the whole tree', () => {
   assert.doesNotMatch(script, /git add (\.|-A|--all)/)
-  assert.match(script, /git add Version\.xcconfig README\.md appcast-swift\.xml/)
+  // One array, used by both the instructions and the publish step, so the two
+  // cannot drift apart.
+  assert.match(script, /release_files=\(Version\.xcconfig README\.md appcast-swift\.xml\)/)
+  assert.match(script, /git add "\$\{release_files\[@\]\}"/)
   // The local docs directory is deliberately untracked and must not be swept in.
   assert.doesNotMatch(script, /\bdocs\//)
 })
@@ -59,10 +62,10 @@ test('the feed describes the exact bytes that get uploaded', () => {
 })
 
 test('the release script guards the state it is about to rewrite', () => {
-  assert.match(script, /working tree has uncommitted tracked changes/)
+  assert.match(script, /uncommitted changes outside the release files/)
   assert.match(script, /releases are cut from main/)
-  assert.match(script, /main is not up to date with origin\/main/)
-  assert.match(script, /tag \$tag already exists/)
+  assert.match(script, /has diverged from origin\/main/)
+  assert.match(script, /already exists on another commit/)
   assert.match(script, /releases are built on Apple Silicon only/)
   assert.match(script, /--dry-run\) dry_run=true/)
 })
@@ -89,17 +92,58 @@ test('the feed goes public only after the uploaded bytes are verified', () => {
   assert.ok(publish.length > 0)
   const tagPush = publish.indexOf('git push origin "$tag"')
   const release = publish.indexOf('gh release create')
-  const verify = publish.indexOf('verifyUploadedAsset "$tag" "$dmg" "$digest"')
+  const verify = publish.indexOf('release-verify-asset.sh" "$tag" "$dmg" "$digest"')
   const mainPush = publish.indexOf('git push origin main')
   assert.ok(
     tagPush > 0 && release > tagPush && verify > release && mainPush > verify,
     'order must be tag → release upload → verification → main (which carries the feed)',
   )
 
-  assert.match(script, /verifyUploadedAsset\(\) \{/)
-  assert.match(script, /gh release download "\$release_tag" --pattern "\$name"/)
-  assert.match(script, /hashes to \$uploaded_digest, expected \$local_digest/)
-  assert.match(script, /uploaded \$name is \$size bytes, expected/)
+  // The verification is a script of its own, so the prepare-only flow can hand
+  // the operator the exact command and a published release can be re-checked.
+  const verifier = fs.readFileSync(
+    path.join(repositoryDirectory, 'scripts', 'release-verify-asset.sh'),
+    'utf8',
+  )
+  assert.match(verifier, /gh release download "\$tag" --pattern "\$name"/)
+  assert.match(verifier, /hashes to \$uploaded_digest, expected \$expected_digest/)
+  assert.match(verifier, /uploaded \$name is \$uploaded_size bytes, expected \$local_size/)
+  assert.match(
+    script,
+    /bash scripts\/release-verify-asset\.sh \$tag "\$dmg" \$digest/,
+    'the prepare-only instructions print a command that actually exists',
+  )
+})
+
+test('a release that died halfway can be resumed', () => {
+  // prepare rewrites these three files, so a re-run sees them dirty; anything
+  // else dirty is what the check exists for.
+  assert.match(script, /release_files=\(Version\.xcconfig README\.md appcast-swift\.xml\)/)
+  assert.match(script, /uncommitted changes outside the release files: \$path/)
+  // A tag from the failed attempt must be reused, never moved.
+  assert.match(script, /resuming: tag \$tag already points at HEAD/)
+  assert.match(script, /refusing to move it/)
+  assert.match(script, /git merge-base --is-ancestor origin\/main HEAD/)
+  // Each publish step tolerates having already happened.
+  assert.match(script, /if git diff --cached --quiet; then/)
+  assert.match(script, /release commit already exists/)
+  assert.match(script, /gh release upload "\$tag" "\$dmg" --clobber/)
+})
+
+test('the verify script guards its own inputs', () => {
+  const verifierPath = path.join(repositoryDirectory, 'scripts', 'release-verify-asset.sh')
+  const syntax = spawnSync('bash', ['-n', verifierPath])
+  assert.equal(syntax.status, 0, syntax.stderr?.toString())
+
+  const usage = spawnSync('bash', [verifierPath], { encoding: 'utf8' })
+  assert.equal(usage.status, 2)
+  assert.match(usage.stderr, /Usage: bash scripts\/release-verify-asset\.sh/)
+
+  const missing = spawnSync('bash', [verifierPath, 'v1.2.5', '/nonexistent.dmg', 'a'.repeat(64)], {
+    encoding: 'utf8',
+  })
+  assert.equal(missing.status, 1)
+  assert.match(missing.stderr, /the local artifact does not exist/)
 })
 
 test('the release script refuses a release Sparkle could never deliver', () => {
