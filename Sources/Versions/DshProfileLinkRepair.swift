@@ -249,24 +249,29 @@ public enum DshProfileLinkRepair {
         var applied: [Move] = []
         var conflicts: [String] = []
         for move in moves {
-            // The operation gate this pass holds only covers this App. The
-            // terminal's `dsh` and the `pnpm` it runs write the shared web
-            // Profile with no knowledge of it, so the link is re-read and
-            // compared with what the scan planned against: a replacement that
-            // landed in between is another writer's decision, and overwriting it
-            // would silently undo work this pass never saw.
-            guard currentDestination(of: move.link, fileManager: fileManager) == move.original else {
-                conflicts.append(move.link.standardizedFileURL.path)
-                continue
-            }
             do {
-                try replaceLink(at: move.link, withDestination: move.next, fileManager: fileManager)
+                guard try conditionalReplace(
+                    at: move.link,
+                    expecting: move.original,
+                    with: move.next,
+                    fileManager: fileManager
+                ) else {
+                    // The tree outside this App's gate belongs to whoever writes
+                    // it — the terminal's `dsh` and its `pnpm` share the web
+                    // Profile — and this link is theirs now. In an
+                    // all-or-nothing pass that is a reason to stop touching the
+                    // tree altogether and undo what this pass already changed:
+                    // every further write widens the window it is racing.
+                    conflicts.append(move.link.standardizedFileURL.path)
+                    if allOrNothing { break }
+                    continue
+                }
                 repointed.append(move.link.standardizedFileURL.path)
                 applied.append(move)
             } catch {
-                // Nothing to restore: the swap either happened in one step or
-                // not at all, so the Profile still resolves through the link it
-                // had before this pass.
+                // Nothing to restore: the exchange either happened in one step
+                // or not at all, so the Profile still resolves through the link
+                // it had before this pass.
                 unresolved.append(move.link.standardizedFileURL.path)
             }
         }
@@ -277,16 +282,21 @@ public enum DshProfileLinkRepair {
             // avoid — so its failures travel back with the result.
             var rollbackFailures: [String] = []
             for move in applied.reversed() {
-                // Only a link this pass actually moved is moved back. One that
-                // another writer has replaced since then is that writer's
-                // result now, and restoring the original over it would undo an
-                // update the pass cannot see.
-                guard currentDestination(of: move.link, fileManager: fileManager) == move.next else {
-                    conflicts.append(move.link.standardizedFileURL.path)
-                    continue
-                }
                 do {
-                    try replaceLink(at: move.link, withDestination: move.original, fileManager: fileManager)
+                    // Only a link this pass actually moved is moved back, and
+                    // only while it still carries what this pass put there: one
+                    // another writer has replaced since then is that writer's
+                    // result now, and restoring the original over it would undo
+                    // an update this pass cannot see.
+                    guard try conditionalReplace(
+                        at: move.link,
+                        expecting: move.next,
+                        with: move.original,
+                        fileManager: fileManager
+                    ) else {
+                        conflicts.append(move.link.standardizedFileURL.path)
+                        continue
+                    }
                 } catch {
                     rollbackFailures.append(move.link.standardizedFileURL.path)
                 }
@@ -307,40 +317,78 @@ public enum DshProfileLinkRepair {
         )
     }
 
-    /// What the link names right now, or nil when that cannot be read.
+    /// Replace one link only while it still carries `original`, in one atomic step.
     ///
-    /// The result is compared with the destination the scan recorded, which is
-    /// never nil, so an unreadable link can never be mistaken for an unchanged
-    /// one: it becomes a conflict and the pass leaves it alone.
-    private static func currentDestination(of link: URL, fileManager: FileManager) -> String? {
-        try? fileManager.destinationOfSymbolicLink(atPath: link.path)
-    }
-
-    /// Point the link at `link`'s path to `destination` in one atomic step.
+    /// Reading the link and then renaming over it is not a compare-and-swap: the
+    /// writers of these trees are not all in this process — the terminal's `dsh`
+    /// and the `pnpm` it runs write the shared web Profile with no knowledge of
+    /// the App's operation gate — and a write that lands between the read and
+    /// the rename would be silently replaced by a pass that never saw it.
     ///
-    /// `removeItem` followed by `createSymbolicLink` leaves a window in which
-    /// the link does not exist — a plugin loader that reads the tree there sees
-    /// a missing package — and a crash inside that window loses the link
-    /// outright. A sibling temporary link renamed over the target replaces it
-    /// atomically, and a failure before the rename leaves the previous link
-    /// exactly as it was, so no restore step is needed.
-    private static func replaceLink(
+    /// The exchange itself is the comparison. The replacement is created as a
+    /// sibling link, the two are exchanged atomically (`renameatx_np` with
+    /// `RENAME_SWAP`), and whatever the exchange displaced is inspected
+    /// afterwards, where it cannot have changed underneath the read. If it is not
+    /// what the scan planned against, the exchange is undone and the other
+    /// writer's destination is back exactly where it was.
+    ///
+    /// - Returns: true when the link now carries `destination`, false when
+    ///   another writer's destination was restored instead.
+    private static func conditionalReplace(
         at link: URL,
-        withDestination destination: String,
+        expecting original: String,
+        with destination: String,
         fileManager: FileManager
-    ) throws {
+    ) throws -> Bool {
         let temporary = link.deletingLastPathComponent()
             .appendingPathComponent("\(temporaryLinkPrefix)\(UUID().uuidString)")
         try fileManager.createSymbolicLink(atPath: temporary.path, withDestinationPath: destination)
-        guard rename(temporary.path, link.path) == 0 else {
-            let code = errno
+        try exchange(temporary.path, link.path)
+        // The link now carries this pass's destination, and whatever it held is
+        // at the temporary path — inspectable after the fact, which is the whole
+        // point of exchanging rather than renaming.
+        let displaced = try? fileManager.destinationOfSymbolicLink(atPath: temporary.path)
+        if displaced == original {
             try? fileManager.removeItem(at: temporary)
+            return true
+        }
+        // Somebody replaced the link between the scan and this exchange, so its
+        // destination was never this pass's to change: put it back.
+        try exchange(temporary.path, link.path)
+        guard let ours = try? fileManager.destinationOfSymbolicLink(atPath: temporary.path) else {
+            // The undo cannot be confirmed either; the temporary entry is left
+            // for the next pass to recognize and the link is reported as another
+            // writer's.
+            return false
+        }
+        if ours == destination {
+            // A clean undo: the other writer's link is in place again and only
+            // this pass's temporary entry is left over.
+            try? fileManager.removeItem(at: temporary)
+        } else {
+            // A third write landed while the undo ran. This pass cannot know
+            // which of the two is current, so the freshest value — the one the
+            // undo displaced — is the one that goes back.
+            _ = rename(temporary.path, link.path)
+        }
+        return false
+    }
+
+    /// Atomically exchange two paths, leaving neither with the other's contents.
+    ///
+    /// `renameatx_np` with `RENAME_SWAP` is the only primitive on macOS that can
+    /// do this: a plain `rename` would discard the destination, and a link
+    /// cannot be updated in place.
+    private static func exchange(_ left: String, _ right: String) throws {
+        guard renameatx_np(AT_FDCWD, left, AT_FDCWD, right, UInt32(RENAME_SWAP)) == 0 else {
+            let code = errno
+            try? FileManager.default.removeItem(atPath: left)
             throw NSError(
                 domain: NSPOSIXErrorDomain,
                 code: Int(code),
                 userInfo: [
                     NSLocalizedDescriptionKey:
-                        "renaming \(temporary.path) over \(link.path) failed: \(String(cString: strerror(code)))"
+                        "exchanging \(left) with \(right) failed: \(String(cString: strerror(code)))"
                 ]
             )
         }

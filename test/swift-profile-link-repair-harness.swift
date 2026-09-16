@@ -1,5 +1,23 @@
 import Foundation
 
+/// A flag one thread sets and another reads, for the concurrency case below.
+final class RaceFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func set() {
+        lock.lock()
+        value = true
+        lock.unlock()
+    }
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
+
 func require(_ condition: @autoclosure () -> Bool, _ message: String) {
     if !condition() {
         fputs("FAIL: \(message)\n", stderr)
@@ -386,6 +404,87 @@ struct ProfileLinkRepairHarness {
             "a Runtime an aliased link resolves through must be kept"
         )
         require(!aliasPass.isNoop, "an aliased link is not the same as no link at all")
+
+        // A writer outside this App replaces one link while the pass runs. The
+        // link is re-pointed by exchanging it atomically, and whatever the
+        // interleaving, the tree may not be left with an absent link, a
+        // half-written one, or a temporary entry: the pass either owns the link
+        // or the other writer's destination is back, and it never claims both.
+        let racePackageA = try packageFile("0.1.6-alpha.1", "node_modules/@deepseek-ai/race-a")
+        let racePackageB = try packageFile("0.1.6-alpha.1", "node_modules/@deepseek-ai/race-b")
+        let raceProfiles = root.appendingPathComponent("race-profiles", isDirectory: true)
+        let raceProfile = raceProfiles.appendingPathComponent("swift-desktop", isDirectory: true)
+        let raceScope = raceProfile.appendingPathComponent("node_modules/@deepseek-ai", isDirectory: true)
+        try makeDirectory(raceScope)
+        let raceLink = raceScope.appendingPathComponent("race-target")
+        // Both destinations are dangling and both are satisfiable by the
+        // candidate Runtime, so the pass always owns this link.
+        let raceDanglingA = versions.appendingPathComponent(
+            "0.1.5-rc.2/node_modules/@deepseek-ai/race-a"
+        )
+        let raceDanglingB = versions.appendingPathComponent(
+            "0.1.5-rc.2/node_modules/@deepseek-ai/race-b"
+        )
+        try link(raceDanglingA, at: raceLink)
+
+        let stopWriter = RaceFlag()
+        let writer = Thread {
+            var index = 0
+            while !stopWriter.isSet {
+                let destination = index % 2 == 0 ? raceDanglingB : raceDanglingA
+                // The writer's own temporary entries carry the prefix the pass skips, so
+                // they are not mistaken for dependencies of the Profile.
+                let temporary = raceScope.appendingPathComponent(".dsh-link-race-writer-\(index)")
+                try? fileManager.createSymbolicLink(atPath: temporary.path, withDestinationPath: destination.path)
+                _ = rename(temporary.path, raceLink.path)
+                index += 1
+            }
+        }
+        writer.start()
+        let racePass = DshProfileLinkRepair.repairDanglingLinks(
+            profilesRoot: raceProfiles,
+            versionsDirectory: versions,
+            toRuntime: activeRuntime,
+            restrictingTo: [raceProfile]
+        )
+        stopWriter.set()
+        while writer.isExecuting { usleep(1000) }
+
+        let racePath = raceLink.standardizedFileURL.path
+        let finalDestination = destination(raceLink)
+        let allowedDestinations = [
+            raceDanglingA.path,
+            raceDanglingB.path,
+            racePackageA.path,
+            racePackageB.path,
+        ]
+        require(
+            finalDestination != nil && allowedDestinations.contains(finalDestination!),
+            "the link must always carry one of the two writers' destinations, saw \(finalDestination ?? "<absent>")"
+        )
+        // Directory listings come back in whichever form the file system reports
+        // (`/var` for `/private/var`), so both sides are compared canonically.
+        let canonicalRacePath = DshProfileLinkRepair.canonicalPath(of: racePath)
+        let decided = (racePass.repointed + racePass.conflicts + racePass.unresolved + racePass.scanFailures)
+            .map { DshProfileLinkRepair.canonicalPath(of: $0) }
+        require(
+            decided.filter { $0 == canonicalRacePath }.count == 1,
+            "the link must be reported exactly once as moved, conflicted, unresolved or unreadable, saw \(decided)"
+        )
+        // In practice this lands on both sides — the pass wins the exchange, or
+        // the writer's destination is put back and the link is reported as a
+        // conflict — and both are acceptable: what the assertions above pin is
+        // that neither outcome can leave the link absent, torn, or double-owned.
+        require(
+            !racePass.leftProfilePartiallyMoved,
+            "a conflict is not a partly moved Profile"
+        )
+        let raceLeftovers = (try? fileManager.contentsOfDirectory(atPath: raceScope.path))?
+            .filter { $0.hasPrefix(".dsh-link-") } ?? []
+        require(
+            raceLeftovers.isEmpty,
+            "an exchange that lost the race must clean up after itself, saw \(raceLeftovers)"
+        )
 
         print("swift profile link repair harness passed")
     }

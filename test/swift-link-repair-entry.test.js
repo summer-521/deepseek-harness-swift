@@ -132,42 +132,44 @@ test('the menu exposes the repair and reaches the controller', () => {
   )
 })
 
-test('the repair re-reads each link before it replaces it', () => {
+test('the repair replaces a link only while it still carries the scanned destination', () => {
   // `runtimeOperationGate` serializes this App, and nothing else: the terminal's
-  // `dsh` and the `pnpm` it runs write the shared web Profile too. The linkage
-  // that closes that window is a fresh read compared with what the scan planned
-  // against, so it is pinned here — the window itself cannot be forced in the
-  // harness.
+  // `dsh` and the `pnpm` it runs write the shared web Profile too. Reading the
+  // link and then renaming over it is not a compare-and-swap — a write landing
+  // in between is replaced by a pass that never saw it — so the replacement is
+  // an atomic exchange whose displaced value is inspected afterwards.
   const repair = read(path.join('Sources', 'Versions', 'DshProfileLinkRepair.swift'))
-  const forwardGuard = repair.indexOf('currentDestination(of: move.link, fileManager: fileManager) == move.original')
-  const forwardSwap = repair.indexOf(
-    'try replaceLink(at: move.link, withDestination: move.next, fileManager: fileManager)',
-  )
-  assert.ok(forwardGuard > 0, 'the forward swap must compare the link with the scanned destination')
-  assert.ok(forwardSwap > forwardGuard, 'and compare it before replacing anything')
-  assert.match(
-    repair,
-    /guard currentDestination\(of: move\.link, fileManager: fileManager\) == move\.original else \{\s*\n\s*conflicts\.append/,
-    'a changed link becomes a conflict rather than being overwritten',
-  )
 
-  const rollbackGuard = repair.indexOf('currentDestination(of: move.link, fileManager: fileManager) == move.next')
-  const rollbackSwap = repair.indexOf(
-    'try replaceLink(at: move.link, withDestination: move.original, fileManager: fileManager)',
-  )
-  assert.ok(rollbackGuard > 0, 'the rollback must compare the link too')
-  assert.ok(rollbackSwap > rollbackGuard, 'and must not restore over a newer external write')
+  // Both the forward swap and the rollback go through the same conditional
+  // exchange, with the destination they expect to find.
   assert.match(
     repair,
-    /guard currentDestination\(of: move\.link, fileManager: fileManager\) == move\.next else \{\s*\n\s*conflicts\.append/,
+    /guard try conditionalReplace\(\s*\n\s*at: move\.link,\s*\n\s*expecting: move\.original,\s*\n\s*with: move\.next,/,
+    'the forward swap expects what the scan recorded',
   )
-
-  // The read is compared with a value that is never nil, so an unreadable link
-  // can only ever become a conflict — never look like an unchanged one.
   assert.match(
     repair,
-    /private static func currentDestination\(of link: URL, fileManager: FileManager\) -> String\? \{\s*\n\s*try\? fileManager\.destinationOfSymbolicLink/,
+    /guard try conditionalReplace\(\s*\n\s*at: move\.link,\s*\n\s*expecting: move\.next,\s*\n\s*with: move\.original,/,
+    'the rollback expects what this pass put there',
   )
+  // A link another writer owns becomes a conflict, and an all-or-nothing pass
+  // stops touching the tree at that point instead of widening the race.
+  assert.match(
+    repair,
+    /conflicts\.append\(move\.link\.standardizedFileURL\.path\)\s*\n\s*if allOrNothing \{ break \}/,
+  )
+  // The exchange is what makes the comparison atomic, and the displaced value is
+  // read only after it — where it cannot change underneath the read.
+  assert.match(repair, /renameatx_np\(AT_FDCWD, left, AT_FDCWD, right, UInt32\(RENAME_SWAP\)\)/)
+  const exchange = repair.indexOf('try exchange(temporary.path, link.path)')
+  const inspect = repair.indexOf('let displaced = try? fileManager.destinationOfSymbolicLink(atPath: temporary.path)')
+  const undo = repair.indexOf('try exchange(temporary.path, link.path)', exchange + 1)
+  assert.ok(exchange > 0 && inspect > exchange, 'what the exchange displaced is inspected afterwards')
+  assert.ok(undo > inspect, 'and the exchange is undone when it was not this pass to change')
+  // The pre-read helper and the plain-rename replacement are gone: a read before
+  // the write would be the very window this replaces.
+  assert.doesNotMatch(repair, /func currentDestination\(/)
+  assert.doesNotMatch(repair, /func replaceLink\(/)
   assert.match(repair, /var conflicts: \[String\] = \[\]/)
 })
 
