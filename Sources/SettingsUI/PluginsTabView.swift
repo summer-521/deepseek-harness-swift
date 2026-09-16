@@ -184,6 +184,23 @@ public struct PluginsTabView: View {
         )) { choice in
             pluginVersionPicker(choice)
         }
+        // One confirmation for the page. Attaching it to the row would give
+        // every visible row its own candidate for presenting the same alert.
+        .alert(
+            "卸载插件",
+            isPresented: Binding(
+                get: { viewModel.pendingPluginRemoval != nil },
+                set: { presented in
+                    if !presented { viewModel.cancelPluginRemoval() }
+                }
+            ),
+            presenting: viewModel.pendingPluginRemoval
+        ) { _ in
+            Button("取消", role: .cancel) { viewModel.cancelPluginRemoval() }
+            Button("卸载", role: .destructive) { viewModel.confirmPluginRemoval() }
+        } message: { pending in
+            Text(pending.confirmationMessage)
+        }
     }
 
     @ViewBuilder
@@ -459,21 +476,6 @@ public struct PluginsTabView: View {
                     .disabled(viewModel.isOperatingPlugin || !viewModel.pluginMutationsAllowed
                         || !viewModel.pluginWritesAllowed)
             }
-        }
-        .alert(
-            "卸载插件",
-            isPresented: Binding(
-                get: { viewModel.pendingPluginRemoval != nil },
-                set: { presented in
-                    if !presented { viewModel.cancelPluginRemoval() }
-                }
-            ),
-            presenting: viewModel.pendingPluginRemoval
-        ) { _ in
-            Button("取消", role: .cancel) { viewModel.cancelPluginRemoval() }
-            Button("卸载", role: .destructive) { viewModel.confirmPluginRemoval() }
-        } message: { pending in
-            Text(pending.confirmationMessage)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)

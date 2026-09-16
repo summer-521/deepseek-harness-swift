@@ -258,7 +258,8 @@ test('P03 plugin rows can park a plugin without uninstalling it', () => {
   assert.match(pluginsView, /Text\("已禁用"\)/)
 })
 
-test('P03 uninstalling asks first and says what is removed and what is kept', () => {  const viewModel = fs.readFileSync(viewModelPath, 'utf8')
+test('P03 uninstalling asks first and says what is removed and what is kept', () => {
+  const viewModel = fs.readFileSync(viewModelPath, 'utf8')
   const pluginsView = fs.readFileSync(pluginsViewPath, 'utf8')
   const manager = fs.readFileSync(
     path.join(repositoryDirectory, 'Sources', 'Plugins', 'DshPluginManager.swift'),
@@ -274,16 +275,44 @@ test('P03 uninstalling asks first and says what is removed and what is kept', ()
   assert.match(pluginsView, /Button\("卸载", role: \.destructive\)/)
   assert.match(pluginsView, /Text\(pending\.confirmationMessage\)/)
 
-  // The uninstall itself happens only in the confirmed branch.
+  // The uninstall itself happens only in the confirmed branch, and only when the
+  // removal was actually accepted: the gate can close between asking and
+  // confirming, and closing the dialog on a refused start would look like a
+  // successful uninstall.
   const confirm = functionBody(viewModel, 'public func confirmPluginRemoval()')
-  assert.match(confirm, /removePlugin\(name: pending\.name\)/)
-  assert.doesNotMatch(confirm, /startPluginRemove/)
+  assert.match(confirm, /guard startPluginRemove\(name: pending\.name\) else/)
+  assert.match(confirm, /alertMessage = pluginMutationUnavailableReason/)
+  assert.match(confirm, /pendingPluginRemoval = nil\s*\n\s*\}/, 'the request clears only after an accepted start')
+  assert.doesNotMatch(confirm, /removePlugin\(name: pending\.name\)/)
   assert.match(functionBody(viewModel, 'public func cancelPluginRemoval()'), /pendingPluginRemoval = nil/)
   // The request is gated exactly like the button it replaces.
   assert.match(
     functionBody(viewModel, 'public func requestPluginRemoval(name: String)'),
     /guard !isOperatingPlugin, pluginMutationsAllowed, pluginWritesAllowed else \{ return \}/
   )
+
+  // The confirmation belongs to the page, not to every row: one alert per row
+  // gives every visible row a candidate for presenting the same dialog.
+  const row = functionBody(pluginsView, 'private func pluginRow(for plugin: DshPluginItem)')
+  assert.doesNotMatch(row, /\.alert\(/)
+  const body = pluginsView.slice(pluginsView.indexOf('public var body: some View'), pluginsView.indexOf('@ViewBuilder'))
+  assert.match(body, /\.sheet\(item: Binding\(/)
+  assert.match(body, /\.alert\(\s*"卸载插件",/, 'the alert is attached where the sheet is: the page root')
+  assert.match(pluginsView, /Text\(pending\.confirmationMessage\)/)
+
+  // A version list still in flight must not reopen the picker for a plugin the
+  // user just removed: confirming it would reinstall what was just deleted.
+  const choose = functionBody(viewModel, 'public func choosePluginVersion(for plugin: DshPluginItem)')
+  assert.match(choose, /pluginVersionRequestGeneration \+= 1/)
+  assert.match(choose, /let generation = pluginVersionRequestGeneration/)
+  assert.match(choose, /guard self\.pluginVersionRequestGeneration == generation/)
+  assert.match(
+    choose,
+    /self\.filteredInstalledPlugins\.contains\(where: \{ \$0\.name == plugin\.name \}\)/,
+    'the answer is dropped when the plugin is no longer installed',
+  )
+  const remove = functionBody(viewModel, 'private func startPluginRemove(name: String) -> Bool')
+  assert.match(remove, /pluginVersionRequestGeneration \+= 1/, 'starting a removal invalidates a pending list')
 
   // The message states what is deleted, what survives, and what reinstalling
   // costs, naming the plugin, its version and the Profile.

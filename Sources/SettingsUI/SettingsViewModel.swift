@@ -461,6 +461,10 @@ public final class SettingsViewModel: ObservableObject {
     private var lastPluginOperationProgressUpdate = Date.distantPast
     private var pluginOperationDismissTask: Task<Void, Never>?
     private var pluginOperationDisplayGeneration = 0
+    /// Invalidates a version-list fetch that is still in flight. A fetch started
+    /// before an uninstall must not reopen a picker afterwards: confirming it
+    /// would install the plugin the user just removed.
+    private var pluginVersionRequestGeneration = 0
 
     private var currentAppVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development"
@@ -1481,13 +1485,28 @@ public final class SettingsViewModel: ObservableObject {
         // versions came from, and switching mirrors while it is open is visible
         // instead of silently mixing two sources.
         let registry = DshVersionManager.normalizedRegistry(npmRegistry)
+        pluginVersionRequestGeneration += 1
+        let generation = pluginVersionRequestGeneration
         Task {
-            defer { self.loadingPluginVersionsFor = nil }
+            defer {
+                if self.loadingPluginVersionsFor == plugin.name {
+                    self.loadingPluginVersionsFor = nil
+                }
+            }
             do {
                 let published = try await DshPluginManager.shared.publishedPluginVersions(
                     for: plugin.name,
                     registry: registry
                 )
+                // The answer can arrive after the plugin was uninstalled, after
+                // another query replaced this one, or after writes were gated.
+                // Reopening the picker in any of those cases offers to reinstall
+                // something the user just removed.
+                guard self.pluginVersionRequestGeneration == generation,
+                      self.pluginWritesAllowed,
+                      self.filteredInstalledPlugins.contains(where: { $0.name == plugin.name }) else {
+                    return
+                }
                 // Installed specs may carry a range operator; show and compare
                 // the bare version.
                 let installed = DshPackageVersion.normalizedInstalled(plugin.version ?? "")
@@ -2954,10 +2973,19 @@ public final class SettingsViewModel: ObservableObject {
     }
 
     /// Run the uninstall the confirmation was asked for.
+    ///
+    /// The request is cleared only when the removal was actually accepted: the
+    /// gate can change between asking and confirming — another window starts an
+    /// operation, the Runtime enters a confirmed window — and closing the dialog
+    /// on a refused start would leave the user believing a plugin was removed.
     public func confirmPluginRemoval() {
         guard let pending = pendingPluginRemoval else { return }
+        guard startPluginRemove(name: pending.name) else {
+            alertMessage = pluginMutationUnavailableReason
+                ?? "插件写操作暂不可用，\(pending.name) 没有被卸载。"
+            return
+        }
         pendingPluginRemoval = nil
-        removePlugin(name: pending.name)
     }
 
     public func cancelPluginRemoval() {
@@ -3068,6 +3096,12 @@ public final class SettingsViewModel: ObservableObject {
         // it a confirmed-Runtime window could uninstall a plugin whose rollback
         // snapshot is still live.
         guard pluginWritesAllowed, !isOperatingPlugin, !isSwitchingProfile else { return false }
+        // A version list still being fetched for this plugin is moot now: letting
+        // it finish would reopen the picker for a plugin that is being removed.
+        pluginVersionRequestGeneration += 1
+        if loadingPluginVersionsFor == name {
+            loadingPluginVersionsFor = nil
+        }
         clearRetryablePluginOperation()
         isOperatingPlugin = true
         clearPluginStatus()
