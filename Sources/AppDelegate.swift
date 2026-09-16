@@ -302,6 +302,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsItem.target = self
         let restartItem = appMenu.addItem(withTitle: "重启 DSH 服务", action: #selector(restartService), keyEquivalent: "r")
         restartItem.target = self
+        // Launch-time repair only covers the Profile this App owns. A user
+        // running this asks for every Profile, including the CLI-shared one.
+        let repairLinksItem = appMenu.addItem(
+            withTitle: "修复 Profile 依赖链接",
+            action: #selector(repairProfileLinks),
+            keyEquivalent: ""
+        )
+        repairLinksItem.target = self
 
         let checkForUpdatesItem = NSMenuItem(
             title: "检查更新…",
@@ -390,6 +398,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func restartService() {
         MainWindowController.shared.startAndLoadDsh()
+    }
+
+    @objc private func repairProfileLinks() {
+        MainWindowController.shared.repairAllProfileLinks()
     }
 
     @objc private func reloadPage() {

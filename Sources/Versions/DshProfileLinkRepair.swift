@@ -139,6 +139,10 @@ public enum DshProfileLinkRepair {
         let next: String
     }
 
+    /// Prefix of the sibling link a swap creates before renaming it into place.
+    /// The scanner skips it so an interrupted swap never becomes a dependency.
+    private static let temporaryLinkPrefix = ".dsh-link-"
+
     /// Shared pass: scan the Profile's link directories, and for every link the
     /// caller classifies as one this pass owns, plan a move to the first
     /// candidate that carries the same package.
@@ -190,34 +194,54 @@ public enum DshProfileLinkRepair {
         var applied: [Move] = []
         for move in moves {
             do {
-                try fileManager.removeItem(at: move.link)
-            } catch {
-                unresolved.append(move.link.standardizedFileURL.path)
-                continue
-            }
-            do {
-                try fileManager.createSymbolicLink(atPath: move.link.path, withDestinationPath: move.next)
+                try replaceLink(at: move.link, withDestination: move.next, fileManager: fileManager)
                 repointed.append(move.link.standardizedFileURL.path)
                 applied.append(move)
             } catch {
-                // Restore the original link so a failed move never deletes a
-                // resolution the Profile had before it.
-                try? fileManager.createSymbolicLink(atPath: move.link.path, withDestinationPath: move.original)
+                // Nothing to restore: the swap either happened in one step or
+                // not at all, so the Profile still resolves through the link it
+                // had before this pass.
                 unresolved.append(move.link.standardizedFileURL.path)
             }
         }
 
         if allOrNothing, !unresolved.isEmpty {
             for move in applied.reversed() {
-                try? fileManager.removeItem(at: move.link)
-                try? fileManager.createSymbolicLink(
-                    atPath: move.link.path,
-                    withDestinationPath: move.original
-                )
+                try? replaceLink(at: move.link, withDestination: move.original, fileManager: fileManager)
             }
             return Outcome(repointed: [], unresolved: unresolved)
         }
         return Outcome(repointed: repointed, unresolved: unresolved)
+    }
+
+    /// Point the link at `link`'s path to `destination` in one atomic step.
+    ///
+    /// `removeItem` followed by `createSymbolicLink` leaves a window in which
+    /// the link does not exist — a plugin loader that reads the tree there sees
+    /// a missing package — and a crash inside that window loses the link
+    /// outright. A sibling temporary link renamed over the target replaces it
+    /// atomically, and a failure before the rename leaves the previous link
+    /// exactly as it was, so no restore step is needed.
+    private static func replaceLink(
+        at link: URL,
+        withDestination destination: String,
+        fileManager: FileManager
+    ) throws {
+        let temporary = link.deletingLastPathComponent()
+            .appendingPathComponent("\(temporaryLinkPrefix)\(UUID().uuidString)")
+        try fileManager.createSymbolicLink(atPath: temporary.path, withDestinationPath: destination)
+        guard rename(temporary.path, link.path) == 0 else {
+            let code = errno
+            try? fileManager.removeItem(at: temporary)
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(code),
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "renaming \(temporary.path) over \(link.path) failed: \(String(cString: strerror(code)))"
+                ]
+            )
+        }
     }
 
     /// Where the candidate Runtime keeps the package a link at `path` names, or
@@ -306,6 +330,10 @@ public enum DshProfileLinkRepair {
         )) ?? []
         var found: [URL] = []
         for entry in entries {
+            // A sibling temporary link from an interrupted swap is not part of
+            // the Profile's dependency tree; the next pass would otherwise keep
+            // inspecting its own leftovers.
+            guard !entry.lastPathComponent.hasPrefix(temporaryLinkPrefix) else { continue }
             let values = try? entry.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
             if values?.isSymbolicLink == true {
                 found.append(entry)
@@ -318,7 +346,8 @@ public enum DshProfileLinkRepair {
                 options: []
             )) ?? []
             for candidate in scoped
-            where (try? candidate.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true {
+            where (try? candidate.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true
+                && !candidate.lastPathComponent.hasPrefix(temporaryLinkPrefix) {
                 found.append(candidate)
             }
         }

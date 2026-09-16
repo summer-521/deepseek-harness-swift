@@ -206,6 +206,62 @@ struct ProfileLinkRepairHarness {
             "another Profile's link must keep its destination"
         )
 
+        // The explicit repair entry point drops that scope: when the user asks
+        // for a repair, every Profile is covered, including the CLI-shared one
+        // a launch must leave alone.
+        let repairedEverywhere = DshProfileLinkRepair.repairDanglingLinks(
+            profilesRoot: profiles,
+            versionsDirectory: versions,
+            toRuntime: activeRuntime
+        )
+        require(
+            !repairedEverywhere.isNoop,
+            "an explicit repair must find the other Profile's dangling link"
+        )
+        require(resolves(webDangling), "an explicit repair must cover every Profile")
+        require(
+            destination(webDangling) == directNew.path,
+            "the other Profile's link must follow the package, saw \(destination(webDangling) ?? "<nil>")"
+        )
+
+        // A swap replaces the link in one step and leaves no sibling behind,
+        // and a sibling an interrupted swap did leave is not a dependency: the
+        // pass ignores it instead of re-pointing or counting it.
+        let interrupted = profileScope.appendingPathComponent(".dsh-link-interrupted")
+        let swapTarget = profileScope.appendingPathComponent("tool-x-swap")
+        try link(hashedOld, at: interrupted)
+        try link(hashedOld, at: swapTarget)
+        let swapped = DshProfileLinkRepair.repairDanglingLinks(
+            profilesRoot: profiles,
+            versionsDirectory: versions,
+            toRuntime: activeRuntime,
+            restrictingTo: [swiftProfile]
+        )
+        require(
+            swapped.repointed == [swapTarget.standardizedFileURL.path],
+            "only the real link may move, saw \(swapped.repointed)"
+        )
+        require(
+            !swapped.unresolved.contains(swapTarget.standardizedFileURL.path)
+                && !swapped.unresolved.contains(interrupted.standardizedFileURL.path),
+            "neither the swap nor the leftover may be reported unresolved, saw \(swapped.unresolved)"
+        )
+        require(resolves(swapTarget), "the swapped link must resolve through the candidate Runtime")
+        require(
+            destination(swapTarget) == hashedNew.path,
+            "the swapped link must name the package the candidate carries, saw \(destination(swapTarget) ?? "<nil>")"
+        )
+        require(
+            destination(interrupted) == hashedOld.path,
+            "an interrupted swap's temporary link must stay exactly as it was"
+        )
+        let leftovers = (try? fileManager.contentsOfDirectory(atPath: profileScope.path))?
+            .filter { $0.hasPrefix(".dsh-link-") } ?? []
+        require(
+            leftovers == [".dsh-link-interrupted"],
+            "a completed swap must leave no temporary link, saw \(leftovers)"
+        )
+
         // Nothing to do against a Profile with no Runtime links at all.
         let emptyRoot = root.appendingPathComponent("empty-profiles", isDirectory: true)
         try makeDirectory(emptyRoot.appendingPathComponent("node_modules", isDirectory: true))

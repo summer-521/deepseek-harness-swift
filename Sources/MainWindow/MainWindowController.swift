@@ -2279,6 +2279,62 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         }
     }
 
+    /// Repair dangling Runtime links in every Profile, on explicit request.
+    ///
+    /// The launch-time pass is deliberately scoped to the Profile that launch
+    /// owns, because another Profile's tree — the CLI's `web` Profile — is
+    /// shared with the terminal. A user asking for a repair is a different
+    /// writer: this runs the same best-effort pass with no scope, so links an
+    /// earlier Runtime cleanup left behind anywhere are re-pointed at the
+    /// Runtime this App is running, and it reports what it could not place
+    /// instead of silently leaving them dangling.
+    public func repairAllProfileLinks() {
+        guard let context = currentLaunchContext else {
+            presentProfileLinkRepairAlert(
+                title: "暂时无法修复 Profile 依赖链接",
+                detail: "DSH 服务还没有启动，无法确定要重指向的 Runtime。等服务启动完成后重试。"
+            )
+            return
+        }
+        let outcome = DshProfileLinkRepair.repairDanglingLinks(
+            profilesRoot: context.profileDirectory.deletingLastPathComponent(),
+            versionsDirectory: DshStateManager.versionsDirectory,
+            toRuntime: DshStateManager.versionsDirectory.appendingPathComponent(
+                context.runtimeDescriptor.version,
+                isDirectory: true
+            )
+        )
+        _ = diagnosticStore.appendLog(
+            "F11 profile link repair (every Profile): repointed=\(outcome.repointed.count) unresolved=\(outcome.unresolved.count)",
+            launchID: context.launchID,
+            source: .pluginInspector
+        )
+
+        var detail = outcome.isNoop
+            ? "所有 Profile 的依赖链接都能解析，没有需要修复的条目。"
+            : "已把 \(outcome.repointed.count) 条链接重指向 Runtime \(context.runtimeDescriptor.version)。"
+        if !outcome.unresolved.isEmpty {
+            detail += "\n\n仍有 \(outcome.unresolved.count) 条链接没能修复：当前 Runtime 里没有它们指向的包。"
+            detail += "重新安装对应的插件即可补齐。"
+        }
+        presentProfileLinkRepairAlert(
+            title: outcome.isNoop ? "Profile 依赖链接无需修复" : "Profile 依赖链接修复完成",
+            detail: detail
+        )
+    }
+
+    private func presentProfileLinkRepairAlert(title: String, detail: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.addButton(withTitle: "确定")
+        if let window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
     private func showDiagnosticExportError(_ error: Error) {
         let alert = NSAlert()
         alert.messageText = "保存诊断失败"
