@@ -279,12 +279,22 @@ export function publishedItem(appcast, { version, build }) {
  * the duplicate would strand that release. Replacing it is safe exactly as long
  * as the public feed does not already carry this version and build — which
  * `release-prepare.sh` proves against `origin/main` before it builds anything.
+ *
+ * An item that publishes the same thing is left alone. The comparison ignores
+ * the publication timestamp, which says when the item was written rather than
+ * what it publishes: two runs of the same release produce it seconds apart, and
+ * rewriting the feed for that would churn it on every retry.
  */
 export function upsertAppcastItem(appcast, item, { version, build }) {
   const existing = publishedItem(appcast, { version, build })
   if (existing === null) return insertAppcastItem(appcast, item, { version, build })
-  if (existing.item.trim() === item.trim()) return appcast
+  if (withoutPublishedAt(existing.item) === withoutPublishedAt(item)) return appcast
   return appcast.replace(existing.item, item)
+}
+
+/** The item with its `<pubDate>` blanked, so only its content is compared. */
+function withoutPublishedAt(item) {
+  return item.replace(/<pubDate>[\s\S]*?<\/pubDate>/, '<pubDate/>').trim()
 }
 
 function parseArguments(argv) {

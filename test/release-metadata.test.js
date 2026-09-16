@@ -218,11 +218,14 @@ test('write mode produces a release whose metadata agrees end to end', () => {
 
     // A second run is idempotent: a resume must not be refused, and the feed
     // must not be rewritten when the item already describes this artifact.
+    // The second run is a different second by construction: the timestamp is
+    // part of the item, and it must not be what decides whether the feed is
+    // rewritten.
     const afterFirstWrite = fs.readFileSync(path.join(root, 'appcast-swift.xml'), 'utf8')
     const again = run(
       'appcast', '--version', '1.2.6', '--build', '17',
       '--length', '50425442', '--signature', signature,
-      '--notes-file', notes, '--write',
+      '--notes-file', notes, '--published-at', '2020-01-01T00:00:00Z', '--write',
     )
     assert.equal(again.status, 0, again.stderr || again.stdout)
     assert.match(again.stdout, /appcast already carries 1\.2\.6 \(build 17\)/)
@@ -356,19 +359,39 @@ test('the feed can be asked what it publishes for one version and build', () => 
   assert.ok(fromRepo.length > 0 && fromRepo.url.includes('releases/download/'))
 })
 
-test('an appcast item is replaced when the artifact was rebuilt', () => {
-  const rebuilt = appcastFixture.replace('length="1"', 'length="42"')
-  const replacement = item({ version: '1.2.5', build: '16', length: '42' })
+test('an appcast item is replaced only when the artifact changed', () => {
+  const stamp = (at) => item({
+    version: '1.2.5',
+    build: '16',
+    length: '1',
+    publishedAt: new Date(at),
+  })
+  const written = upsertAppcastItem(appcastFixture, stamp('2026-09-16T01:00:00Z'), {
+    version: '1.2.5',
+    build: '16',
+  })
+  assert.match(written, /<pubDate>Wed, 16 Sep 2026 01:00:00 \+0000<\/pubDate>/)
+  assert.equal((written.match(/<item>/g) ?? []).length, 1)
 
-  const replaced = upsertAppcastItem(rebuilt, replacement, { version: '1.2.5', build: '16' })
-  assert.equal((replaced.match(/<item>/g) ?? []).length, 1, 'one release stays one item')
-  assert.match(replaced, /length="42"/)
-  assert.doesNotMatch(replaced, /length="1"/)
-  assert.ok(replaced.startsWith(appcastFixture.slice(0, appcastFixture.indexOf('<item>'))))
+  // The timestamp says when the item was written, not what it publishes: a
+  // re-run seconds — or hours — later must not rewrite the feed at all.
+  assert.equal(
+    upsertAppcastItem(written, stamp('2026-09-16T04:07:11Z'), { version: '1.2.5', build: '16' }),
+    written,
+    'an identical item written at another time is left alone',
+  )
 
-  // The same bytes are not rewritten at all: a resume must not churn the feed.
-  const isFirstItem = publishedItem(appcastFixture, { version: '1.2.5', build: '16' }).item
-  assert.equal(upsertAppcastItem(appcastFixture, isFirstItem, { version: '1.2.5', build: '16' }), appcastFixture)
+  // A rebuild produces different bytes and a different signature, so the item
+  // that described the previous artifact is replaced rather than duplicated.
+  const rebuilt = upsertAppcastItem(
+    written,
+    item({ version: '1.2.5', build: '16', length: '42' }),
+    { version: '1.2.5', build: '16' },
+  )
+  assert.equal((rebuilt.match(/<item>/g) ?? []).length, 1, 'one release stays one item')
+  assert.match(rebuilt, /length="42"/)
+  assert.doesNotMatch(rebuilt, /length="1"/)
+  assert.ok(rebuilt.startsWith(appcastFixture.slice(0, appcastFixture.indexOf('<item>'))))
 
   // A version the feed does not carry yet is still inserted as the newest item.
   const withNewest = upsertAppcastItem(appcastFixture, item(), { version: '1.2.6', build: '17' })
