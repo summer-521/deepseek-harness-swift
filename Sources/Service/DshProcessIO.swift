@@ -204,10 +204,19 @@ public final class DshProcessIO: @unchecked Sendable {
             }
         }
 
-        /// The remedy is the same for all four: reinstall from the plugin page,
-        /// which fetches binaries built for this Node and this machine.
+        /// What the user can do about it. Three of the four are a binary built
+        /// for the wrong Node or the wrong CPU, which a reinstall replaces; a
+        /// missing dependency is a library the module loads, which reinstalling
+        /// the plugin does not necessarily restore — promising it would send the
+        /// user in a circle.
         public var remedy: String {
-            "在「设置 → 插件」重新安装受影响的插件即可获取匹配的二进制。"
+            switch self {
+            case .nodeVersion, .architecture, .missingBinary:
+                return "在「设置 → 插件」重新安装受影响的插件即可获取匹配的二进制。"
+            case .missingDependency:
+                return "该库由插件依赖的外部组件提供（常见于 Homebrew 升级或移动后路径失效）："
+                    + "先恢复或重新安装它，再重启 DSH。重新安装插件本身通常无法补齐这个库。"
+            }
         }
     }
 
@@ -229,8 +238,14 @@ public final class DshProcessIO: @unchecked Sendable {
         // and failed inside it, not that the module is gone. Checked before the
         // missing-binary rule, whose text — `dlopen(<the .node path>)` plus
         // `no such file or directory` — appears in this failure too.
+        //
+        // The signal only counts inside a native-module load: the same two
+        // sentences describe a missing page asset ("image not found") or any
+        // other resource the Host cannot find, and reporting those as a broken
+        // native module would send the user to reinstall the wrong thing.
         let dependencySignals = ["library not loaded", "image not found"]
-        if dependencySignals.contains(where: lowered.contains) {
+        let nativeModuleContext = lowered.contains("dlopen") || lowered.contains(".node")
+        if nativeModuleContext, dependencySignals.contains(where: lowered.contains) {
             return .missingDependency
         }
         // A `.node` binary that is absent fails at load time with `dlopen`, and

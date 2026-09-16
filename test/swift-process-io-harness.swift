@@ -116,6 +116,25 @@ struct ProcessIOHarness {
             ),
             "a missing ordinary dylib is not a plugin native module"
         )
+        // The dependency sentences describe anything the Host cannot find, so
+        // they only count as a native-module failure inside a module load: a
+        // missing page asset must not send the user to reinstall a plugin.
+        require(
+            DshProcessIO.nativeModuleFailure(in: "Error: image not found") == nil,
+            "a loose 'image not found' is not a native module"
+        )
+        require(
+            DshProcessIO.nativeModuleFailure(
+                in: "Error: Library not loaded: /usr/lib/libSystem.B.dylib"
+            ) == nil,
+            "a loose 'library not loaded' is not a native module"
+        )
+        require(
+            DshProcessIO.nativeModuleFailure(
+                in: "dlopen(/tmp/libsomething.dylib, 0x0001): Library not loaded: /tmp/libother.dylib"
+            ) == .missingDependency,
+            "a dlopen context is a native-module load, whatever it loads"
+        )
         // Each shape says what it is, instead of collapsing into one sentence.
         let summaries = [
             DshProcessIO.NativeModuleFailure.nodeVersion.summary,
@@ -127,6 +146,29 @@ struct ProcessIOHarness {
         require(
             summaries.allSatisfy { !$0.isEmpty },
             "every failure needs a summary the recovery surface can lead with"
+        )
+        // The remedy is not the same story either: a reinstall replaces a binary
+        // built for the wrong Node or CPU, but it does not put back a library
+        // the module loads, so promising that would send the user in a circle.
+        let remedies = [
+            DshProcessIO.NativeModuleFailure.nodeVersion.remedy,
+            DshProcessIO.NativeModuleFailure.architecture.remedy,
+            DshProcessIO.NativeModuleFailure.missingBinary.remedy,
+            DshProcessIO.NativeModuleFailure.missingDependency.remedy,
+        ]
+        require(
+            Set(remedies).count == 2,
+            "the three binary failures share a remedy and the dependency failure has its own, saw \(remedies)"
+        )
+        require(
+            DshProcessIO.NativeModuleFailure.missingDependency.remedy
+                != DshProcessIO.NativeModuleFailure.missingBinary.remedy,
+            "a missing library must not be answered with the reinstall advice"
+        )
+        require(
+            !DshProcessIO.NativeModuleFailure.missingDependency.remedy
+                .contains("重新安装受影响的插件即可获取匹配的二进制"),
+            "the dependency remedy must not promise a reinstall fixes it"
         )
 
         let script = bootstrapFailure ? bootstrapScript : (nativeModuleFailure ? nativeModuleScript : """
