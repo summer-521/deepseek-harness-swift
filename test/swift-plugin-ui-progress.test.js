@@ -328,12 +328,32 @@ test('P03 uninstalling asks first and says what is removed and what is kept', ()
 
   // A Profile switch does not increment the generation by itself, so a request
   // that belonged to the Profile being left behind would still be considered
-  // current — its failure included. The switch invalidates it explicitly.
+  // current — its failure included. The switch invalidates it explicitly, and
+  // clears the loading state with it: a spinner left behind by the old Profile
+  // blocks every "更新…" on the new one, and a task that clears by name would
+  // wipe a newer request's spinner instead.
   const switchProfile = functionBody(viewModel, 'public func setAppProfile(_ profile: DshAppProfile)')
   assert.match(
     switchProfile,
-    /invalidateOutdatedPlugins\(refreshList: false\)\s*\n\s*pluginVersionRequestGeneration \+= 1/,
-    'a Profile switch invalidates a version list that is still in flight',
+    /invalidateOutdatedPlugins\(refreshList: false\)\s*\n\s*pluginVersionRequestGeneration \+= 1\s*\n\s*pluginVersionRequest = nil/,
+    'a Profile switch invalidates a version list that is still in flight and clears its spinner',
+  )
+  // The loading state carries the generation of the request that started it, so
+  // only that request can clear it.
+  assert.match(viewModel, /struct PluginVersionRequest: Equatable \{\s*\n\s*let name: String\s*\n\s*let generation: Int/)
+  assert.match(
+    choose,
+    /pluginVersionRequest = PluginVersionRequest\(name: plugin\.name, generation: generation\)/,
+  )
+  assert.match(
+    choose,
+    /if self\.pluginVersionRequest\?\.generation == generation \{\s*\n\s*self\.pluginVersionRequest = nil/,
+    'the fetch that started may clear its own spinner, and only its own',
+  )
+  assert.match(
+    functionBody(viewModel, 'private func startPluginRemove(name: String) -> Bool'),
+    /pluginVersionRequest\?\.name == name \{\s*\n\s*pluginVersionRequest = nil/,
+    'removing a plugin clears the spinner it owns',
   )
 
   // The message states what is deleted, what survives, and what reinstalling

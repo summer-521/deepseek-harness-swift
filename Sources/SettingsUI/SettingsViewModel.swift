@@ -231,8 +231,23 @@ public final class SettingsViewModel: ObservableObject {
     @Published public var pluginVersionChoice: PluginVersionChoice? = nil
     @Published public var pluginVersionChoiceSelection: String? = nil
     @Published public var pluginVersionChoiceShowsOlder: Bool = false
-    /// Plugin whose published versions are being fetched.
-    @Published public var loadingPluginVersionsFor: String? = nil
+    /// The version-list fetch the page is showing a spinner for, or nil.
+    ///
+    /// The generation travels with the plugin name so the request that started a
+    /// fetch is the only one that can clear it. A Profile switch invalidates what
+    /// is in flight, and a task that returns afterwards must not wipe the spinner
+    /// of a newer request for the same plugin — which is what clearing by name
+    /// would do.
+    @Published private(set) var pluginVersionRequest: PluginVersionRequest?
+
+    /// What the row spinner reads; the request itself carries more.
+    public var loadingPluginVersionsFor: String? { pluginVersionRequest?.name }
+
+    struct PluginVersionRequest: Equatable {
+        let name: String
+        let generation: Int
+    }
+
     @Published public var isOperatingPlugin: Bool = false
     @Published public var isSwitchingProfile: Bool = false
     @Published public private(set) var profileSwitchProgressText: String? = nil
@@ -1471,7 +1486,7 @@ public final class SettingsViewModel: ObservableObject {
     /// newer than the installed version. When nothing is newer, reports that
     /// instead of opening an empty picker.
     public func choosePluginVersion(for plugin: DshPluginItem) {
-        guard loadingPluginVersionsFor == nil else { return }
+        guard pluginVersionRequest == nil else { return }
         guard pluginWritesAllowed else {
             alertMessage = pluginMutationUnavailableReason
             return
@@ -1480,17 +1495,20 @@ public final class SettingsViewModel: ObservableObject {
             alertMessage = "当前已有插件操作排队，请稍后重试。"
             return
         }
-        loadingPluginVersionsFor = plugin.name
         // The registry is captured with the list: the picker shows where its
         // versions came from, and switching mirrors while it is open is visible
         // instead of silently mixing two sources.
         let registry = DshVersionManager.normalizedRegistry(npmRegistry)
         pluginVersionRequestGeneration += 1
         let generation = pluginVersionRequestGeneration
+        pluginVersionRequest = PluginVersionRequest(name: plugin.name, generation: generation)
         Task {
             defer {
-                if self.loadingPluginVersionsFor == plugin.name {
-                    self.loadingPluginVersionsFor = nil
+                // Only the request that started this fetch may clear it: a
+                // Profile switch or a newer query has its own generation, and
+                // clearing by name would wipe the spinner of that newer one.
+                if self.pluginVersionRequest?.generation == generation {
+                    self.pluginVersionRequest = nil
                 }
             }
             do {
@@ -3114,8 +3132,8 @@ public final class SettingsViewModel: ObservableObject {
         // A version list still being fetched for this plugin is moot now: letting
         // it finish would reopen the picker for a plugin that is being removed.
         pluginVersionRequestGeneration += 1
-        if loadingPluginVersionsFor == name {
-            loadingPluginVersionsFor = nil
+        if pluginVersionRequest?.name == name {
+            pluginVersionRequest = nil
         }
         clearRetryablePluginOperation()
         isOperatingPlugin = true
@@ -3289,9 +3307,14 @@ public final class SettingsViewModel: ObservableObject {
         // publishing the new selection so no stale badge can enable a write
         // while the switch is being prepared. The same goes for a version list
         // still being fetched: its answer, or its failure, describes the
-        // Profile being left behind and must not report into the new one.
+        // Profile being left behind and must not report into the new one — and
+        // its loading spinner must not block the new Profile's queries either,
+        // which is why the request itself is cleared rather than only
+        // invalidated. The bump keeps the returning task from clearing anything
+        // that replaces it.
         invalidateOutdatedPlugins(refreshList: false)
         pluginVersionRequestGeneration += 1
+        pluginVersionRequest = nil
         let leavingSharedWeb = previous == .web && profile == .desktop
         let transaction = DshProfileSwitchTransaction(from: previous, to: profile)
 
