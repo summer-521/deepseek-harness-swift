@@ -399,14 +399,29 @@ public struct PluginsTabView: View {
                             ? "停止组合 " + plugin.name + "，保留已安装的版本和文件"
                             : "重新组合 " + plugin.name + "，无需重新安装")
                     }
-                    Button("卸载") { viewModel.removePlugin(name: plugin.name) }
+                    Button("卸载") { viewModel.requestPluginRemoval(name: plugin.name) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
-                        .help("卸载 " + plugin.name)
+                        .help("卸载 " + plugin.name + "，会先确认删除与保留的内容")
                 }
                     .disabled(viewModel.isOperatingPlugin || !viewModel.pluginMutationsAllowed
                         || !viewModel.pluginWritesAllowed)
             }
+        }
+        .alert(
+            "卸载插件",
+            isPresented: Binding(
+                get: { viewModel.pendingPluginRemoval != nil },
+                set: { presented in
+                    if !presented { viewModel.cancelPluginRemoval() }
+                }
+            ),
+            presenting: viewModel.pendingPluginRemoval
+        ) { _ in
+            Button("取消", role: .cancel) { viewModel.cancelPluginRemoval() }
+            Button("卸载", role: .destructive) { viewModel.confirmPluginRemoval() }
+        } message: { pending in
+            Text(pending.confirmationMessage)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)

@@ -76,6 +76,36 @@ public struct DshPendingPluginDowngrade: Equatable, Sendable {
     }
 }
 
+/// A pending user confirmation for uninstalling a plugin.
+///
+/// Uninstalling deletes the package and the version the Profile has installed,
+/// so the row's 卸载 button used to destroy a plugin's setup in one click
+/// without saying what survives. The message names the plugin, its installed
+/// version and the Profile, and states both what is removed and what is kept,
+/// so the decision is made on facts rather than on a button label.
+public struct DshPendingPluginRemoval: Equatable, Sendable {
+    public let name: String
+    public let installedVersion: String?
+    public let profile: String
+
+    public init(name: String, installedVersion: String?, profile: String) {
+        self.name = name
+        self.installedVersion = installedVersion
+        self.profile = profile
+    }
+
+    public var confirmationMessage: String {
+        var message = "卸载 \(name)"
+        if let installedVersion, !installedVersion.isEmpty {
+            message += "（\(installedVersion)）"
+        }
+        message += " 会从当前 \(profile) Profile 删除这个插件：已安装的包、版本，"
+        message += "以及它在激活列表里的条目都会移除。\n\n"
+        message += "其他插件、Runtime 与 Profile 设置都会保留；之后重新安装需要重新配置。"
+        return message
+    }
+}
+
 /// Every version a registry publishes for one plugin.
 ///
 /// `pnpm outdated` only reports the `latest` dist-tag, which is exactly what

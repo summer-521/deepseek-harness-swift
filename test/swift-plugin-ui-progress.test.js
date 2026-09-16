@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { functionBody } from './source-assertions.mjs'
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url))
 const repositoryDirectory = path.join(testDirectory, '..')
@@ -248,9 +249,49 @@ test('P03 plugin rows can park a plugin without uninstalling it', () => {
   // The row keeps the order 更新… / 启用-禁用 / 卸载 and marks the parked state.
   const updateIndex = pluginsView.indexOf('viewModel.choosePluginVersion(for: plugin)')
   const toggleIndex = pluginsView.indexOf('viewModel.togglePluginActivation(')
-  const removeIndex = pluginsView.indexOf('viewModel.removePlugin(name: plugin.name)')
+  const removeIndex = pluginsView.indexOf('viewModel.requestPluginRemoval(name: plugin.name)')
   assert.ok(updateIndex > 0 && toggleIndex > updateIndex && removeIndex > toggleIndex,
     'enable/disable must sit between update and uninstall')
   assert.match(pluginsView, /Button\(plugin\.isEnabled \? "禁用" : "启用"\)/)
   assert.match(pluginsView, /Text\("已禁用"\)/)
+})
+
+test('P03 uninstalling asks first and says what is removed and what is kept', () => {
+  const viewModel = fs.readFileSync(viewModelPath, 'utf8')
+  const pluginsView = fs.readFileSync(pluginsViewPath, 'utf8')
+  const manager = fs.readFileSync(
+    path.join(repositoryDirectory, 'Sources', 'Plugins', 'DshPluginManager.swift'),
+    'utf8'
+  )
+
+  // The row button opens a confirmation instead of deleting a plugin's setup in
+  // one click.
+  assert.match(pluginsView, /Button\("卸载"\) \{ viewModel\.requestPluginRemoval\(name: plugin\.name\) \}/)
+  assert.doesNotMatch(pluginsView, /viewModel\.removePlugin\(name: plugin\.name\)/)
+  assert.match(pluginsView, /\.alert\(\s*"卸载插件",/)
+  assert.match(pluginsView, /Button\("取消", role: \.cancel\)/)
+  assert.match(pluginsView, /Button\("卸载", role: \.destructive\)/)
+  assert.match(pluginsView, /Text\(pending\.confirmationMessage\)/)
+
+  // The uninstall itself happens only in the confirmed branch.
+  const confirm = functionBody(viewModel, 'public func confirmPluginRemoval()')
+  assert.match(confirm, /removePlugin\(name: pending\.name\)/)
+  assert.doesNotMatch(confirm, /startPluginRemove/)
+  assert.match(functionBody(viewModel, 'public func cancelPluginRemoval()'), /pendingPluginRemoval = nil/)
+  // The request is gated exactly like the button it replaces.
+  assert.match(
+    functionBody(viewModel, 'public func requestPluginRemoval(name: String)'),
+    /guard !isOperatingPlugin, pluginMutationsAllowed, pluginWritesAllowed else \{ return \}/
+  )
+
+  // The message states what is deleted, what survives, and what reinstalling
+  // costs, naming the plugin, its version and the Profile.
+  const message = functionBody(manager, 'public var confirmationMessage: String')
+  assert.match(message, /卸载 \\\(name\)/)
+  assert.match(message, /\\\(installedVersion\)/)
+  assert.match(message, /当前 \\\(profile\) Profile 删除这个插件/)
+  assert.match(message, /已安装的包、版本/)
+  assert.match(message, /激活列表/)
+  assert.match(message, /其他插件、Runtime 与 Profile 设置都会保留/)
+  assert.match(message, /重新安装需要重新配置/)
 })

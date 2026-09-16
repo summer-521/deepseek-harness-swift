@@ -237,6 +237,8 @@ public final class SettingsViewModel: ObservableObject {
     @Published public private(set) var pendingPluginInstallSpec: String? = nil
     @Published public private(set) var pendingPluginUpdate: DshPendingPluginUpdate? = nil
     @Published public private(set) var pendingPluginDowngrade: DshPendingPluginDowngrade? = nil
+    /// Plugin whose uninstall is waiting for an explicit confirmation.
+    @Published public private(set) var pendingPluginRemoval: DshPendingPluginRemoval? = nil
     @Published public private(set) var pluginOperationProgressText: String? = nil
     @Published public var pluginStatusMessage: String? = nil
     @Published public private(set) var pluginOperationPhase: DshPluginOperationDisplayPhase?
@@ -2885,6 +2887,32 @@ public final class SettingsViewModel: ObservableObject {
 
     public func removePlugin(name: String) {
         _ = startPluginRemove(name: name)
+    }
+
+    /// Ask before uninstalling.
+    ///
+    /// Uninstalling deletes the package and the version, so the row's 卸载
+    /// button must not be a single click away from it; the confirmation states
+    /// what is removed and what is kept.
+    public func requestPluginRemoval(name: String) {
+        guard !isOperatingPlugin, pluginMutationsAllowed, pluginWritesAllowed else { return }
+        let item = filteredInstalledPlugins.first { $0.name == name }
+        pendingPluginRemoval = DshPendingPluginRemoval(
+            name: name,
+            installedVersion: item?.version,
+            profile: appProfile.runtimeProfileName
+        )
+    }
+
+    /// Run the uninstall the confirmation was asked for.
+    public func confirmPluginRemoval() {
+        guard let pending = pendingPluginRemoval else { return }
+        pendingPluginRemoval = nil
+        removePlugin(name: pending.name)
+    }
+
+    public func cancelPluginRemoval() {
+        pendingPluginRemoval = nil
     }
 
     /// Enable or disable one installed plugin.
