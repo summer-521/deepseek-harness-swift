@@ -49,6 +49,7 @@ const SWIFT_SOURCES = [
   'ApplicationIcon.swift',
   'State/DshState.swift',
   'Service/NodeRuntime.swift',
+  'Service/NodeChildEnvironment.swift',
   'Service/DshLaunchContext.swift',
   'Versions/DshSemanticVersion.swift',
   'Service/DshService.swift',

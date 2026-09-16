@@ -13,6 +13,7 @@
 		E00000000000000000000003 /* ApplicationIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000012 /* ApplicationIcon.swift */; };
 		E00000000000000000000004 /* DshState.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000013 /* DshState.swift */; };
 		E00000000000000000000005 /* NodeRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000014 /* NodeRuntime.swift */; };
+		E00000000000000000000057 /* NodeChildEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000082 /* NodeChildEnvironment.swift */; };
 		E00000000000000000000006 /* DshSemanticVersion.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000015 /* DshSemanticVersion.swift */; };
 		E00000000000000000000007 /* DshService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000016 /* DshService.swift */; };
 		E00000000000000000000008 /* DshVersionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00000000000000000000017 /* DshVersionManager.swift */; };
@@ -75,6 +76,7 @@
 		D00000000000000000000012 /* ApplicationIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationIcon.swift; sourceTree = "<group>"; };
 		D00000000000000000000013 /* DshState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshState.swift; sourceTree = "<group>"; };
 		D00000000000000000000014 /* NodeRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeRuntime.swift; sourceTree = "<group>"; };
+		D00000000000000000000082 /* NodeChildEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeChildEnvironment.swift; sourceTree = "<group>"; };
 		D00000000000000000000015 /* DshSemanticVersion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshSemanticVersion.swift; sourceTree = "<group>"; };
 		D00000000000000000000016 /* DshService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshService.swift; sourceTree = "<group>"; };
 		D00000000000000000000017 /* DshVersionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DshVersionManager.swift; sourceTree = "<group>"; };
@@ -210,6 +212,7 @@
 			isa = PBXGroup;
 			children = (
 				D00000000000000000000014 /* NodeRuntime.swift */,
+				D00000000000000000000082 /* NodeChildEnvironment.swift */,
 				D00000000000000000000059 /* DshLaunchContext.swift */,
 				D00000000000000000000016 /* DshService.swift */,
 				D00000000000000000000079 /* DshInstanceLock.swift */,
@@ -446,6 +449,7 @@
 				E00000000000000000000003 /* ApplicationIcon.swift in Sources */,
 				E00000000000000000000004 /* DshState.swift in Sources */,
 				E00000000000000000000005 /* NodeRuntime.swift in Sources */,
+				E00000000000000000000057 /* NodeChildEnvironment.swift in Sources */,
 				E00000000000000000000006 /* DshSemanticVersion.swift in Sources */,
 				E00000000000000000000007 /* DshService.swift in Sources */,
 				E00000000000000000000054 /* DshInstanceLock.swift in Sources */,

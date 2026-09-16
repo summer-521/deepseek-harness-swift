@@ -302,10 +302,16 @@ public final class NodeRuntime {
     }
 
     /// Build clean child process environment dictionary.
+    ///
+    /// The launching shell's toolchain variables are dropped first
+    /// (`NodeChildEnvironment`): a user's `npm run` session, a stale
+    /// `NODE_PATH`, or an inherited `DSH_DESKTOP_*` marker must not steer the
+    /// bundled Node and pnpm. Callers then assign what the child actually
+    /// needs — registry, isolated store/cache/state, `DSH_HOME`,
+    /// `DSH_DESKTOP_LAUNCH`/`DSH_DESKTOP_PORT` — on top of this result.
     public func buildEnvironment(customPort: Int? = nil) -> [String: String] {
-        var env = ProcessInfo.processInfo.environment
+        var env = NodeChildEnvironment.sanitized(ProcessInfo.processInfo.environment)
         env["PATH"] = resolveUserPath()
-        env["NODE_OPTIONS"] = ""
         env["DSH_DESKTOP"] = "1"
         if let nodeBin = resolveNodeBinary() {
             env["DSH_NODE_BIN"] = nodeBin

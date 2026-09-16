@@ -11,6 +11,7 @@ const sources = [
   path.join(testDirectory, '..', 'Sources', 'State', 'DshState.swift'),
   path.join(testDirectory, '..', 'Sources', 'Versions', 'DshSemanticVersion.swift'),
   path.join(testDirectory, '..', 'Sources', 'Service', 'NodeRuntime.swift'),
+  path.join(testDirectory, '..', 'Sources', 'Service', 'NodeChildEnvironment.swift'),
   path.join(testDirectory, '..', 'Sources', 'Service', 'DshLaunchContext.swift'),
   path.join(testDirectory, '..', 'Sources', 'Service', 'DshSecretRedactor.swift'),
   path.join(testDirectory, '..', 'Sources', 'Versions', 'DshVersionManager.swift'),
