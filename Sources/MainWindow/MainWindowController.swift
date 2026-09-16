@@ -2322,12 +2322,13 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             )
             return
         }
-        let coordinator = DshPluginOperationCoordinator.shared
-        guard coordinator.pendingOperation == nil, !coordinator.hasPersistedOperationRecord else {
-            presentProfileLinkRepairAlert(
-                title: "暂时无法修复 Profile 依赖链接",
-                detail: "有插件操作正在进行或等待恢复。先完成它，再修复依赖链接。"
-            )
+        // The same check the gate repeats, made here so a user who clicks while
+        // a plugin transaction is open gets an answer instead of waiting for a
+        // gate that operation holds.
+        do {
+            try validateProfileLinkRepair(context: context)
+        } catch {
+            presentProfileLinkRepairFailure(error)
             return
         }
         // Checking the coordinator is not enough: it says nothing about a
@@ -2338,6 +2339,13 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         let outcome: DshProfileLinkRepair.Outcome
         do {
             outcome = try await withRuntimeOperation {
+                // Everything above was read before the wait for the gate, and a
+                // Runtime update, a Profile switch or a plugin transaction can
+                // complete during it. The checks are therefore made again now
+                // that nothing else can change the answer: without this the pass
+                // could re-point links at a Runtime the App has already left,
+                // or write a tree a plugin operation is still recovering.
+                try validateProfileLinkRepair(context: context)
                 try await DshService.shared.prepareForProfileMutation(context: context)
                 return DshProfileLinkRepair.repairDanglingLinks(
                     profilesRoot: context.profileDirectory.deletingLastPathComponent(),
@@ -2349,16 +2357,13 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                 )
             }
         } catch {
-            presentProfileLinkRepairAlert(
-                title: "暂时无法修复 Profile 依赖链接",
-                detail: "无法取得运行时操作门或停止 DSH 服务：\(DshMainWindowUIMessage.safe(error))。稍后重试。"
-            )
+            presentProfileLinkRepairFailure(error)
             return
         }
         _ = diagnosticStore.appendLog(
             "F11 profile link repair (every Profile): repointed=\(outcome.repointed.count) "
                 + "unresolved=\(outcome.unresolved.count) unreadable=\(outcome.scanFailures.count) "
-                + "rollbackFailures=\(outcome.rollbackFailures.count)",
+                + "rollbackFailures=\(outcome.rollbackFailures.count) conflicts=\(outcome.conflicts.count)",
             launchID: context.launchID,
             source: .pluginInspector
         )
@@ -2379,6 +2384,12 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             detail += "\n\n有 \(outcome.rollbackFailures.count) 条链接没能还原，Profile 可能同时指向两个 Runtime。"
             detail += "运行「设置 → 插件」里的重新安装，或重新安装受影响的插件即可收敛。"
         }
+        if !outcome.conflicts.isEmpty {
+            detail += "\n\n有 \(outcome.conflicts.count) 条链接在扫描后又被别的进程（终端里的 dsh/pnpm）改过，"
+            detail += "本次没有覆盖它们，也未能确认它们现在指向哪里："
+            detail += "\n\(outcome.conflicts.prefix(3).joined(separator: "\n"))"
+            detail += "\n确认没有其他 dsh 或 pnpm 正在运行后，可以再修复一次。"
+        }
         presentProfileLinkRepairAlert(
             title: outcome.isNoop ? "Profile 依赖链接无需修复" : "Profile 依赖链接修复完成",
             detail: detail
@@ -2387,6 +2398,59 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         // The repair ran with the service stopped to keep Node out of the tree;
         // bring the App back to a working state.
         startAndLoadDsh()
+    }
+
+    /// The repair's preconditions, checked once before the gate is requested so
+    /// the user gets an answer without waiting, and again while it is held so
+    /// the answer cannot go stale between the check and the write.
+    @MainActor
+    private func validateProfileLinkRepair(context: DshLaunchContext) throws {
+        let coordinator = DshPluginOperationCoordinator.shared
+        guard coordinator.pendingOperation == nil, !coordinator.hasPersistedOperationRecord else {
+            throw ProfileLinkRepairUnavailable.pluginOperationInProgress
+        }
+        // A Runtime update or a Profile switch that finished while this task
+        // waited for the gate leaves the context naming a Runtime and a Profile
+        // tree the App no longer uses.
+        guard context.isFresh(in: DshStateManager.shared.current) else {
+            throw DshLaunchContextError.staleContext
+        }
+    }
+
+    /// Report why an explicit Profile link repair did not run. The reasons are
+    /// kept apart so the alert names the gate that closed instead of blaming the
+    /// service stop for all of them.
+    private func presentProfileLinkRepairFailure(_ error: Error) {
+        switch error {
+        case is DshLaunchContextError:
+            presentProfileLinkRepairAlert(
+                title: "Profile 或 Runtime 刚刚发生了变化",
+                detail: "\(DshMainWindowUIMessage.safe(error))本次修复没有执行："
+                    + "现在重试一次，会按当前的 Runtime 和 Profile 重新检查。"
+            )
+        case is ProfileLinkRepairUnavailable:
+            presentProfileLinkRepairAlert(
+                title: "暂时无法修复 Profile 依赖链接",
+                detail: "\(DshMainWindowUIMessage.safe(error))先完成它，再修复依赖链接。"
+            )
+        default:
+            presentProfileLinkRepairAlert(
+                title: "暂时无法修复 Profile 依赖链接",
+                detail: "无法取得运行时操作门或停止 DSH 服务：\(DshMainWindowUIMessage.safe(error))。稍后重试。"
+            )
+        }
+    }
+
+    /// Why an explicit Profile link repair cannot run right now.
+    enum ProfileLinkRepairUnavailable: Error, LocalizedError {
+        case pluginOperationInProgress
+
+        var errorDescription: String? {
+            switch self {
+            case .pluginOperationInProgress:
+                return "有插件操作正在进行或等待恢复。"
+            }
+        }
     }
 
     private func presentProfileLinkRepairAlert(title: String, detail: String) {

@@ -47,24 +47,33 @@ public enum DshProfileLinkRepair {
         /// rolling back. The Profile may now resolve through two Runtimes, and
         /// the caller has to be told rather than handed an empty result.
         public let rollbackFailures: [String]
+        /// Links that no longer named what the scan planned against, because
+        /// another writer — the terminal's `dsh`, or the `pnpm` it runs — had
+        /// replaced them since. They were left exactly as the other writer
+        /// left them, which also means this pass cannot tell whether they now
+        /// resolve through the Runtime under decision.
+        public let conflicts: [String]
 
         public init(
             repointed: [String] = [],
             unresolved: [String] = [],
             scanFailures: [String] = [],
-            rollbackFailures: [String] = []
+            rollbackFailures: [String] = [],
+            conflicts: [String] = []
         ) {
             self.repointed = repointed
             self.unresolved = unresolved
             self.scanFailures = scanFailures
             self.rollbackFailures = rollbackFailures
+            self.conflicts = conflicts
         }
 
         /// Whether the Runtime those links named may be removed: anything left
-        /// unresolved would resolve through nothing afterwards, and anything
-        /// unread may be a link this pass never saw.
+        /// unresolved would resolve through nothing afterwards, anything unread
+        /// may be a link this pass never saw, and a link another writer replaced
+        /// underneath it is one whose current target this pass never inspected.
         public var canRemoveSourceRuntime: Bool {
-            unresolved.isEmpty && scanFailures.isEmpty && rollbackFailures.isEmpty
+            unresolved.isEmpty && scanFailures.isEmpty && rollbackFailures.isEmpty && conflicts.isEmpty
         }
 
         /// Whether the pass found no link that resolves through the source
@@ -74,6 +83,7 @@ public enum DshProfileLinkRepair {
                 && unresolved.isEmpty
                 && scanFailures.isEmpty
                 && rollbackFailures.isEmpty
+                && conflicts.isEmpty
         }
 
         /// Whether the Profile may have been left split across two Runtimes.
@@ -237,7 +247,18 @@ public enum DshProfileLinkRepair {
 
         var repointed: [String] = []
         var applied: [Move] = []
+        var conflicts: [String] = []
         for move in moves {
+            // The operation gate this pass holds only covers this App. The
+            // terminal's `dsh` and the `pnpm` it runs write the shared web
+            // Profile with no knowledge of it, so the link is re-read and
+            // compared with what the scan planned against: a replacement that
+            // landed in between is another writer's decision, and overwriting it
+            // would silently undo work this pass never saw.
+            guard currentDestination(of: move.link, fileManager: fileManager) == move.original else {
+                conflicts.append(move.link.standardizedFileURL.path)
+                continue
+            }
             do {
                 try replaceLink(at: move.link, withDestination: move.next, fileManager: fileManager)
                 repointed.append(move.link.standardizedFileURL.path)
@@ -250,12 +271,20 @@ public enum DshProfileLinkRepair {
             }
         }
 
-        if allOrNothing, !unresolved.isEmpty {
+        if allOrNothing, !unresolved.isEmpty || !conflicts.isEmpty {
             // A rollback that only partly succeeds leaves the Profile resolving
             // through two Runtimes — exactly the state this pass exists to
             // avoid — so its failures travel back with the result.
             var rollbackFailures: [String] = []
             for move in applied.reversed() {
+                // Only a link this pass actually moved is moved back. One that
+                // another writer has replaced since then is that writer's
+                // result now, and restoring the original over it would undo an
+                // update the pass cannot see.
+                guard currentDestination(of: move.link, fileManager: fileManager) == move.next else {
+                    conflicts.append(move.link.standardizedFileURL.path)
+                    continue
+                }
                 do {
                     try replaceLink(at: move.link, withDestination: move.original, fileManager: fileManager)
                 } catch {
@@ -266,10 +295,25 @@ public enum DshProfileLinkRepair {
                 repointed: [],
                 unresolved: unresolved,
                 scanFailures: scanFailures,
-                rollbackFailures: rollbackFailures
+                rollbackFailures: rollbackFailures,
+                conflicts: conflicts
             )
         }
-        return Outcome(repointed: repointed, unresolved: unresolved, scanFailures: scanFailures)
+        return Outcome(
+            repointed: repointed,
+            unresolved: unresolved,
+            scanFailures: scanFailures,
+            conflicts: conflicts
+        )
+    }
+
+    /// What the link names right now, or nil when that cannot be read.
+    ///
+    /// The result is compared with the destination the scan recorded, which is
+    /// never nil, so an unreadable link can never be mistaken for an unchanged
+    /// one: it becomes a conflict and the pass leaves it alone.
+    private static func currentDestination(of link: URL, fileManager: FileManager) -> String? {
+        try? fileManager.destinationOfSymbolicLink(atPath: link.path)
     }
 
     /// Point the link at `link`'s path to `destination` in one atomic step.
@@ -480,32 +524,67 @@ public enum DshProfileLinkRepair {
     ///
     /// A Runtime reached through a symlinked parent — a `/tmp`-based
     /// `DSH_HOME`, or macOS' `/var` → `/private/var` — records whichever form it
-    /// was created with, so the resolved form is compared too. Both forms are
-    /// computed once per pass; the resolved one is only consulted when the
-    /// literal form does not match.
+    /// was created with, so the resolved form is compared too.
     private struct PathPrefix {
         private let literal: String
-        private let resolved: String?
+        private let resolved: String
 
         init(root: URL) {
             literal = root.standardizedFileURL.path
-            let resolvedPath = root.resolvingSymlinksInPath().standardizedFileURL.path
-            resolved = resolvedPath == literal ? nil : resolvedPath
+            resolved = DshProfileLinkRepair.canonicalPath(of: literal)
         }
 
         func suffix(of target: String) -> String? {
+            // The literal form is the common case and costs nothing.
             if let value = Self.relative(target, under: literal) { return value }
-            guard let resolved else { return nil }
-            let resolvedTarget = URL(fileURLWithPath: target)
-                .resolvingSymlinksInPath()
-                .standardizedFileURL
-                .path
-            return Self.relative(resolvedTarget, under: resolved)
+            // Otherwise the target is resolved and compared with the resolved
+            // root. That comparison cannot be skipped when the root already is
+            // canonical: a link may reach this very Runtime through an alias of
+            // its own — another path that symlinks to the versions directory —
+            // and then the literal form never matches while the resolved one
+            // does. Skipping it would report such a link as unrelated to the
+            // Runtime, and the cleanup that asked would remove a Runtime the
+            // Profile still resolves through.
+            return Self.relative(DshProfileLinkRepair.canonicalPath(of: target), under: resolved)
         }
 
         private static func relative(_ path: String, under root: String) -> String? {
             guard path.hasPrefix(root + "/") else { return nil }
             return String(path.dropFirst(root.count + 1))
+        }
+    }
+
+    /// `path` with every symbolic link in it resolved.
+    ///
+    /// `realpath(3)` answers this at the kernel, and deliberately not through
+    /// Foundation's `resolvingSymlinksInPath()`: that one caches canonical paths
+    /// per process, and in this pass the same unresolved answer coming back for
+    /// two different states of the same tree is a correctness problem — the
+    /// harness sees it flip between calls once a directory listing has gone
+    /// through the cache.
+    ///
+    /// A link this pass inspects is frequently dangling, because the package it
+    /// names is what the pass is looking for, and `realpath(3)` fails outright on
+    /// a path that does not exist. So the longest existing prefix is resolved and
+    /// the components below it are appended unchanged.
+    static func canonicalPath(of path: String) -> String {
+        var candidate = path
+        var trailing: [String] = []
+        while true {
+            if let buffer = realpath(candidate, nil) {
+                let base = String(cString: buffer)
+                free(buffer)
+                guard !trailing.isEmpty else { return base }
+                let root = base.hasSuffix("/") ? String(base.dropLast()) : base
+                return root.isEmpty ? "/" + trailing.joined(separator: "/") : root + "/" + trailing.joined(separator: "/")
+            }
+            guard let separator = candidate.lastIndex(of: "/"), separator > candidate.startIndex else {
+                // Nothing on this path exists, not even the root: there is
+                // nothing to resolve, and the caller compares it as it is.
+                return path
+            }
+            trailing.insert(String(candidate[candidate.index(after: separator)...]), at: 0)
+            candidate = String(candidate[..<separator])
         }
     }
 }

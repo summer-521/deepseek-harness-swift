@@ -16,8 +16,16 @@ func require(_ condition: @autoclosure () -> Bool, _ message: String) {
 struct ProfileLinkRepairHarness {
     static func main() throws {
         let fileManager = FileManager.default
-        let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        // Created first and then canonicalised, because the alias case at the
+        // end needs a root whose own path needs no resolving: that is the shape
+        // in which the resolved comparison used to be skipped entirely.
+        let rootCandidate = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("dsh-profile-link-repair-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: rootCandidate, withIntermediateDirectories: true)
+        let root = URL(
+            fileURLWithPath: DshProfileLinkRepair.canonicalPath(of: rootCandidate.path),
+            isDirectory: true
+        )
         defer { try? fileManager.removeItem(at: root) }
 
         let versions = root.appendingPathComponent("dsh-versions", isDirectory: true)
@@ -275,6 +283,15 @@ struct ProfileLinkRepairHarness {
             "a failed rollback leaves the Profile split across Runtimes, so the Runtime must stay"
         )
         require(partialRollback.leftProfilePartiallyMoved, "a failed rollback must be visible to the caller")
+        let conflicted = DshProfileLinkRepair.Outcome(conflicts: ["/tmp/link"])
+        require(
+            !conflicted.canRemoveSourceRuntime && !conflicted.isNoop,
+            "a link another writer replaced underneath the pass is neither a no-op nor a reason to remove the Runtime"
+        )
+        require(
+            !conflicted.leftProfilePartiallyMoved,
+            "a conflict is not a partly moved Profile: the pass never wrote that link"
+        )
 
         // A Profile directory the pass cannot read must be reported rather than
         // look like a Profile with no links: the caller deletes a Runtime on the
@@ -335,6 +352,40 @@ struct ProfileLinkRepairHarness {
             toCandidates: [activeRuntime]
         )
         require(noop.isNoop, "an empty workspace must produce a no-op")
+
+        // A link may reach this very Runtime through an alias of its own — a path
+        // that symlinks to the versions directory — even when that directory is
+        // already canonical. Resolving the target is then the only thing that
+        // recognises those links: skipping it when the root needs no resolving
+        // reports them as unrelated, and the cleanup that asked the question
+        // removes a Runtime the Profile still resolves through.
+        let aliasVersions = root.appendingPathComponent("alias-versions", isDirectory: true)
+        try fileManager.createSymbolicLink(atPath: aliasVersions.path, withDestinationPath: versions.path)
+        let aliasProfiles = root.appendingPathComponent("alias-profiles", isDirectory: true)
+        let aliasScope = aliasProfiles.appendingPathComponent("node_modules/@deepseek-ai", isDirectory: true)
+        try makeDirectory(aliasScope)
+        let aliasLink = aliasScope.appendingPathComponent("dsh-workflow-worker-thread")
+        try link(
+            aliasVersions.appendingPathComponent(
+                "0.1.5-rc.2/node_modules/.pnpm/node_modules/@deepseek-ai/dsh-workflow-worker-thread"
+            ),
+            at: aliasLink
+        )
+        let aliasPass = DshProfileLinkRepair.repointLinks(
+            profilesRoot: aliasProfiles,
+            versionsDirectory: versions,
+            fromVersion: "0.1.5-rc.2",
+            toCandidates: [activeRuntime]
+        )
+        require(
+            aliasPass.unresolved == [aliasLink.standardizedFileURL.path],
+            "a link that reaches the Runtime through an alias must be seen, saw \(aliasPass.unresolved)"
+        )
+        require(
+            !aliasPass.canRemoveSourceRuntime,
+            "a Runtime an aliased link resolves through must be kept"
+        )
+        require(!aliasPass.isNoop, "an aliased link is not the same as no link at all")
 
         print("swift profile link repair harness passed")
     }
