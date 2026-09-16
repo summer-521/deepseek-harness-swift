@@ -86,6 +86,9 @@ public enum DshPluginOperationDisplayPhase: Equatable, Sendable {
 public struct PluginVersionChoice: Identifiable, Equatable {
     public let id = UUID()
     public let name: String
+    /// The npm mirror these versions were read from, so the picker can say so
+    /// and notice when the settings have moved to another one.
+    public let registry: String
     public let installedVersion: String
     /// Versions newer than the installed one, newest first.
     public let newerVersions: [String]
@@ -1452,10 +1455,17 @@ public final class SettingsViewModel: ObservableObject {
             return
         }
         loadingPluginVersionsFor = plugin.name
+        // The registry is captured with the list: the picker shows where its
+        // versions came from, and switching mirrors while it is open is visible
+        // instead of silently mixing two sources.
+        let registry = DshVersionManager.normalizedRegistry(npmRegistry)
         Task {
             defer { self.loadingPluginVersionsFor = nil }
             do {
-                let published = try await DshPluginManager.shared.publishedPluginVersions(for: plugin.name)
+                let published = try await DshPluginManager.shared.publishedPluginVersions(
+                    for: plugin.name,
+                    registry: registry
+                )
                 // Installed specs may carry a range operator; show and compare
                 // the bare version.
                 let installed = DshPackageVersion.normalizedInstalled(plugin.version ?? "")
@@ -1471,6 +1481,7 @@ public final class SettingsViewModel: ObservableObject {
                 self.pluginVersionChoiceShowsOlder = false
                 self.pluginVersionChoice = PluginVersionChoice(
                     name: plugin.name,
+                    registry: registry,
                     installedVersion: installed,
                     newerVersions: newer,
                     allVersions: published.versions,
@@ -1507,6 +1518,22 @@ public final class SettingsViewModel: ObservableObject {
         pluginVersionChoice = nil
         pluginVersionChoiceSelection = nil
         pluginVersionChoiceShowsOlder = false
+    }
+
+    /// Whether the open picker's list came from a mirror other than the one the
+    /// settings select now.
+    public var pluginVersionChoiceUsesDifferentRegistry: Bool {
+        guard let choice = pluginVersionChoice else { return false }
+        return choice.registry != DshVersionManager.normalizedRegistry(npmRegistry)
+    }
+
+    /// Read the picker's versions again from the mirror selected now, instead
+    /// of asking the user to close and reopen the picker to notice the switch.
+    public func refreshPluginVersionChoice() {
+        guard let choice = pluginVersionChoice,
+              let plugin = filteredInstalledPlugins.first(where: { $0.name == choice.name }) else { return }
+        cancelPluginVersionChoice()
+        choosePluginVersion(for: plugin)
     }
 
     public func confirmPendingPluginUpdate() {

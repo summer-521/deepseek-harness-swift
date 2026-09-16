@@ -66,6 +66,13 @@ public struct PluginsTabView: View {
                 .background(Color.green.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
 
+            // When writes are unavailable the page says why and offers the two
+            // things that can actually change it, instead of leaving the user
+            // with disabled buttons and a trip to another window.
+            if let reason = viewModel.pluginMutationUnavailableReason {
+                pluginUnavailablePanel(reason)
+            }
+
             if viewModel.isInspectingPlugins || viewModel.pluginInspectionMessage != nil {
                 pluginInspectionPanel
             }
@@ -321,6 +328,45 @@ public struct PluginsTabView: View {
         .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
+    private func pluginUnavailablePanel(_ reason: String) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange)
+                Text("插件写操作当前不可用")
+                    .font(.system(size: 11.5, weight: .semibold))
+                Spacer(minLength: 0)
+            }
+            Text(reason)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                // Read-only: the consistency check works even while writes are
+                // blocked, so it is safe to offer first.
+                Button("重新检查插件") {
+                    Task { await viewModel.inspectPlugins() }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(viewModel.isInspectingPlugins)
+                .help("重新读取 Profile 配置；只读，不会写入")
+
+                Button("重启 DSH 服务") {
+                    MainWindowController.shared.startAndLoadDsh()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .help("重启托管服务，让它重新加载当前 Profile 的插件")
+
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(11)
+        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
     private func inspectionItemLabel(_ item: DshPluginInspectionItem) -> String {
         switch item.status {
         case .missingPackage: return "包缺失"
@@ -353,7 +399,9 @@ public struct PluginsTabView: View {
                             .foregroundStyle(.green)
                     }
                 }
-                Text(plugin.description ?? "DSH \(viewModel.appProfile.runtimeProfileName) Profile 扩展插件。")
+                Text(plugin.isLocal
+                    ? "本地插件：组合方式由本机路径（file: / link:）决定，不提供启用/禁用。"
+                    : (plugin.description ?? "DSH \(viewModel.appProfile.runtimeProfileName) Profile 扩展插件。"))
                     .font(.system(size: 9.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -444,6 +492,31 @@ public struct PluginsTabView: View {
                     : "当前 \(choice.installedVersion) · registry 上共 \(choice.allVersions.count) 个版本")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                Text("来源：\(choice.registry)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help("版本列表来自这个 npm 镜像；换镜像后需要重新获取")
+            }
+
+            if viewModel.pluginVersionChoiceUsesDifferentRegistry {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                    Text("当前镜像已切换到 \(viewModel.npmRegistry)，这个列表还是旧镜像的结果。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 6)
+                    Button("重新获取") {
+                        viewModel.refreshPluginVersionChoice()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                .padding(9)
+                .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
 
             List(selection: Binding(

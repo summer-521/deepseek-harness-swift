@@ -199,7 +199,9 @@ test('P03 plugin updates offer the registry versions instead of a typed spec', (
 
   assert.match(viewModel, /public struct PluginVersionChoice/)
   assert.match(viewModel, /public func choosePluginVersion\(for plugin: DshPluginItem\)/)
-  assert.match(viewModel, /DshPluginManager\.shared\.publishedPluginVersions\(for: plugin\.name\)/)
+  // Tolerant of arguments added later: the picker reads the packument for that
+  // plugin, whatever else it passes along with the name.
+  assert.match(viewModel, /DshPluginManager\.shared\.publishedPluginVersions\(\s*for: plugin\.name\b/)
   assert.match(viewModel, /没有更新的版本：当前/)
   assert.match(viewModel, /public func confirmPluginVersionChoice\(\)/)
   assert.match(viewModel, /public func cancelPluginVersionChoice\(\)/)
@@ -256,8 +258,7 @@ test('P03 plugin rows can park a plugin without uninstalling it', () => {
   assert.match(pluginsView, /Text\("已禁用"\)/)
 })
 
-test('P03 uninstalling asks first and says what is removed and what is kept', () => {
-  const viewModel = fs.readFileSync(viewModelPath, 'utf8')
+test('P03 uninstalling asks first and says what is removed and what is kept', () => {  const viewModel = fs.readFileSync(viewModelPath, 'utf8')
   const pluginsView = fs.readFileSync(pluginsViewPath, 'utf8')
   const manager = fs.readFileSync(
     path.join(repositoryDirectory, 'Sources', 'Plugins', 'DshPluginManager.swift'),
@@ -294,4 +295,41 @@ test('P03 uninstalling asks first and says what is removed and what is kept', ()
   assert.match(message, /激活列表/)
   assert.match(message, /其他插件、Runtime 与 Profile 设置都会保留/)
   assert.match(message, /重新安装需要重新配置/)
+})
+
+test('P03 the plugin page recovers in place and the picker names its mirror', () => {
+  const viewModel = fs.readFileSync(viewModelPath, 'utf8')
+  const pluginsView = fs.readFileSync(pluginsViewPath, 'utf8')
+
+  // When writes are unavailable the page says why and offers the two actions
+  // that can change it, instead of leaving the user with disabled buttons and a
+  // trip to another window.
+  assert.match(
+    pluginsView,
+    /if let reason = viewModel\.pluginMutationUnavailableReason \{\s*\n\s*pluginUnavailablePanel\(reason\)/
+  )
+  const panel = functionBody(pluginsView, 'private func pluginUnavailablePanel(_ reason: String)')
+  assert.match(panel, /Text\(reason\)/)
+  assert.match(panel, /Button\("重新检查插件"\)/)
+  assert.match(panel, /await viewModel\.inspectPlugins\(\)/)
+  assert.match(panel, /Button\("重启 DSH 服务"\)/)
+  assert.match(panel, /MainWindowController\.shared\.startAndLoadDsh\(\)/)
+
+  // The version picker says which mirror its list came from, and offers to read
+  // it again when the settings moved to another one while it was open.
+  assert.match(viewModel, /public let registry: String/)
+  assert.match(
+    viewModel,
+    /publishedPluginVersions\(\s*\n\s*for: plugin\.name,\s*\n\s*registry: registry\s*\n\s*\)/
+  )
+  assert.match(viewModel, /public var pluginVersionChoiceUsesDifferentRegistry: Bool/)
+  assert.match(viewModel, /public func refreshPluginVersionChoice\(\)/)
+  const picker = functionBody(pluginsView, 'private func pluginVersionPicker(_ choice: PluginVersionChoice)')
+  assert.match(picker, /Text\("来源：\\\(choice\.registry\)"\)/)
+  assert.match(picker, /viewModel\.pluginVersionChoiceUsesDifferentRegistry/)
+  assert.match(picker, /viewModel\.refreshPluginVersionChoice\(\)/)
+
+  // A local plugin explains why it has no enable/disable rather than leaving a
+  // row that silently lacks the buttons.
+  assert.match(pluginsView, /本地插件：组合方式由本机路径（file: \/ link:）决定，不提供启用\/禁用。/)
 })
