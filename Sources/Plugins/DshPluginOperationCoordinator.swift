@@ -55,22 +55,43 @@ private final class DshPluginOperationStore: @unchecked Sendable {
     /// `load()` intentionally maps malformed JSON to a recovery error, while
     /// this probe is used by startup to decide whether that error belongs to
     /// P01 or should retain the original M1 launch-failure path.
+    ///
+    /// Only a path the kernel says is not there counts as absent. A probe that
+    /// cannot be answered — a permission error, an I/O error — is reported as a
+    /// record being present, because every caller uses this to decide whether
+    /// writing is safe: continuing because the check itself failed is the one
+    /// outcome it must never produce.
     func hasPersistedRecord() -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return FileManager.default.fileExists(atPath: fileURL.path)
+        return Self.recordExists(at: fileURL)
+    }
+
+    /// Whether the record is there, in the same fail-closed sense as
+    /// `hasPersistedRecord()`: absent only when the kernel says so.
+    static func recordExists(at url: URL) -> Bool {
+        if access(url.path, F_OK) == 0 { return true }
+        return errno != ENOENT && errno != ENOTDIR
     }
 
     func status() -> DshPluginOperationPersistedStatus {
         lock.lock()
         defer { lock.unlock() }
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+        // The same distinction the startup probe makes: a record that cannot be
+        // read is not an absent one, so it becomes a recovery condition instead
+        // of an empty state.
+        guard Self.recordExists(at: fileURL) else {
             return .absent
+        }
+        // A record that is there but cannot be read is the same kind of
+        // unresolved condition as a malformed one — and not an empty state.
+        guard let data = try? Data(contentsOf: fileURL) else {
+            return .corrupt("插件事务记录无法读取")
         }
         do {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            return .loaded(try decoder.decode(DshPluginOperationState.self, from: Data(contentsOf: fileURL)))
+            return .loaded(try decoder.decode(DshPluginOperationState.self, from: data))
         } catch {
             return .corrupt("插件事务记录损坏")
         }
@@ -79,14 +100,24 @@ private final class DshPluginOperationStore: @unchecked Sendable {
     func load() throws -> DshPluginOperationState? {
         lock.lock()
         defer { lock.unlock() }
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+        guard Self.recordExists(at: fileURL) else { return nil }
+        guard let data = try? Data(contentsOf: fileURL) else {
+            throw DshPluginOperationError.recoveryRequired("插件事务记录无法读取")
+        }
         do {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            return try decoder.decode(DshPluginOperationState.self, from: Data(contentsOf: fileURL))
+            return try decoder.decode(DshPluginOperationState.self, from: data)
         } catch {
             throw DshPluginOperationError.recoveryRequired("插件事务记录损坏")
         }
+    }
+
+    func clear() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard Self.recordExists(at: fileURL) else { return }
+        try FileManager.default.removeItem(at: fileURL)
     }
 
     func write(_ state: DshPluginOperationState) throws {
@@ -101,13 +132,6 @@ private final class DshPluginOperationStore: @unchecked Sendable {
             withIntermediateDirectories: true
         )
         try data.write(to: fileURL, options: .atomic)
-    }
-
-    func clear() throws {
-        lock.lock()
-        defer { lock.unlock() }
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
-        try FileManager.default.removeItem(at: fileURL)
     }
 }
 

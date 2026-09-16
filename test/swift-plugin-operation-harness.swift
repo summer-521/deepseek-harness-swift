@@ -1586,6 +1586,74 @@ private func runCorruptRecord() async throws {
     require(fileManager.fileExists(atPath: operationStoreURL().path), "corrupt record must remain for explicit recovery")
 }
 
+/// A record file that exists but cannot be read — a permission or I/O failure —
+/// must not be mistaken for an absent one. Every write gate asks this question
+/// before it mutates the Profile, so answering "nothing to recover" because the
+/// read itself failed is the one answer that must never come out of it.
+private func runUnreadableRecord() async throws {
+    try resetFixture()
+    _ = try await persistFixtureOperation(phase: .restoring)
+    let recordURL = operationStoreURL()
+    try fileManager.setAttributes([.posixPermissions: 0o000], ofItemAtPath: recordURL.path)
+    defer {
+        try? fileManager.setAttributes([.posixPermissions: 0o644], ofItemAtPath: recordURL.path)
+    }
+
+    let coordinator = DshPluginOperationCoordinator(operationStoreURL: recordURL)
+    require(coordinator.hasPersistedOperationRecord,
+            "an unreadable record is not an absent one: the write gates must stay closed")
+    require(coordinator.persistedStatus == .corrupt("插件事务记录无法读取"),
+            "an unreadable record is a recovery condition, not an empty state")
+
+    let preparationChecks = Counter()
+    await expectOperationError(.recoveryRequired("插件事务记录无法读取")) {
+        _ = try await coordinator.perform(
+            DshPluginOperationRequest(
+                action: .update,
+                profile: .desktop,
+                profileDirectory: profileURL(),
+                targetPackage: "plugin"
+            ),
+            hooks: DshPluginOperationHooks(
+                prepareForMutation: { preparationChecks.value += 1 },
+                mutate: { _ in }
+            )
+        )
+    }
+    require(preparationChecks.value == 0, "an unreadable record must fail closed before preparation")
+    try fileManager.setAttributes([.posixPermissions: 0o644], ofItemAtPath: recordURL.path)
+
+    // The probe itself can fail rather than the read: with the directory
+    // unsearchable, `fileExists` answers false for a record that is still
+    // there — which is exactly how a permission error turns into "nothing to
+    // recover" and lets a write proceed over an unresolved transaction.
+    let directory = recordURL.deletingLastPathComponent()
+    try fileManager.setAttributes([.posixPermissions: 0o000], ofItemAtPath: directory.path)
+    defer {
+        try? fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+    }
+    let blocked = DshPluginOperationCoordinator(operationStoreURL: recordURL)
+    require(blocked.hasPersistedOperationRecord,
+            "a probe that cannot be answered must not report the record as absent")
+    let blockedChecks = Counter()
+    await expectOperationError(.recoveryRequired("插件事务记录无法读取")) {
+        _ = try await blocked.perform(
+            DshPluginOperationRequest(
+                action: .update,
+                profile: .desktop,
+                profileDirectory: profileURL(),
+                targetPackage: "plugin"
+            ),
+            hooks: DshPluginOperationHooks(
+                prepareForMutation: { blockedChecks.value += 1 },
+                mutate: { _ in }
+            )
+        )
+    }
+    require(blockedChecks.value == 0, "an undecidable probe must fail closed too")
+    try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+}
+
 private func runStructurallyInvalidRecord() async throws {
     try resetFixture()
     _ = try await persistFixtureOperation(phase: .restoring)
@@ -1716,6 +1784,7 @@ struct PluginOperationHarness {
         case "owned-snapshot-delete-guard": try await runOwnedSnapshotDeleteGuard()
         case "batch-failure": try await runBatchFailure()
         case "corrupt-record": try await runCorruptRecord()
+        case "unreadable-record": try await runUnreadableRecord()
         case "structurally-invalid-record": try await runStructurallyInvalidRecord()
         case "missing-snapshot-setup": try await setupRestorationGuard("missing")
         case "missing-snapshot-recover": try await recoverRestorationGuard("missing")

@@ -153,6 +153,7 @@ test('P01 restart and rollback matrix stays fail-closed', () => {
     runSingle(binaryPath, 'batch-failure')
     runSingle(binaryPath, 'corrupt-record')
     runSingle(binaryPath, 'structurally-invalid-record')
+    runSingle(binaryPath, 'unreadable-record')
   } finally {
     fs.rmSync(moduleCachePath, { recursive: true, force: true })
   }
