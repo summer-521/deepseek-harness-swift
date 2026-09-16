@@ -30,26 +30,54 @@ import Foundation
 /// the Profile's own dependency declarations are never read for validity or
 /// rewritten: the next `pnpm install` owns those.
 public enum DshProfileLinkRepair {
-    /// The links one repair pass moved, and the ones it could not move.
+    /// The links one repair pass moved, the ones it could not move, and the
+    /// places it could not look.
     public struct Outcome: Equatable, Sendable {
         /// Absolute paths of the links that now resolve through a candidate.
         public let repointed: [String]
         /// Absolute paths of the links that still resolve through the source
         /// Runtime because no candidate supplies the same package.
         public let unresolved: [String]
+        /// Directories the pass could not read. Without this, a failed listing
+        /// is indistinguishable from a Profile that holds no links at all, and
+        /// the caller would delete a Runtime the Profile still resolves
+        /// through.
+        public let scanFailures: [String]
+        /// Links whose reverse swap failed while an all-or-nothing pass was
+        /// rolling back. The Profile may now resolve through two Runtimes, and
+        /// the caller has to be told rather than handed an empty result.
+        public let rollbackFailures: [String]
 
-        public init(repointed: [String] = [], unresolved: [String] = []) {
+        public init(
+            repointed: [String] = [],
+            unresolved: [String] = [],
+            scanFailures: [String] = [],
+            rollbackFailures: [String] = []
+        ) {
             self.repointed = repointed
             self.unresolved = unresolved
+            self.scanFailures = scanFailures
+            self.rollbackFailures = rollbackFailures
         }
 
         /// Whether the Runtime those links named may be removed: anything left
-        /// unresolved would resolve through nothing afterwards.
-        public var canRemoveSourceRuntime: Bool { unresolved.isEmpty }
+        /// unresolved would resolve through nothing afterwards, and anything
+        /// unread may be a link this pass never saw.
+        public var canRemoveSourceRuntime: Bool {
+            unresolved.isEmpty && scanFailures.isEmpty && rollbackFailures.isEmpty
+        }
 
         /// Whether the pass found no link that resolves through the source
-        /// Runtime at all.
-        public var isNoop: Bool { repointed.isEmpty && unresolved.isEmpty }
+        /// Runtime at all, and could read everything it needed to.
+        public var isNoop: Bool {
+            repointed.isEmpty
+                && unresolved.isEmpty
+                && scanFailures.isEmpty
+                && rollbackFailures.isEmpty
+        }
+
+        /// Whether the Profile may have been left split across two Runtimes.
+        public var leftProfilePartiallyMoved: Bool { !rollbackFailures.isEmpty }
     }
 
     /// Re-point every link that resolves through `fromVersion` at the same
@@ -166,12 +194,22 @@ public enum DshProfileLinkRepair {
         // link can move before the first one leaves the old Runtime.
         var moves: [Move] = []
         var unresolved: [String] = []
-        for directory in scannedDirectories(
+        var scanFailures: [String] = []
+        let scan = scannedDirectories(
             profilesRoot: profilesRoot,
             profiles: profiles,
             fileManager: fileManager
-        ) {
-            for link in links(in: directory, fileManager: fileManager) {
+        )
+        scanFailures.append(contentsOf: scan.failures)
+        for directory in scan.directories {
+            let listing = links(in: directory, fileManager: fileManager)
+            if let failure = listing.failure {
+                // An unreadable directory is not an empty one: nothing may be
+                // moved on the strength of a listing that failed.
+                scanFailures.append(failure)
+                continue
+            }
+            for link in listing.links {
                 guard let storedDestination = try? fileManager.destinationOfSymbolicLink(atPath: link.path) else {
                     continue
                 }
@@ -186,8 +224,8 @@ public enum DshProfileLinkRepair {
             }
         }
 
-        if allOrNothing, !unresolved.isEmpty {
-            return Outcome(repointed: [], unresolved: unresolved)
+        if allOrNothing, !unresolved.isEmpty || !scanFailures.isEmpty {
+            return Outcome(repointed: [], unresolved: unresolved, scanFailures: scanFailures)
         }
 
         var repointed: [String] = []
@@ -206,12 +244,25 @@ public enum DshProfileLinkRepair {
         }
 
         if allOrNothing, !unresolved.isEmpty {
+            // A rollback that only partly succeeds leaves the Profile resolving
+            // through two Runtimes — exactly the state this pass exists to
+            // avoid — so its failures travel back with the result.
+            var rollbackFailures: [String] = []
             for move in applied.reversed() {
-                try? replaceLink(at: move.link, withDestination: move.original, fileManager: fileManager)
+                do {
+                    try replaceLink(at: move.link, withDestination: move.original, fileManager: fileManager)
+                } catch {
+                    rollbackFailures.append(move.link.standardizedFileURL.path)
+                }
             }
-            return Outcome(repointed: [], unresolved: unresolved)
+            return Outcome(
+                repointed: [],
+                unresolved: unresolved,
+                scanFailures: scanFailures,
+                rollbackFailures: rollbackFailures
+            )
         }
-        return Outcome(repointed: repointed, unresolved: unresolved)
+        return Outcome(repointed: repointed, unresolved: unresolved, scanFailures: scanFailures)
     }
 
     /// Point the link at `link`'s path to `destination` in one atomic step.
@@ -287,24 +338,34 @@ public enum DshProfileLinkRepair {
         return candidate.isEmpty ? nil : candidate
     }
 
-    /// Directory URLs whose direct entries may link into a Runtime: the
-    /// workspace's hoisted `node_modules`, and each selected Profile's
-    /// `node_modules` plus the fallback tree the Host materializes beside it.
+    /// Directory URLs whose direct entries may link into a Runtime, plus the
+    /// ones that could not be enumerated.
+    ///
+    /// A directory that cannot be listed must not look like one that holds no
+    /// links: the caller deletes a Runtime on the strength of "nothing resolves
+    /// through it any more", so a permission or I/O failure is reported and the
+    /// pass stays away from the tree.
     private static func scannedDirectories(
         profilesRoot: URL,
         profiles: [URL]?,
         fileManager: FileManager
-    ) -> [URL] {
+    ) -> (directories: [URL], failures: [String]) {
         var directories = [profilesRoot.appendingPathComponent("node_modules", isDirectory: true)]
+        var failures: [String] = []
         let entries: [URL]
         if let profiles {
             entries = profiles
         } else {
-            entries = (try? fileManager.contentsOfDirectory(
-                at: profilesRoot,
-                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
-                options: []
-            )) ?? []
+            do {
+                entries = try fileManager.contentsOfDirectory(
+                    at: profilesRoot,
+                    includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                    options: []
+                )
+            } catch {
+                failures.append(profilesRoot.path)
+                entries = []
+            }
         }
         for entry in entries {
             guard let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
@@ -316,18 +377,30 @@ public enum DshProfileLinkRepair {
                     .appendingPathComponent("node_modules", isDirectory: true)
             )
         }
-        return directories
+        return (directories, failures)
     }
 
     /// The links directly inside one of those directories, including one level
-    /// of scope directories. Nothing recurses into a package or a `.pnpm`
-    /// store: the links that name a Runtime live at exactly these two depths.
-    private static func links(in directory: URL, fileManager: FileManager) -> [URL] {
-        let entries = (try? fileManager.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.isSymbolicLinkKey, .isDirectoryKey],
-            options: []
-        )) ?? []
+    /// of scope directories, or the reason the directory could not be read.
+    /// Nothing recurses into a package or a `.pnpm` store: the links that name a
+    /// Runtime live at exactly these two depths.
+    private static func links(
+        in directory: URL,
+        fileManager: FileManager
+    ) -> (links: [URL], failure: String?) {
+        // A directory that does not exist is simply not part of this Profile;
+        // anything else is a read failure the caller has to know about.
+        guard fileManager.fileExists(atPath: directory.path) else { return ([], nil) }
+        let entries: [URL]
+        do {
+            entries = try fileManager.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.isSymbolicLinkKey, .isDirectoryKey],
+                options: []
+            )
+        } catch {
+            return ([], directory.path)
+        }
         var found: [URL] = []
         for entry in entries {
             // A sibling temporary link from an interrupted swap is not part of
@@ -340,18 +413,25 @@ public enum DshProfileLinkRepair {
                 continue
             }
             guard values?.isDirectory == true, entry.lastPathComponent.hasPrefix("@") else { continue }
-            let scoped = (try? fileManager.contentsOfDirectory(
-                at: entry,
-                includingPropertiesForKeys: [.isSymbolicLinkKey],
-                options: []
-            )) ?? []
+            let scoped: [URL]
+            do {
+                scoped = try fileManager.contentsOfDirectory(
+                    at: entry,
+                    includingPropertiesForKeys: [.isSymbolicLinkKey],
+                    options: []
+                )
+            } catch {
+                // A scope directory this pass cannot read may hold links into
+                // the Runtime; report it instead of reporting an empty family.
+                return (found, entry.path)
+            }
             for candidate in scoped
             where (try? candidate.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true
                 && !candidate.lastPathComponent.hasPrefix(temporaryLinkPrefix) {
                 found.append(candidate)
             }
         }
-        return found
+        return (found, nil)
     }
 
     /// Resolve one link's stored destination into an absolute standardized path.

@@ -138,7 +138,10 @@ public final class DshVersionManager {
             guard repair.canRemoveSourceRuntime else {
                 retained.insert(version)
                 print(
-                    "[DshVersionManager] Retaining Runtime \(version): \(repair.unresolved.count) Profile link(s) still resolve through it"
+                    "[DshVersionManager] Retaining Runtime \(version): "
+                        + "\(repair.unresolved.count) link(s) still resolve through it, "
+                        + "\(repair.scanFailures.count) directory(ies) could not be read, "
+                        + "\(repair.rollbackFailures.count) link(s) were not restored"
                 )
                 continue
             }

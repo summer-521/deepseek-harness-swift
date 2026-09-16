@@ -184,7 +184,7 @@ test('WebKit receives a strict, HttpOnly, session-only host cookie for each gene
   // apart before it tells the user what to do.
   assert.match(
     WINDOW_SOURCE,
-    /case \.runtimeBootstrapFailed\(let detail\):[\s\S]*?DshProcessIO\.isNativeModuleMismatch\(detail\)[\s\S]*?原生模块与当前内置的 Node\.js 不匹配/
+    /case \.runtimeBootstrapFailed\(let detail\):[\s\S]*?DshProcessIO\.nativeModuleFailure\(in: detail\)[\s\S]*?failure\.summary/
   )
   assert.match(
     WINDOW_SOURCE,

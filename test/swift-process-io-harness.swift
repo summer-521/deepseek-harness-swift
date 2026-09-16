@@ -72,28 +72,51 @@ struct ProcessIOHarness {
         """
         // Recognition is a pure decision; check it without a process in the way.
         require(
+            DshProcessIO.nativeModuleFailure(
+                in: "Error: The module '/tmp/x.node' was compiled against a different Node.js version using NODE_MODULE_VERSION 115."
+            ) == .nodeVersion,
+            "an NODE_MODULE_VERSION mismatch is a Node-version failure"
+        )
+        require(
+            DshProcessIO.nativeModuleFailure(
+                in: "mach-o file, but is an incompatible architecture (have 'x86_64', need 'arm64e')"
+            ) == .architecture,
+            "a foreign architecture is an architecture failure"
+        )
+        require(
+            DshProcessIO.nativeModuleFailure(
+                in: "dlopen(/tmp/x.node, 0x0001): tried: '/tmp/x.node' (no such file or directory)"
+            ) == .missingBinary,
+            "a missing .node binary is a missing-binary failure"
+        )
+        require(
             DshProcessIO.isNativeModuleMismatch(
                 "Error: The module '/tmp/x.node' was compiled against a different Node.js version using NODE_MODULE_VERSION 115."
             ),
-            "an NODE_MODULE_VERSION mismatch must be recognized"
-        )
-        require(
-            DshProcessIO.isNativeModuleMismatch(
-                "mach-o file, but is an incompatible architecture (have 'x86_64', need 'arm64e')"
-            ),
-            "a foreign architecture must be recognized"
-        )
-        require(
-            DshProcessIO.isNativeModuleMismatch(
-                "dlopen(/tmp/x.node, 0x0001): tried: '/tmp/x.node' (no such file or directory)"
-            ),
-            "a missing .node binary must be recognized"
+            "the boolean form stays available for callers that only branch"
         )
         require(
             !DshProcessIO.isNativeModuleMismatch("Cannot find package '@earendil-works/pi-ai' imported from /tmp/plugin.js"),
             "a missing package is not a native-module failure"
         )
         require(!DshProcessIO.isNativeModuleMismatch(""), "empty detail carries no signal")
+        require(
+            !DshProcessIO.isNativeModuleMismatch(
+                "dlopen(/tmp/libsomething.dylib, 0x0001): tried: '/tmp/libsomething.dylib' (no such file or directory)"
+            ),
+            "a missing ordinary dylib is not a plugin native module"
+        )
+        // Each shape says what it is, instead of collapsing into one sentence.
+        let summaries = [
+            DshProcessIO.NativeModuleFailure.nodeVersion.summary,
+            DshProcessIO.NativeModuleFailure.architecture.summary,
+            DshProcessIO.NativeModuleFailure.missingBinary.summary,
+        ]
+        require(Set(summaries).count == 3, "the three failures must read differently, saw \(summaries)")
+        require(
+            summaries.allSatisfy { !$0.isEmpty },
+            "every failure needs a summary the recovery surface can lead with"
+        )
 
         let script = bootstrapFailure ? bootstrapScript : (nativeModuleFailure ? nativeModuleScript : """
         printf 'dsh web: http://127.0.0.1:3187/?token=\(launchToken)';

@@ -171,8 +171,7 @@ public final class DshProcessIO: @unchecked Sendable {
         return "找不到包 \(String(capped[packageRange]))。\n\n\(capped)"
     }
 
-    /// What to do when a plugin tree failed because a prebuilt native module
-    /// does not match the Node.js loading it — or is missing entirely.
+    /// What a plugin tree failed on when a prebuilt native module is the cause.
     ///
     /// Plugins are installed with `--ignore-scripts` (see `DshPluginManager`),
     /// so nothing is compiled locally: a package that ships a `.node` binary is
@@ -181,34 +180,66 @@ public final class DshProcessIO: @unchecked Sendable {
     /// installed for the previous one, and Node then reports the mismatch in
     /// terms of `NODE_MODULE_VERSION` — which says nothing about what the user
     /// can do about it.
-    public static func nativeModuleMismatchHint(_ detail: String) -> String? {
+    public enum NativeModuleFailure: Equatable, Sendable {
+        /// Built for another Node.js ABI (`NODE_MODULE_VERSION`).
+        case nodeVersion
+        /// Built for another CPU architecture.
+        case architecture
+        /// The `.node` binary the loader asked for is not there.
+        case missingBinary
+
+        /// One line to lead the recovery surface with.
+        public var summary: String {
+            switch self {
+            case .nodeVersion:
+                return "插件的原生模块与当前内置的 Node.js 版本不匹配。"
+            case .architecture:
+                return "插件的原生模块是另一个 CPU 架构的二进制。"
+            case .missingBinary:
+                return "插件的原生模块缺失。"
+            }
+        }
+
+        /// The remedy is the same for all three: reinstall from the plugin page,
+        /// which fetches a binary built for this Node and this machine.
+        public var remedy: String {
+            "在「设置 → 插件」重新安装受影响的插件即可获取匹配的二进制。"
+        }
+    }
+
+    /// The native-module failure `detail` describes, or nil when it is something
+    /// else — a missing host package, for instance, which has its own remedy.
+    public static func nativeModuleFailure(in detail: String) -> NativeModuleFailure? {
         let lowered = detail.lowercased()
         let abiSignals = [
             "node_module_version",
             "was compiled against a different node.js version",
         ]
         if abiSignals.contains(where: lowered.contains) {
-            return "插件的原生模块与当前内置的 Node.js 版本不匹配（App 更新后常见）。"
-                + "在「设置 → 插件」重新安装受影响的插件即可重新编译/获取匹配的二进制。"
+            return .nodeVersion
         }
-        let architectureSignals = [
-            "incompatible architecture",
-        ]
-        if architectureSignals.contains(where: lowered.contains) {
-            return "插件的原生模块是另一个 CPU 架构的二进制。"
-                + "在「设置 → 插件」重新安装受影响的插件即可获取匹配的二进制。"
+        if lowered.contains("incompatible architecture") {
+            return .architecture
         }
-        // A `.node` binary that is simply not there fails the same way at load
-        // time and has the same remedy.
-        if lowered.contains("dlopen") && lowered.contains("no such file or directory") {
-            return "插件的原生模块缺失。在「设置 → 插件」重新安装受影响的插件即可补齐。"
+        // A `.node` binary that is absent fails at load time with `dlopen`; the
+        // path is part of the signal so a missing ordinary dylib is not filed
+        // here.
+        if lowered.contains("dlopen"), lowered.contains(".node"), lowered.contains("no such file or directory") {
+            return .missingBinary
         }
         return nil
     }
 
+    /// What to do about the failure `detail` describes, or nil when it carries
+    /// no native-module signal.
+    public static func nativeModuleMismatchHint(_ detail: String) -> String? {
+        guard let failure = nativeModuleFailure(in: detail) else { return nil }
+        return "\(failure.summary)\(failure.remedy)"
+    }
+
     /// Whether `detail` carries a native-module signal.
     public static func isNativeModuleMismatch(_ detail: String) -> Bool {
-        nativeModuleMismatchHint(detail) != nil
+        nativeModuleFailure(in: detail) != nil
     }
 
     public func waitForPolicyApplied(

@@ -262,6 +262,69 @@ struct ProfileLinkRepairHarness {
             "a completed swap must leave no temporary link, saw \(leftovers)"
         )
 
+        // An outcome that could not read everything, or could not undo a swap,
+        // must never let the caller remove the Runtime its links still name.
+        let unreadableOutcome = DshProfileLinkRepair.Outcome(scanFailures: ["/tmp/unreadable"])
+        require(
+            !unreadableOutcome.canRemoveSourceRuntime && !unreadableOutcome.isNoop,
+            "a scan failure is not a no-op and must keep the Runtime"
+        )
+        let partialRollback = DshProfileLinkRepair.Outcome(rollbackFailures: ["/tmp/link"])
+        require(
+            !partialRollback.canRemoveSourceRuntime,
+            "a failed rollback leaves the Profile split across Runtimes, so the Runtime must stay"
+        )
+        require(partialRollback.leftProfilePartiallyMoved, "a failed rollback must be visible to the caller")
+
+        // A Profile directory the pass cannot read must be reported rather than
+        // look like a Profile with no links: the caller deletes a Runtime on the
+        // strength of "nothing resolves through it any more".
+        let unreadableScope = profiles
+            .appendingPathComponent("unreadable/node_modules/@deepseek-ai", isDirectory: true)
+        try makeDirectory(unreadableScope)
+        try link(hashedOld, at: unreadableScope.appendingPathComponent("tool-x-hidden"))
+        try fileManager.setAttributes([.posixPermissions: 0o000], ofItemAtPath: unreadableScope.path)
+        defer {
+            try? fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: unreadableScope.path)
+        }
+        let blockedScan = DshProfileLinkRepair.repairDanglingLinks(
+            profilesRoot: profiles,
+            versionsDirectory: versions,
+            toRuntime: activeRuntime
+        )
+        // Directory listings come back standardized (`/private/var` for
+        // `/var`), so compare the same way the pass reports them.
+        let expectedFailure = unreadableScope.standardizedFileURL.path
+        let reportedFailures = blockedScan.scanFailures.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        require(
+            reportedFailures.contains(expectedFailure),
+            "an unreadable scope directory must be reported, saw \(blockedScan.scanFailures)"
+        )
+        require(
+            !blockedScan.canRemoveSourceRuntime,
+            "a pass that could not read everything must never let a Runtime be removed"
+        )
+        let blockedRepoint = DshProfileLinkRepair.repointLinks(
+            profilesRoot: profiles,
+            versionsDirectory: versions,
+            fromVersion: "0.1.5-rc.2",
+            toCandidates: [activeRuntime]
+        )
+        require(
+            blockedRepoint.repointed.isEmpty,
+            "an all-or-nothing pass must move nothing while a directory is unreadable, saw \(blockedRepoint.repointed)"
+        )
+        require(
+            blockedRepoint.scanFailures.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+                .contains(expectedFailure),
+            "the unreadable directory must travel with the all-or-nothing result"
+        )
+        require(
+            !blockedRepoint.canRemoveSourceRuntime,
+            "an all-or-nothing pass that could not read everything must keep the Runtime"
+        )
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: unreadableScope.path)
+
         // Nothing to do against a Profile with no Runtime links at all.
         let emptyRoot = root.appendingPathComponent("empty-profiles", isDirectory: true)
         try makeDirectory(emptyRoot.appendingPathComponent("node_modules", isDirectory: true))

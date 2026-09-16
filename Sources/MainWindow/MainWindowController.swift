@@ -1084,7 +1084,10 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             )
             if !linkRepair.isNoop {
                 _ = diagnosticStore.appendLog(
-                    "F04 profile link repair: repointed=\(linkRepair.repointed.count) unresolved=\(linkRepair.unresolved.count)",
+                    "F04 profile link repair: repointed=\(linkRepair.repointed.count) "
+                        + "unresolved=\(linkRepair.unresolved.count) "
+                        + "unreadable=\(linkRepair.scanFailures.count) "
+                        + "rollbackFailures=\(linkRepair.rollbackFailures.count)",
                     launchID: context.launchID,
                     source: .pluginInspector
                 )
@@ -1988,10 +1991,10 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                 // Node has the same symptom but a different remedy than a
                 // genuinely missing host package, and the raw text names only
                 // `NODE_MODULE_VERSION`.
-                if DshProcessIO.isNativeModuleMismatch(detail) {
+                if let failure = DshProcessIO.nativeModuleFailure(in: detail) {
                     return (
                         .pluginConfigurationInvalid,
-                        "Runtime 插件树加载失败：插件的原生模块与当前内置的 Node.js 不匹配。",
+                        "Runtime 插件树加载失败：\(failure.summary)",
                         .retryable,
                         .processOutput
                     )
@@ -2300,7 +2303,18 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     /// earlier Runtime cleanup left behind anywhere are re-pointed at the
     /// Runtime this App is running, and it reports what it could not place
     /// instead of silently leaving them dangling.
+    ///
+    /// It is a writer, so it also takes the same serial gate and quiesce step
+    /// the plugin and Runtime transactions take: while the managed service is
+    /// running it is installing, removing and rewriting the very tree this pass
+    /// inspects, and a swap that lands after `pnpm`'s own write would replace
+    /// what `pnpm` just decided.
     public func repairAllProfileLinks() {
+        Task { await performProfileLinkRepair() }
+    }
+
+    @MainActor
+    private func performProfileLinkRepair() async {
         guard let context = currentLaunchContext else {
             presentProfileLinkRepairAlert(
                 title: "暂时无法修复 Profile 依赖链接",
@@ -2308,6 +2322,24 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             )
             return
         }
+        let coordinator = DshPluginOperationCoordinator.shared
+        guard coordinator.pendingOperation == nil, !coordinator.hasPersistedOperationRecord else {
+            presentProfileLinkRepairAlert(
+                title: "暂时无法修复 Profile 依赖链接",
+                detail: "有插件操作正在进行或等待恢复。先完成它，再修复依赖链接。"
+            )
+            return
+        }
+        do {
+            try await DshService.shared.prepareForProfileMutation(context: context)
+        } catch {
+            presentProfileLinkRepairAlert(
+                title: "暂时无法修复 Profile 依赖链接",
+                detail: "停止 DSH 服务失败：\(DshMainWindowUIMessage.safe(error))。稍后重试。"
+            )
+            return
+        }
+
         let outcome = DshProfileLinkRepair.repairDanglingLinks(
             profilesRoot: context.profileDirectory.deletingLastPathComponent(),
             versionsDirectory: DshStateManager.versionsDirectory,
@@ -2317,7 +2349,9 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             )
         )
         _ = diagnosticStore.appendLog(
-            "F11 profile link repair (every Profile): repointed=\(outcome.repointed.count) unresolved=\(outcome.unresolved.count)",
+            "F11 profile link repair (every Profile): repointed=\(outcome.repointed.count) "
+                + "unresolved=\(outcome.unresolved.count) unreadable=\(outcome.scanFailures.count) "
+                + "rollbackFailures=\(outcome.rollbackFailures.count)",
             launchID: context.launchID,
             source: .pluginInspector
         )
@@ -2329,10 +2363,23 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             detail += "\n\n仍有 \(outcome.unresolved.count) 条链接没能修复：当前 Runtime 里没有它们指向的包。"
             detail += "重新安装对应的插件即可补齐。"
         }
+        if !outcome.scanFailures.isEmpty {
+            detail += "\n\n有 \(outcome.scanFailures.count) 个目录没能读取，那里的链接未被检查："
+            detail += "\n\(outcome.scanFailures.prefix(3).joined(separator: "\n"))"
+            detail += "\n检查它们的权限后可以再试一次。"
+        }
+        if outcome.leftProfilePartiallyMoved {
+            detail += "\n\n有 \(outcome.rollbackFailures.count) 条链接没能还原，Profile 可能同时指向两个 Runtime。"
+            detail += "运行「设置 → 插件」里的重新安装，或重新安装受影响的插件即可收敛。"
+        }
         presentProfileLinkRepairAlert(
             title: outcome.isNoop ? "Profile 依赖链接无需修复" : "Profile 依赖链接修复完成",
             detail: detail
         )
+
+        // The repair ran with the service stopped to keep Node out of the tree;
+        // bring the App back to a working state.
+        startAndLoadDsh()
     }
 
     private func presentProfileLinkRepairAlert(title: String, detail: String) {

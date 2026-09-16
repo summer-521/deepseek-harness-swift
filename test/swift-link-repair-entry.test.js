@@ -27,7 +27,10 @@ test('a launch repairs only the Profile it owns', () => {
 })
 
 test('the explicit repair covers every Profile and reports what it did', () => {
-  const body = functionBody(controller, 'public func repairAllProfileLinks()')
+  const entry = functionBody(controller, 'public func repairAllProfileLinks()')
+  assert.match(entry, /Task \{ await performProfileLinkRepair\(\) \}/)
+
+  const body = functionBody(controller, 'private func performProfileLinkRepair() async')
   assert.match(body, /DshProfileLinkRepair\.repairDanglingLinks\(/)
   assert.doesNotMatch(
     body,
@@ -43,8 +46,34 @@ test('the explicit repair covers every Profile and reports what it did', () => {
     /outcome\.unresolved\.isEmpty/,
     'links the Runtime cannot satisfy are reported instead of being dropped silently',
   )
+  assert.match(
+    body,
+    /outcome\.scanFailures/,
+    'directories the pass could not read are reported, not treated as empty',
+  )
+  assert.match(
+    body,
+    /outcome\.leftProfilePartiallyMoved/,
+    'a partly failed rollback is reported instead of being swallowed',
+  )
   // Without a launched Runtime there is nothing to re-point at.
   assert.match(body, /guard let context = currentLaunchContext else/)
+})
+
+test('the explicit repair is a writer and takes the writer gates', () => {
+  const body = functionBody(controller, 'private func performProfileLinkRepair() async')
+  // The managed service installs and removes plugins in the same tree; the
+  // repair quiesces it exactly like a plugin or Runtime transaction does.
+  assert.match(
+    body,
+    /try await DshService\.shared\.prepareForProfileMutation\(context: context\)/,
+    'the pass must stop the service that writes the same tree',
+  )
+  // And it refuses to run while another transaction is open.
+  assert.match(body, /coordinator\.pendingOperation == nil/)
+  assert.match(body, /!coordinator\.hasPersistedOperationRecord/)
+  // The service was stopped for the repair, so the App is brought back after.
+  assert.match(body, /startAndLoadDsh\(\)/)
 })
 
 test('the menu exposes the repair and reaches the controller', () => {
