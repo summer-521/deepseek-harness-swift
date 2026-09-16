@@ -132,8 +132,11 @@ export function compareVersions(left, right) {
 
 /** The highest build number the feed already publishes. */
 export function highestPublishedBuild(appcast) {
-  const builds = [...appcast.matchAll(/<sparkle:version>(\d+)<\/sparkle:version>/g)]
-    .map((match) => Number(match[1]))
+  // Read from each item's own `<sparkle:version>`, not from the file text: a
+  // release note that quotes one must not raise the bar for the next release.
+  const builds = appcastItems(appcast)
+    .map((fields) => Number(fields.build))
+    .filter((build) => Number.isInteger(build) && build > 0)
   return builds.length > 0 ? Math.max(...builds) : 0
 }
 
@@ -219,9 +222,10 @@ ${notes.trimEnd()}
 /** Sparkle reads the first item first, so the newest release is inserted there. */
 export function insertAppcastItem(appcast, item, { version, build }) {
   if (!appcast.includes('<channel>')) throw new Error('appcast has no <channel>')
-  const duplicateTag = appcast.includes(`releases/tag/v${version}<`)
-  const duplicateBuild = appcast.includes(`<sparkle:version>${build}</sparkle:version>`)
-  if (duplicateTag || duplicateBuild) {
+  const clash = appcastItems(appcast).find(
+    (fields) => fields.version === version || fields.build === String(build),
+  )
+  if (clash) {
     throw new Error(`appcast already publishes ${version} (build ${build})`)
   }
   const firstItem = appcast.indexOf('<item>')
@@ -239,34 +243,49 @@ export function newestItem(appcast) {
 }
 
 /**
+ * What one item says, read from its elements rather than from its text.
+ *
+ * Release notes are markdown inside a CDATA block, so they can contain any
+ * literal a field is recognized by — a pasted `<sparkle:version>17</sparkle:version>`,
+ * an example URL, a `length="…"`. Searching the raw item would let those decide
+ * whether a release is already public, or which artifact the feed points at, so
+ * the notes are removed first and every field is read from the element that
+ * carries it.
+ */
+function itemFields(item) {
+  const elements = item.replace(/<description[\s\S]*?<\/description>/g, '')
+  const enclosure = elements.match(/<enclosure\b[^>]*>/)?.[0] ?? ''
+  const link = elements.match(/<link>([^<]*)<\/link>/)?.[1] ?? ''
+  const url = enclosure.match(/\burl="([^"]*)"/)?.[1] ?? ''
+  return {
+    item,
+    version: elements.match(/<title>([^<]*)<\/title>/)?.[1] ?? link.match(/\/v(\d+\.\d+\.\d+)$/)?.[1] ?? '',
+    build: elements.match(/<sparkle:version>(\d+)<\/sparkle:version>/)?.[1] ?? '',
+    length: Number(enclosure.match(/\blength="(\d+)"/)?.[1] ?? 0),
+    url,
+    signature: enclosure.match(/sparkle:edSignature="([^"]*)"/)?.[1] ?? '',
+  }
+}
+
+/** Every item in the feed, as the fields it actually declares. */
+export function appcastItems(appcast) {
+  return [...appcast.matchAll(/<item>[\s\S]*?<\/item>/g)].map((match) => itemFields(match[0]))
+}
+
+/**
  * The item the feed publishes for one version and build, or null.
  *
  * This is the record of what is public: an item in the served appcast names the
  * archive length and EdDSA signature every installed copy verifies its download
- * against, so those bytes may never be replaced afterwards.
+ * against, so those bytes may never be replaced afterwards. The build is the
+ * identity Sparkle itself compares; the version has to agree as well, because a
+ * neighbouring release that reused a number is not this release.
  */
 export function publishedItem(appcast, { version, build }) {
-  // The build is the identity Sparkle itself compares, and one of the three
-  // version markers has to name the release too: the tag link (`<link>`), the
-  // item title, or the artifact URL. Any of them is enough — hand-edited feeds
-  // have arrived with a plain title — and the build alone would match a
-  // neighbouring version that reused a number.
-  const versionMarkers = [
-    `releases/tag/v${version}<`,
-    `<title>${version}</title>`,
-    `/v${version}/`,
-  ]
-  for (const match of appcast.matchAll(/<item>[\s\S]*?<\/item>/g)) {
-    const item = match[0]
-    if (!item.includes(`<sparkle:version>${build}</sparkle:version>`)) continue
-    if (!versionMarkers.some((marker) => item.includes(marker))) continue
-    return {
-      item,
-      length: Number(item.match(/\blength="(\d+)"/)?.[1] ?? 0),
-      url: item.match(/\burl="([^"]+)"/)?.[1] ?? '',
-    }
-  }
-  return null
+  const found = appcastItems(appcast).find(
+    (fields) => fields.version === version && fields.build === String(build),
+  )
+  return found ?? null
 }
 
 /**
@@ -379,10 +398,15 @@ function runAppcast({ options, paths }) {
   const build = requireMatch(options.build, /^\d+$/, 'build')
   const length = requireMatch(options.length, /^[1-9]\d*$/, 'archive length')
   const signature = requireMatch(options.signature, /^[A-Za-z0-9+/]{40,}={0,2}$/, 'EdDSA signature')
-  const notes = fs.readFileSync(
-    requireMatch(options['notes-file'], /^\S+$/, 'release notes file'),
-    'utf8',
-  )
+  // A release-notes path is a path, and paths contain spaces. The file is read
+  // with the string as it arrives, so `readFileSync`'s own error is the check;
+  // a "no whitespace" pattern would only reject valid paths, and it would do it
+  // after the DMG had already been built and signed.
+  const notesFile = options['notes-file']
+  if (typeof notesFile !== 'string' || notesFile.length === 0) {
+    throw new Error('release notes file is missing or malformed: ' + JSON.stringify(notesFile))
+  }
+  const notes = fs.readFileSync(notesFile, 'utf8')
   const minimumSystemVersion = options['minimum-system-version'] ?? '26.0'
   const url = options.url
     ?? `https://github.com/summer-521/deepseek-harness-swift/releases/download/v${version}/DSH-Desktop-${version}-arm64.dmg`
@@ -425,6 +449,11 @@ function runPublished({ options, paths }) {
   }
   console.log(`length=${found.length}`)
   console.log(`url=${found.url}`)
+  // The signature is what Sparkle actually verifies, and the caller passes it
+  // on to the asset check: a length alone cannot tell two same-sized files
+  // apart, so a release that is already public is only really proven by
+  // verifying the bytes against this.
+  console.log(`signature=${found.signature}`)
   return 0
 }
 

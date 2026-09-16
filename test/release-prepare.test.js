@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -92,7 +93,7 @@ test('the feed goes public only after the uploaded bytes are verified', () => {
   assert.ok(publish.length > 0)
   const tagPush = publish.indexOf('git push origin "$tag"')
   const release = publish.indexOf('gh release create')
-  const verify = publish.indexOf('release-verify-asset.sh" "$tag" "$dmg" "$digest"')
+  const verify = publish.indexOf('release-verify-asset.sh" \\\n\t"$tag" "$dmg" "$digest" --signature "$signature"')
   const mainPush = publish.indexOf('git push origin main')
   assert.ok(
     tagPush > 0 && release > tagPush && verify > release && mainPush > verify,
@@ -110,9 +111,43 @@ test('the feed goes public only after the uploaded bytes are verified', () => {
   assert.match(verifier, /uploaded \$name is \$uploaded_size bytes, expected \$local_size/)
   assert.match(
     script,
-    /bash scripts\/release-verify-asset\.sh \$tag \$quoted_dmg \$digest/,
+    /bash scripts\/release-verify-asset\.sh \$tag \$quoted_dmg \$digest --signature '\$signature'/,
     'the prepare-only instructions print a command that actually exists',
   )
+})
+
+test('the published bytes are proven against the signature clients verify', () => {
+  const verifier = fs.readFileSync(
+    path.join(repositoryDirectory, 'scripts', 'release-verify-asset.sh'),
+    'utf8',
+  )
+  // A length cannot tell two same-sized files apart, and Sparkle verifies the
+  // EdDSA signature: a published release is only proven by checking the bytes.
+  assert.match(verifier, /\[\[ -n "\$signature" \]\] \\\n\s*\|\| fail "--feed needs --signature/)
+  assert.match(verifier, /verifySignature "\$downloaded"/)
+  // The local artifact is checked before anything is downloaded: an artifact
+  // that cannot satisfy the feed's signature must not be uploaded at all.
+  const localSection = verifier.slice(verifier.indexOf('local_dmg="$subject"'))
+  const localCheck = localSection.indexOf('verifySignature "$local_dmg"')
+  const download = localSection.indexOf('gh release download "$tag"')
+  assert.ok(localCheck > 0 && download > localCheck, 'the local artifact is verified first')
+
+  // The key is the one the app ships, so this answers "would Sparkle accept it".
+  const wrapper = fs.readFileSync(
+    path.join(repositoryDirectory, 'scripts', 'verify-sparkle-signature.sh'),
+    'utf8',
+  )
+  assert.match(wrapper, /plutil -extract SUPublicEDKey raw -o - "\$info_plist"/)
+  assert.match(wrapper, /scripts\/sparkle-signature\.swift/)
+  const verifierSource = fs.readFileSync(
+    path.join(repositoryDirectory, 'scripts', 'sparkle-signature.swift'),
+    'utf8',
+  )
+  assert.match(verifierSource, /Curve25519\.Signing\.PublicKey\(rawRepresentation:/)
+  assert.match(verifierSource, /isValidSignature\(signature, for: fileData\)/)
+  // Ed25519 verification of a real artifact is exercised by the wrapper's own
+  // tests; what matters here is that nothing weaker stands in for it.
+  assert.doesNotMatch(verifier, /shasum[^\n]*--signature/)
 })
 
 test('the prepare-only instructions quote the paths they print', () => {
@@ -204,4 +239,69 @@ test('the release script refuses a release Sparkle could never deliver', () => {
   const guard = script.indexOf('release-metadata.mjs" guard')
   const bump = script.indexOf('release-metadata.mjs" bump')
   assert.ok(guard > 0 && bump > guard, 'the guard runs before anything is rewritten')
+})
+
+test('a pushed tag whose release failed is resumed from the artifact it names', () => {
+  // Pushing the tag and creating the GitHub release are separate steps: when the
+  // second one fails, the tag is already public and cannot move, so a rebuild
+  // would produce different bytes under a tag that names the old ones — and the
+  // rewrite of the appcast would move HEAD past the tag and stop the release
+  // entirely.
+  assert.match(script, /if \$resuming_release; then/)
+  assert.match(script, /resuming_release=true/)
+  // The artifact is identified from the appcast item and proven to be those
+  // bytes before anything is built.
+  const resumeStart = script.indexOf('if $resuming_release; then')
+  const resume = script.slice(resumeStart, script.indexOf('step "Bump release metadata"'))
+  assert.ok(resume.length > 0, 'the reuse decision happens in preflight')
+  assert.match(resume, /published \\\n\s*--version "\$version" --build "\$build"/)
+  assert.match(resume, /resume_length="\$\(sed -nE 's\/\^length=/)
+  assert.match(resume, /resume_signature="\$\(sed -nE 's\/\^signature=/)
+  assert.match(resume, /verify-sparkle-signature\.sh" "\$resume_signature" "\$dmg"/)
+  assert.match(resume, /the artifact it names cannot be identified/)
+  assert.match(resume, /which is not on disk; a rebuild would produce different bytes/)
+  assert.match(resume, /refusing to rebuild a tagged release/)
+  // And the build/sign/appcast steps are skipped when it is reused.
+  const reuse = script.indexOf('step "Reuse the artifact this release already built"')
+  const build = script.indexOf('step "Build and package"')
+  assert.ok(reuse > 0 && build > reuse, 'the reuse branch comes before the build branch')
+  assert.match(script.slice(reuse, build), /length="\$resume_length"/)
+  const fresh = script.slice(build)
+  assert.match(fresh, /verify-sparkle-signature\.sh" "\$signature" "\$dmg"/, 'a fresh artifact is verified too')
+  // The consistency test runs either way: it reads the release files, not the build.
+  const consistency = script.indexOf('node --test "$repository_directory/test/swift-release-consistency.test.js"')
+  assert.ok(consistency > build, 'the consistency test is outside both branches')
+})
+
+test('the signature check refuses a file the app key did not sign', () => {
+  // The public key is the one this app ships, so this is the same question a
+  // client asks when it verifies a download. It runs for real here: the verifier
+  // is a Swift program compiled on demand, and a broken one must fail rather
+  // than pass everything.
+  const wrapper = path.join(repositoryDirectory, 'scripts', 'verify-sparkle-signature.sh')
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-signature-test-'))
+  try {
+    const artifact = path.join(directory, 'artifact.bin')
+    fs.writeFileSync(artifact, 'not the published bytes')
+
+    const bogus = spawnSync('bash', [wrapper, 'A'.repeat(86) + '==', artifact], {
+      encoding: 'utf8',
+      timeout: 120000,
+    })
+    assert.equal(bogus.status, 1, bogus.stderr || bogus.stdout)
+    assert.match(bogus.stderr, /does not carry the signature/)
+
+    const noKey = spawnSync('bash', [wrapper, 'A'.repeat(86) + '==', artifact, '--info-plist', path.join(directory, 'missing.plist')], {
+      encoding: 'utf8',
+      timeout: 120000,
+    })
+    assert.equal(noKey.status, 1)
+    assert.match(noKey.stderr, /SUPublicEDKey/)
+
+    const usage = spawnSync('bash', [wrapper], { encoding: 'utf8' })
+    assert.equal(usage.status, 2)
+    assert.match(usage.stderr, /Usage: bash scripts\/verify-sparkle-signature\.sh/)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
 })

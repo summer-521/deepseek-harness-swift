@@ -108,6 +108,7 @@ if node "$repository_directory/scripts/release-metadata.mjs" published \
 	> "$work_directory/published.txt"; then
 	published_length="$(sed -nE 's/^length=([0-9]+)$/\1/p' "$work_directory/published.txt" | head -n 1)"
 	published_url="$(sed -nE 's/^url=(.+)$/\1/p' "$work_directory/published.txt" | head -n 1)"
+	published_signature="$(sed -nE 's/^signature=(.+)$/\1/p' "$work_directory/published.txt" | head -n 1)"
 	step "$tag is already published"
 	# The only work left is checking that what the feed advertises is what the
 	# release actually carries. Nothing may be rebuilt or re-uploaded.
@@ -117,7 +118,7 @@ if node "$repository_directory/scripts/release-metadata.mjs" published \
 		exit 0
 	fi
 	bash "$repository_directory/scripts/release-verify-asset.sh" \
-		--feed "$tag" "$published_url" "$published_length"
+		--feed "$tag" "$published_url" "$published_length" --signature "$published_signature"
 	echo "nothing to do: $version (build $build) is public and its asset matches the feed"
 	echo "to ship a change, release a new build or version"
 	exit 0
@@ -129,6 +130,7 @@ fi
 # version config already at the target — because anything the publish step would
 # still commit moves HEAD past the tag and leaves the artifact, the appcast and
 # the tag with three different ideas of what was released.
+resuming_release=false
 if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
 	[[ "$(git rev-list -n 1 "$tag")" == "$(git rev-parse HEAD)" ]] \
 		|| fail "tag $tag already exists on another commit; refusing to move it"
@@ -137,9 +139,38 @@ if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
 	node "$repository_directory/scripts/release-metadata.mjs" bump \
 		--version "$version" --build "$build" >/dev/null 2>&1 \
 		|| fail "tag $tag exists but Version.xcconfig/README do not describe $version (build $build); release a new build instead"
+	resuming_release=true
 	echo "resuming: tag $tag already points at HEAD and describes $version (build $build)"
 fi
 echo "releasing $version (build $build) as $tag"
+
+# The tag is already pushed by an attempt that died before its GitHub release
+# existed, so it cannot move and the artifact it names is the only one this
+# release may ever upload. Rebuilding would produce different bytes, rewrite the
+# appcast, and need a commit that moves HEAD past the tag — which the check above
+# would then correctly refuse. The artifact is therefore identified and proven
+# here, before anything is built: the appcast item says which bytes and which
+# signature this release publishes, and the file on disk has to be those bytes.
+# When that cannot be shown, the release stops and asks for a new build instead.
+resume_length=""
+resume_signature=""
+if $resuming_release; then
+	node "$repository_directory/scripts/release-metadata.mjs" published \
+		--version "$version" --build "$build" > "$work_directory/release-item.txt" \
+		|| fail "tag $tag exists but the local appcast does not describe $version (build $build), so the artifact it names cannot be identified; release a new build or version instead of rebuilding a tagged release"
+	resume_length="$(sed -nE 's/^length=([0-9]+)$/\1/p' "$work_directory/release-item.txt" | head -n 1)"
+	resume_signature="$(sed -nE 's/^signature=(.+)$/\1/p' "$work_directory/release-item.txt" | head -n 1)"
+	[[ -n "$resume_length" && -n "$resume_signature" ]] \
+		|| fail "the appcast item for $tag carries no length or no signature, so the artifact cannot be identified; release a new build or version"
+	[[ -f "$dmg" ]] \
+		|| fail "tag $tag describes $(basename "$dmg"), which is not on disk; a rebuild would produce different bytes under a tag that cannot move — release a new build or version"
+	[[ "$(stat -f%z "$dmg")" == "$resume_length" ]] \
+		|| fail "$(basename "$dmg") is $(stat -f%z "$dmg") bytes but tag $tag's appcast describes $resume_length; refusing to rebuild a tagged release"
+	# A size does not identify a file, and the signature is what every installed
+	# copy verifies: proving it here is what makes reusing this artifact safe.
+	bash "$repository_directory/scripts/verify-sparkle-signature.sh" "$resume_signature" "$dmg"
+	echo "reusing the artifact this release already built: $dmg ($resume_length bytes)"
+fi
 
 if $dry_run; then
 	printf '%s\n' \
@@ -150,6 +181,9 @@ if $dry_run; then
 		"  4. sign the DMG with Sparkle account $sparkle_account" \
 		"  5. write the newest appcast item with that length and signature" \
 		"  6. release commit, annotated tag, push tag, create the release and verify the uploaded bytes, then push main (the feed)$($publish || echo ' (prepare only; pass --publish to continue)')"
+	if $resuming_release; then
+		printf '%s\n' "This run reuses the artifact tag $tag already names (steps 3-5 are skipped)."
+	fi
 	exit 0
 fi
 
@@ -162,46 +196,63 @@ if $run_tests; then
 	npm test
 fi
 
-step "Build and package"
-# Sparkle's signing tool lives in the SPM checkout that `build-app.sh` creates
-# under `.build`, and `package-dmg.sh` deletes `.build` once the DMG verifies.
-# The tool is therefore copied out between the two steps: a release flow that
-# runs the packager first and looks for it afterwards can only ever fail.
-bash "$repository_directory/scripts/build-app.sh"
-sign_update_source=""
-while IFS= read -r candidate; do
-	sign_update_source="$candidate"
-	break
-done < <(find "$repository_directory/.build" -maxdepth 8 -name sign_update -path '*sparkle*' -not -path '*old_dsa_scripts*' 2>/dev/null | head -n 1)
-[[ -n "$sign_update_source" ]] || fail "Sparkle's sign_update was not found under .build after the build; install the Sparkle tools and retry"
-sign_update="$work_directory/sign_update"
-cp "$sign_update_source" "$sign_update"
-chmod +x "$sign_update"
+if $resuming_release; then
+	# The tag cannot move, so the bytes it already names are the only artifact
+	# this release may upload: they were identified and signature-checked in
+	# preflight, and rebuilt here they would be different bytes.
+	step "Reuse the artifact this release already built"
+	length="$resume_length"
+	signature="$resume_signature"
+	digest="$(shasum -a 256 "$dmg" | awk '{print $1}')"
+	echo "artifact: $dmg"
+	echo "length:   $length"
+	echo "sha256:   $digest"
+else
+	step "Build and package"
+	# Sparkle's signing tool lives in the SPM checkout that `build-app.sh` creates
+	# under `.build`, and `package-dmg.sh` deletes `.build` once the DMG verifies.
+	# The tool is therefore copied out between the two steps: a release flow that
+	# runs the packager first and looks for it afterwards can only ever fail.
+	bash "$repository_directory/scripts/build-app.sh"
+	sign_update_source=""
+	while IFS= read -r candidate; do
+		sign_update_source="$candidate"
+		break
+	done < <(find "$repository_directory/.build" -maxdepth 8 -name sign_update -path '*sparkle*' -not -path '*old_dsa_scripts*' 2>/dev/null | head -n 1)
+	[[ -n "$sign_update_source" ]] || fail "Sparkle's sign_update was not found under .build after the build; install the Sparkle tools and retry"
+	sign_update="$work_directory/sign_update"
+	cp "$sign_update_source" "$sign_update"
+	chmod +x "$sign_update"
 
-bash "$repository_directory/scripts/package-dmg.sh"
-[[ -f "$dmg" ]] || fail "the packager did not produce $dmg"
+	bash "$repository_directory/scripts/package-dmg.sh"
+	[[ -f "$dmg" ]] || fail "the packager did not produce $dmg"
 
-length="$(stat -f%z "$dmg")"
-digest="$(shasum -a 256 "$dmg" | awk '{print $1}')"
-echo "artifact: $dmg"
-echo "length:   $length"
-echo "sha256:   $digest"
+	length="$(stat -f%z "$dmg")"
+	digest="$(shasum -a 256 "$dmg" | awk '{print $1}')"
+	echo "artifact: $dmg"
+	echo "length:   $length"
+	echo "sha256:   $digest"
 
-step "Sign with Sparkle ($sparkle_account)"
-signature_output="$("$sign_update" --account "$sparkle_account" "$dmg")"
-printf '%s\n' "$signature_output"
-signature="$(printf '%s' "$signature_output" | sed -nE 's/.*sparkle:edSignature="([^"]+)".*/\1/p' | head -n 1)"
-[[ -n "$signature" ]] || fail "sign_update did not print an edSignature"
-signed_length="$(printf '%s' "$signature_output" | sed -nE 's/.*(sparkle:)?length="([0-9]+)".*/\2/p' | head -n 1)"
-if [[ -n "$signed_length" && "$signed_length" != "$length" ]]; then
-	fail "sign_update reports length $signed_length but the DMG is $length bytes; the feed would describe different bytes"
+	step "Sign with Sparkle ($sparkle_account)"
+	signature_output="$("$sign_update" --account "$sparkle_account" "$dmg")"
+	printf '%s\n' "$signature_output"
+	signature="$(printf '%s' "$signature_output" | sed -nE 's/.*sparkle:edSignature="([^"]+)".*/\1/p' | head -n 1)"
+	[[ -n "$signature" ]] || fail "sign_update did not print an edSignature"
+	signed_length="$(printf '%s' "$signature_output" | sed -nE 's/.*(sparkle:)?length="([0-9]+)".*/\2/p' | head -n 1)"
+	if [[ -n "$signed_length" && "$signed_length" != "$length" ]]; then
+		fail "sign_update reports length $signed_length but the DMG is $length bytes; the feed would describe different bytes"
+	fi
+	# The signature is only worth publishing if the client can verify it, and the
+	# client uses the key this app ships. Checking here catches a key that does
+	# not match the signing account before anything is uploaded.
+	bash "$repository_directory/scripts/verify-sparkle-signature.sh" "$signature" "$dmg"
+
+	step "Write the appcast item"
+	node "$repository_directory/scripts/release-metadata.mjs" appcast \
+		--version "$version" --build "$build" \
+		--length "$length" --signature "$signature" \
+		--notes-file "$notes_file" --write
 fi
-
-step "Write the appcast item"
-node "$repository_directory/scripts/release-metadata.mjs" appcast \
-	--version "$version" --build "$build" \
-	--length "$length" --signature "$signature" \
-	--notes-file "$notes_file" --write
 node --test "$repository_directory/test/swift-release-consistency.test.js"
 
 if ! $publish; then
@@ -221,7 +272,7 @@ download that does not exist yet.
   git tag -a $tag -m "DSH Swift $version"
   git push origin $tag
   gh release create $tag --title $tag --notes-file $quoted_notes $quoted_dmg
-  bash scripts/release-verify-asset.sh $tag $quoted_dmg $digest
+  bash scripts/release-verify-asset.sh $tag $quoted_dmg $digest --signature '$signature'
   git push origin main
 EOF
 	exit 0
@@ -257,7 +308,8 @@ if gh release view "$tag" >/dev/null 2>&1; then
 else
 	gh release create "$tag" --title "$tag" --notes-file "$notes_file" "$dmg"
 fi
-bash "$repository_directory/scripts/release-verify-asset.sh" "$tag" "$dmg" "$digest"
+bash "$repository_directory/scripts/release-verify-asset.sh" \
+	"$tag" "$dmg" "$digest" --signature "$signature"
 git push origin main
 
 printf '\nReleased %s\n  DMG:    %s\n  length: %s\n  sha256: %s\n' "$tag" "$dmg" "$length" "$digest"

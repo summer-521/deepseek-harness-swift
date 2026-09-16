@@ -7,6 +7,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import {
+  appcastItems,
   buildAppcastItem,
   bumpReadme,
   bumpXcconfig,
@@ -424,6 +425,90 @@ test('the published subcommand answers for the feed it is pointed at', () => {
     assert.equal(missing.status, 1, 'a version the feed does not carry is not published')
     assert.match(missing.stdout, /not published: 1\.2\.6 \(build 17\)/)
     assert.equal(missing.stdout.includes('length='), false)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('a field quoted inside the release notes is not a field', () => {
+  // Release notes are markdown inside CDATA: they can contain any literal that
+  // a field is recognized by. Reading the raw item would let a pasted example
+  // decide whether a release is already public, or which artifact the feed
+  // points at.
+  const decoy = appcastFixture.replace(
+    '<sparkle:shortVersionString>1.2.5</sparkle:shortVersionString>',
+    '<sparkle:shortVersionString>1.2.5</sparkle:shortVersionString>\n'
+      + '            <description sparkle:format="markdown"><![CDATA[\n'
+      + 'See <title>9.9.9</title>, <sparkle:version>99</sparkle:version>, '
+      + 'url="https://example/other.dmg" length="123" and the tag releases/tag/v9.9.9\n'
+      + ']]></description>',
+  )
+  const found = publishedItem(decoy, { version: '1.2.5', build: '16' })
+  assert.equal(found.length, 1, 'the enclosure length, not the one in the notes')
+  assert.match(found.url, /DSH-Desktop-1\.2\.5-arm64\.dmg$/, 'the enclosure url, not the one in the notes')
+  assert.match(found.signature, /^AAAA$/, 'the enclosure signature')
+
+  // The decoys must not make the feed look like it publishes something else.
+  assert.equal(publishedItem(decoy, { version: '9.9.9', build: '99' }), null)
+  assert.equal(highestPublishedBuild(decoy), 16, 'a quoted build must not raise the published build')
+  assert.deepEqual(appcastItems(decoy).map((fields) => `${fields.version}/${fields.build}`), ['1.2.5/16'])
+})
+
+test('release notes may live at a path with spaces', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-notes-'))
+  try {
+    const root = path.join(directory, 'tree')
+    fs.mkdirSync(path.join(root, 'scripts'), { recursive: true })
+    fs.copyFileSync(
+      path.join(repositoryDirectory, 'scripts', 'release-metadata.mjs'),
+      path.join(root, 'scripts', 'release-metadata.mjs'),
+    )
+    fs.writeFileSync(path.join(root, 'Version.xcconfig'), xcconfigFixture)
+    fs.writeFileSync(path.join(root, 'README.md'), readmeFixture)
+    fs.writeFileSync(path.join(root, 'appcast-swift.xml'), appcastFixture)
+    const notes = path.join(directory, 'Release Notes 1.2.6.md')
+    fs.writeFileSync(notes, notesFixture)
+
+    const write = spawnSync(process.execPath, [
+      path.join(root, 'scripts', 'release-metadata.mjs'),
+      'appcast', '--version', '1.2.6', '--build', '17',
+      '--length', '50425442', '--signature', 'A'.repeat(64),
+      '--notes-file', notes, '--write',
+    ], { encoding: 'utf8' })
+    assert.equal(write.status, 0, write.stderr || write.stdout)
+    assert.match(newestItem(fs.readFileSync(path.join(root, 'appcast-swift.xml'), 'utf8')), /一件修复/)
+
+    // A missing notes file still fails, and it fails before anything is written.
+    const missing = spawnSync(process.execPath, [
+      path.join(root, 'scripts', 'release-metadata.mjs'),
+      'appcast', '--version', '1.2.7', '--build', '18',
+      '--length', '50425442', '--signature', 'A'.repeat(64),
+      '--notes-file', path.join(directory, 'No Such Notes.md'), '--write',
+    ], { encoding: 'utf8' })
+    assert.notEqual(missing.status, 0)
+    assert.equal(fs.readFileSync(path.join(root, 'appcast-swift.xml'), 'utf8').includes('1.2.7'), false)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('the published answer carries the signature the client verifies', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-published-sig-'))
+  try {
+    const feed = path.join(directory, 'appcast.xml')
+    fs.writeFileSync(
+      feed,
+      appcastFixture.replace(
+        'sparkle:edSignature="AAAA"',
+        'sparkle:edSignature="c2lnbmF0dXJlLw=="',
+      ),
+    )
+    const run = spawnSync(process.execPath, [
+      path.join(repositoryDirectory, 'scripts', 'release-metadata.mjs'),
+      'published', '--appcast', feed, '--version', '1.2.5', '--build', '16',
+    ], { encoding: 'utf8' })
+    assert.equal(run.status, 0, run.stderr || run.stdout)
+    assert.match(run.stdout, /^signature=c2lnbmF0dXJlLw==$/m)
   } finally {
     fs.rmSync(directory, { recursive: true, force: true })
   }
