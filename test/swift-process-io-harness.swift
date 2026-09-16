@@ -89,6 +89,16 @@ struct ProcessIOHarness {
             ) == .missingBinary,
             "a missing .node binary is a missing-binary failure"
         )
+        // `image not found` is what dyld says when the module itself is not
+        // there, so a bare `dlopen(<the .node>): image not found` is a missing
+        // module — not a missing library, which would send the user to restore a
+        // Homebrew package that is fine.
+        require(
+            DshProcessIO.nativeModuleFailure(
+                in: "Error: dlopen(/tmp/x.node, 0x0001): image not found"
+            ) == .missingBinary,
+            "a .node that is not there is a missing binary, however dyld words it"
+        )
         // A `.node` that exists but cannot load a library it needs reports the
         // same `dlopen`/`no such file or directory` text as an absent module.
         require(

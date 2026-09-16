@@ -235,23 +235,27 @@ public final class DshProcessIO: @unchecked Sendable {
             return .architecture
         }
         // "Library not loaded: …/libfoo.dylib" means the loader found the module
-        // and failed inside it, not that the module is gone. Checked before the
-        // missing-binary rule, whose text — `dlopen(<the .node path>)` plus
-        // `no such file or directory` — appears in this failure too.
+        // and failed inside it, not that the module is gone. It is only this
+        // failure when the output shows a dyld dependency structure — a library
+        // it could not load, or the module it was referenced from — because
+        // `dlopen(<the .node path>): image not found` carries `image not found`
+        // too and means the opposite: the module itself is not there.
         //
-        // The signal only counts inside a native-module load: the same two
-        // sentences describe a missing page asset ("image not found") or any
-        // other resource the Host cannot find, and reporting those as a broken
-        // native module would send the user to reinstall the wrong thing.
+        // The signal also has to sit inside a native-module load: the same two
+        // sentences describe a missing page asset, and reporting those as a
+        // broken native module would send the user to reinstall the wrong thing.
         let dependencySignals = ["library not loaded", "image not found"]
         let nativeModuleContext = lowered.contains("dlopen") || lowered.contains(".node")
-        if nativeModuleContext, dependencySignals.contains(where: lowered.contains) {
+        let dependencyStructure = lowered.contains("library not loaded")
+            || lowered.contains("referenced from")
+        if nativeModuleContext, dependencyStructure, dependencySignals.contains(where: lowered.contains) {
             return .missingDependency
         }
         // A `.node` binary that is absent fails at load time with `dlopen`, and
         // the path is part of the signal so a missing ordinary dylib is not
         // filed here.
-        if lowered.contains("dlopen"), lowered.contains(".node"), lowered.contains("no such file or directory") {
+        if lowered.contains("dlopen"), lowered.contains(".node"),
+           (lowered.contains("no such file or directory") || lowered.contains("image not found")) {
             return .missingBinary
         }
         return nil
