@@ -5,23 +5,13 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { pluginProductChainSources } from './harness-sources.mjs'
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url))
 const repositoryDirectory = path.join(testDirectory, '..')
 const fixtureDirectory = path.join(testDirectory, 'fixtures', 'plugin-operation')
 const sources = [
-  path.join(repositoryDirectory, 'Sources', 'State', 'DshState.swift'),
-  path.join(repositoryDirectory, 'Sources', 'Versions', 'DshSemanticVersion.swift'),
-  path.join(repositoryDirectory, 'Sources', 'Service', 'NodeRuntime.swift'),
-  path.join(repositoryDirectory, 'Sources', 'Service', 'NodeChildEnvironment.swift'),
-  path.join(repositoryDirectory, 'Sources', 'Service', 'DshLaunchContext.swift'),
-  path.join(repositoryDirectory, 'Sources', 'Service', 'DshSecretRedactor.swift'),
-  path.join(repositoryDirectory, 'Sources', 'Versions', 'DshVersionManager.swift'),
-  path.join(repositoryDirectory, 'Sources', 'Versions', 'DshProfileLinkRepair.swift'),
-  path.join(repositoryDirectory, 'Sources', 'Versions', 'DshFamilyClosure.swift'),
-  path.join(repositoryDirectory, 'Sources', 'Plugins', 'DshPluginOperationState.swift'),
-  path.join(repositoryDirectory, 'Sources', 'Plugins', 'DshPluginManager.swift'),
-  path.join(repositoryDirectory, 'Sources', 'Plugins', 'DshPluginOperationCoordinator.swift'),
+  ...pluginProductChainSources,
   path.join(testDirectory, 'swift-plugin-product-chain-harness.swift'),
 ]
 

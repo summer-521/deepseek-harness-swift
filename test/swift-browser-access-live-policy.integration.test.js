@@ -5,18 +5,12 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { versionSources } from './harness-sources.mjs'
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url))
 const repositoryDirectory = path.join(testDirectory, '..')
 const sources = [
-  path.join(repositoryDirectory, 'Sources', 'State', 'DshState.swift'),
-  path.join(repositoryDirectory, 'Sources', 'Versions', 'DshSemanticVersion.swift'),
-  path.join(repositoryDirectory, 'Sources', 'Service', 'NodeRuntime.swift'),
-  path.join(repositoryDirectory, 'Sources', 'Service', 'NodeChildEnvironment.swift'),
-  path.join(repositoryDirectory, 'Sources', 'Versions', 'DshVersionManager.swift'),
-  path.join(repositoryDirectory, 'Sources', 'Versions', 'DshProfileLinkRepair.swift'),
-  path.join(repositoryDirectory, 'Sources', 'Versions', 'DshFamilyClosure.swift'),
-  path.join(repositoryDirectory, 'Sources', 'Service', 'DshLaunchContext.swift'),
+  ...versionSources,
   path.join(repositoryDirectory, 'Sources', 'Service', 'DshControlProtocol.swift'),
   path.join(repositoryDirectory, 'Sources', 'Service', 'DshWebEndpoint.swift'),
   path.join(repositoryDirectory, 'Sources', 'Service', 'DshAccessController.swift'),

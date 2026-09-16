@@ -5,20 +5,11 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { pluginOperationSources } from './harness-sources.mjs'
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url))
 const sources = [
-  path.join(testDirectory, '..', 'Sources', 'State', 'DshState.swift'),
-  path.join(testDirectory, '..', 'Sources', 'Versions', 'DshSemanticVersion.swift'),
-  path.join(testDirectory, '..', 'Sources', 'Service', 'NodeRuntime.swift'),
-  path.join(testDirectory, '..', 'Sources', 'Service', 'NodeChildEnvironment.swift'),
-  path.join(testDirectory, '..', 'Sources', 'Service', 'DshLaunchContext.swift'),
-  path.join(testDirectory, '..', 'Sources', 'Service', 'DshSecretRedactor.swift'),
-  path.join(testDirectory, '..', 'Sources', 'Versions', 'DshVersionManager.swift'),
-  path.join(testDirectory, '..', 'Sources', 'Versions', 'DshProfileLinkRepair.swift'),
-  path.join(testDirectory, '..', 'Sources', 'Versions', 'DshFamilyClosure.swift'),
-  path.join(testDirectory, '..', 'Sources', 'Plugins', 'DshPluginOperationState.swift'),
-  path.join(testDirectory, '..', 'Sources', 'Plugins', 'DshPluginManager.swift'),
+  ...pluginOperationSources,
   path.join(testDirectory, 'swift-web-profile-snapshot-harness.swift'),
 ]
 
