@@ -146,10 +146,7 @@ public final class DshVersionManager {
                 )
                 // Counts of zero everywhere would otherwise read like a Runtime
                 // that was kept for no reason: name what was actually seen.
-                for path in (repair.unresolved + repair.scanFailures + repair.rollbackFailures + repair.conflicts)
-                    .prefix(5) {
-                    print("[DshVersionManager]   \(path)")
-                }
+                printRetentionReasons(repair)
                 continue
             }
             do {
@@ -192,6 +189,28 @@ public final class DshVersionManager {
             fromVersion: version,
             toCandidates: candidates
         )
+    }
+
+    /// Say which of the reasons above each retained path is on the list for.
+    ///
+    /// The counts name four different reasons and a path carries none of them,
+    /// so a Runtime kept for two links another writer had just changed printed
+    /// four numbers and two anonymous paths. At most five are printed, in the
+    /// order the counts are given in.
+    private func printRetentionReasons(_ repair: DshProfileLinkRepair.Outcome) {
+        var remaining = 5
+        let reasons: [(String, [String])] = [
+            ("still resolves through it", repair.unresolved),
+            ("could not be read", repair.scanFailures),
+            ("was not restored", repair.rollbackFailures),
+            ("changed by another writer", repair.conflicts),
+        ]
+        for (reason, paths) in reasons {
+            for path in paths.prefix(remaining) {
+                print("[DshVersionManager]   \(reason): \(path)")
+                remaining -= 1
+            }
+        }
     }
 
     /// Establish the initial selection only when the state has no selection.
@@ -842,10 +861,7 @@ public final class DshVersionManager {
                     + "\(repair.rollbackFailures.count) link(s) were not restored, "
                     + "\(repair.conflicts.count) link(s) were changed by another writer"
             )
-            for path in (repair.unresolved + repair.scanFailures + repair.rollbackFailures + repair.conflicts)
-                .prefix(5) {
-                print("[DshVersionManager]   \(path)")
-            }
+            printRetentionReasons(repair)
             return
         }
         try FileManager.default.removeItem(at: target)

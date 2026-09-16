@@ -169,10 +169,32 @@ test('npm runtime updates use SemVer ordering and a staging candidate', () => {
     VERSION_MANAGER_SOURCE,
     /Retaining discarded Runtime \\\(version\): [\s\S]*?repair\.scanFailures\.count[\s\S]*?repair\.conflicts\.count/,
   )
+  // The paths behind the counts travel with the log line, and each one says
+  // which of the four reasons put it there: four counts above a list of
+  // anonymous paths cannot be read against each other.
+  assert.equal(
+    (VERSION_MANAGER_SOURCE.match(/printRetentionReasons\(repair\)/g) ?? []).length,
+    2,
+    'both retention paths name the reason behind each path',
+  )
   assert.match(
     VERSION_MANAGER_SOURCE,
-    /for path in \(repair\.unresolved \+ repair\.scanFailures \+ repair\.rollbackFailures \+ repair\.conflicts\)/,
-    'the paths behind the counts travel with the log line',
+    /private func printRetentionReasons\(_ repair: DshProfileLinkRepair\.Outcome\) \{/,
+  )
+  assert.match(
+    VERSION_MANAGER_SOURCE,
+    /"changed by another writer", repair\.conflicts/,
+    'the reasons are the same four the counts name',
+  )
+  assert.match(
+    VERSION_MANAGER_SOURCE,
+    /var remaining = 5/,
+    'at most five paths are printed, as before',
+  )
+  assert.match(
+    VERSION_MANAGER_SOURCE,
+    /for path in paths\.prefix\(remaining\) \{\n\s*print\("\[DshVersionManager\]   \\\(reason\): \\\(path\)"\)/,
+    'the reason is printed with the path it belongs to',
   )
   assert.match(VERSION_MANAGER_SOURCE, /let alignedFamily = try await resolveAlignedFamily\(version: version, registry: reg\)/)
   assert.match(VERSION_MANAGER_SOURCE, /activateWhenMissing: Bool = true/)
