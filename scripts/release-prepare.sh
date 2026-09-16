@@ -88,19 +88,58 @@ done < <(git status --porcelain --untracked-files=no)
 git fetch --quiet origin main
 git merge-base --is-ancestor origin/main HEAD \
 	|| fail "local main has diverged from origin/main; fast-forward or rebase first"
-# The tag may already exist when a previous attempt died after tagging, but it
-# must not be moved: that is the only record of what was built.
-if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-	[[ "$(git rev-list -n 1 "$tag")" == "$(git rev-parse HEAD)" ]] \
-		|| fail "tag $tag already exists on another commit; refusing to move it"
-	echo "resuming: tag $tag already points at HEAD"
-fi
-echo "releasing $version (build $build) as $tag"
 
 # Fail in seconds, before anything is rewritten or built, when the release cannot
 # reach its users: a lower build number is invisible to Sparkle however correct
 # the version looks.
 node "$repository_directory/scripts/release-metadata.mjs" guard --version "$version" --build "$build"
+
+# The feed `origin/main` serves is the record of what is already public. A
+# version and build that appear there have a DMG whose length and Sparkle
+# signature every installed client is verifying its download against, so
+# rebuilding that release would upload different bytes under the signature the
+# public feed still advertises. This is not hypothetical: a push whose connection
+# drops after the upload can fail locally and succeed remotely, and re-running
+# the same release is then the obvious — and wrong — thing to do.
+git show origin/main:appcast-swift.xml > "$work_directory/appcast-public.xml" 2>/dev/null \
+	|| fail "origin/main does not carry appcast-swift.xml, so what is published cannot be established"
+if node "$repository_directory/scripts/release-metadata.mjs" published \
+	--version "$version" --build "$build" --appcast "$work_directory/appcast-public.xml" \
+	> "$work_directory/published.txt"; then
+	published_length="$(sed -nE 's/^length=([0-9]+)$/\1/p' "$work_directory/published.txt" | head -n 1)"
+	published_url="$(sed -nE 's/^url=(.+)$/\1/p' "$work_directory/published.txt" | head -n 1)"
+	step "$tag is already published"
+	# The only work left is checking that what the feed advertises is what the
+	# release actually carries. Nothing may be rebuilt or re-uploaded.
+	if $dry_run; then
+		echo "nothing to do: $version (build $build) is already public"
+		echo "re-run without --dry-run to verify the published asset against the feed"
+		exit 0
+	fi
+	bash "$repository_directory/scripts/release-verify-asset.sh" \
+		--feed "$tag" "$published_url" "$published_length"
+	echo "nothing to do: $version (build $build) is public and its asset matches the feed"
+	echo "to ship a change, release a new build or version"
+	exit 0
+fi
+
+# The tag may already exist when a previous attempt died after tagging, but it
+# must not be moved: that is the only record of what was built. It also has to
+# already describe this exact release — same commit, clean release files, and
+# version config already at the target — because anything the publish step would
+# still commit moves HEAD past the tag and leaves the artifact, the appcast and
+# the tag with three different ideas of what was released.
+if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+	[[ "$(git rev-list -n 1 "$tag")" == "$(git rev-parse HEAD)" ]] \
+		|| fail "tag $tag already exists on another commit; refusing to move it"
+	[[ -z "$(git status --porcelain -- "${release_files[@]}")" ]] \
+		|| fail "tag $tag exists but ${release_files[*]} have uncommitted changes; commit or discard them first"
+	node "$repository_directory/scripts/release-metadata.mjs" bump \
+		--version "$version" --build "$build" >/dev/null 2>&1 \
+		|| fail "tag $tag exists but Version.xcconfig/README do not describe $version (build $build); release a new build instead"
+	echo "resuming: tag $tag already points at HEAD and describes $version (build $build)"
+fi
+echo "releasing $version (build $build) as $tag"
 
 if $dry_run; then
 	printf '%s\n' \
@@ -167,6 +206,11 @@ node --test "$repository_directory/test/swift-release-consistency.test.js"
 
 if ! $publish; then
 	step "Prepared, not published"
+	# The printed commands are meant to be copied, so every path goes in with the
+	# quoting it needs: a notes file under "Release Notes" would otherwise arrive
+	# as three arguments.
+	printf -v quoted_notes '%q' "$notes_file"
+	printf -v quoted_dmg '%q' "$dmg"
 	cat <<EOF
 Next steps — or re-run this script with --publish, which is resumable and does
 all of them. The order matters: the artifact is uploaded and verified first, and
@@ -176,8 +220,8 @@ download that does not exist yet.
   git commit -m "release: prepare $version build $build"
   git tag -a $tag -m "DSH Swift $version"
   git push origin $tag
-  gh release create $tag --title $tag --notes-file $notes_file "$dmg"
-  bash scripts/release-verify-asset.sh $tag "$dmg" $digest
+  gh release create $tag --title $tag --notes-file $quoted_notes $quoted_dmg
+  bash scripts/release-verify-asset.sh $tag $quoted_dmg $digest
   git push origin main
 EOF
 	exit 0
@@ -193,6 +237,12 @@ else
 	git commit -m "release: prepare $version build $build"
 fi
 if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+	# Preflight compared the tag with the HEAD it found; committing the release
+	# files above may have moved HEAD since, and a tag left on the previous
+	# commit would publish an artifact the tag does not describe.
+	tag_commit="$(git rev-list -n 1 "$tag")"
+	[[ "$tag_commit" == "$(git rev-parse HEAD)" ]] \
+		|| fail "tag $tag points at ${tag_commit:0:12} but HEAD is $(git rev-parse HEAD | cut -c1-12); the release commit moved after the tag was created — delete the tag and restart the release"
 	echo "tag $tag already points at HEAD"
 else
 	git tag -a "$tag" -m "DSH Swift $version"

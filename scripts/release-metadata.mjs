@@ -13,6 +13,8 @@
 //   node scripts/release-metadata.mjs appcast --version 1.2.6 --build 17 \
 //     --length 50425442 --signature <ed signature> --notes-file <markdown> \
 //     [--url <dmg url>] [--write]
+//   node scripts/release-metadata.mjs published --version 1.2.6 --build 17 \
+//     [--appcast <feed file>]
 //
 // Without a mode flag both subcommands only report what they would change and
 // exit non-zero, so a mistyped invocation cannot rewrite a release file.
@@ -236,6 +238,55 @@ export function newestItem(appcast) {
   return appcast.slice(start, end)
 }
 
+/**
+ * The item the feed publishes for one version and build, or null.
+ *
+ * This is the record of what is public: an item in the served appcast names the
+ * archive length and EdDSA signature every installed copy verifies its download
+ * against, so those bytes may never be replaced afterwards.
+ */
+export function publishedItem(appcast, { version, build }) {
+  // The build is the identity Sparkle itself compares, and one of the three
+  // version markers has to name the release too: the tag link (`<link>`), the
+  // item title, or the artifact URL. Any of them is enough — hand-edited feeds
+  // have arrived with a plain title — and the build alone would match a
+  // neighbouring version that reused a number.
+  const versionMarkers = [
+    `releases/tag/v${version}<`,
+    `<title>${version}</title>`,
+    `/v${version}/`,
+  ]
+  for (const match of appcast.matchAll(/<item>[\s\S]*?<\/item>/g)) {
+    const item = match[0]
+    if (!item.includes(`<sparkle:version>${build}</sparkle:version>`)) continue
+    if (!versionMarkers.some((marker) => item.includes(marker))) continue
+    return {
+      item,
+      length: Number(item.match(/\blength="(\d+)"/)?.[1] ?? 0),
+      url: item.match(/\burl="([^"]+)"/)?.[1] ?? '',
+    }
+  }
+  return null
+}
+
+/**
+ * Put one item in the feed: newest first, and an item for the same version and
+ * build replaced instead of duplicated.
+ *
+ * Replacing is what makes a release resumable. A rerun rebuilds the DMG, and a
+ * rebuilt DMG has different bytes and a different signature, so the item an
+ * earlier attempt wrote describes an artifact that no longer exists; refusing
+ * the duplicate would strand that release. Replacing it is safe exactly as long
+ * as the public feed does not already carry this version and build — which
+ * `release-prepare.sh` proves against `origin/main` before it builds anything.
+ */
+export function upsertAppcastItem(appcast, item, { version, build }) {
+  const existing = publishedItem(appcast, { version, build })
+  if (existing === null) return insertAppcastItem(appcast, item, { version, build })
+  if (existing.item.trim() === item.trim()) return appcast
+  return appcast.replace(existing.item, item)
+}
+
 function parseArguments(argv) {
   const [command, ...rest] = argv
   const options = {}
@@ -336,8 +387,35 @@ function runAppcast({ options, paths }) {
     minimumSystemVersion,
     publishedAt: options['published-at'] ? new Date(options['published-at']) : new Date(),
   })
-  const next = insertAppcastItem(appcast, item, { version, build })
+  const next = upsertAppcastItem(appcast, item, { version, build })
+  if (next === appcast) {
+    console.log(`appcast already carries ${version} (build ${build}), length ${length}`)
+    return 0
+  }
   return report(options.mode, paths.appcast, next, `${version} build ${build}, length ${length}`)
+}
+
+/**
+ * Report the artifact one version and build has in a feed.
+ *
+ * Exits 0 and prints `length=`/`url=` when the feed carries it, non-zero when it
+ * does not. `release-prepare.sh` runs this against `origin/main` before it
+ * builds anything: a build that is already public must never be rebuilt, because
+ * the DMG — and the signature the public feed advertises for it — would then
+ * stop describing the bytes a client downloads.
+ */
+function runPublished({ options, paths }) {
+  const appcast = fs.readFileSync(options.appcast ?? paths.appcast, 'utf8')
+  const version = requireMatch(options.version, /^\d+\.\d+\.\d+$/, 'version')
+  const build = requireMatch(options.build, /^\d+$/, 'build')
+  const found = publishedItem(appcast, { version, build })
+  if (found === null) {
+    console.log(`not published: ${version} (build ${build})`)
+    return 1
+  }
+  console.log(`length=${found.length}`)
+  console.log(`url=${found.url}`)
+  return 0
 }
 
 /**
@@ -377,11 +455,13 @@ function main() {
       return runBump({ options, paths })
     case 'appcast':
       return runAppcast({ options, paths })
+    case 'published':
+      return runPublished({ options, paths })
     case 'show':
       console.log(JSON.stringify({ ...readXcconfig(fs.readFileSync(paths.xcconfig, 'utf8')), newest: newestItem(fs.readFileSync(paths.appcast, 'utf8')).trim() }, null, 2))
       return 0
     default:
-      throw new Error(`unknown command: ${command ?? '(none)'} (guard | bump | appcast | show)`)
+      throw new Error(`unknown command: ${command ?? '(none)'} (guard | bump | appcast | published | show)`)
   }
 }
 

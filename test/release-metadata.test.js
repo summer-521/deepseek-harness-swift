@@ -15,10 +15,12 @@ import {
   highestPublishedBuild,
   insertAppcastItem,
   newestItem,
+  publishedItem,
   readXcconfig,
   readmeVersion,
   releaseRegression,
   rfc822,
+  upsertAppcastItem,
 } from '../scripts/release-metadata.mjs'
 
 // `rfc822` is the local-zone timestamp Sparkle shows in the feed; pin the zone
@@ -214,15 +216,33 @@ test('write mode produces a release whose metadata agrees end to end', () => {
     assert.match(newest, /releases\/tag\/v1\.2\.6<\/link>/)
     assert.match(newest, /releases\/download\/v1\.2\.6\/DSH-Desktop-1\.2\.6-arm64\.dmg/)
 
-    // A second run must refuse to publish the same release twice, and the bump
-    // must be idempotent so a re-run after a partial failure is safe.
+    // A second run is idempotent: a resume must not be refused, and the feed
+    // must not be rewritten when the item already describes this artifact.
+    const afterFirstWrite = fs.readFileSync(path.join(root, 'appcast-swift.xml'), 'utf8')
     const again = run(
       'appcast', '--version', '1.2.6', '--build', '17',
       '--length', '50425442', '--signature', signature,
       '--notes-file', notes, '--write',
     )
-    assert.equal(again.status, 2, again.stderr || again.stdout)
-    assert.match(again.stderr, /already publishes 1\.2\.6/)
+    assert.equal(again.status, 0, again.stderr || again.stdout)
+    assert.match(again.stdout, /appcast already carries 1\.2\.6 \(build 17\)/)
+    assert.equal(fs.readFileSync(path.join(root, 'appcast-swift.xml'), 'utf8'), afterFirstWrite)
+
+    // A rerun rebuilds the DMG, and a rebuilt DMG has different bytes: the item
+    // written by the earlier attempt is replaced instead of duplicated. The
+    // release script only gets here after proving the public feed does not
+    // carry this version yet.
+    const rebuilt = run(
+      'appcast', '--version', '1.2.6', '--build', '17',
+      '--length', '1234', '--signature', 'B'.repeat(64),
+      '--notes-file', notes, '--write',
+    )
+    assert.equal(rebuilt.status, 0, rebuilt.stderr || rebuilt.stdout)
+    const rebuiltFeed = fs.readFileSync(path.join(root, 'appcast-swift.xml'), 'utf8')
+    assert.equal((rebuiltFeed.match(/<item>/g) ?? []).length, 2, 'a rebuild replaces, never duplicates')
+    assert.match(newestItem(rebuiltFeed), /length="1234"/)
+    assert.doesNotMatch(rebuiltFeed, /length="50425442"/)
+
     const rebump = run('bump', '--version', '1.2.6', '--build', '17', '--write')
     assert.equal(rebump.status, 0, rebump.stderr || rebump.stdout)
     assert.match(rebump.stdout, /already at 1\.2\.6 \(build 17\)/)
@@ -317,4 +337,71 @@ test('the guard refuses a release before any file or artifact exists', () => {
   assert.equal(refusedBump.status, 2)
   assert.match(refusedBump.stderr, /not newer than the current build/)
   assert.equal(fs.readFileSync(defaultPaths.xcconfig, 'utf8'), before, 'a refused bump writes nothing')
+})
+
+test('the feed can be asked what it publishes for one version and build', () => {
+  const published = publishedItem(appcastFixture, { version: '1.2.5', build: '16' })
+  assert.equal(published.length, 1)
+  assert.match(published.url, /DSH-Desktop-1\.2\.5-arm64\.dmg$/)
+
+  // The build is Sparkle's own comparison, and the version has to agree: a
+  // neighbouring release that reused the number is not this release.
+  assert.equal(publishedItem(appcastFixture, { version: '1.2.5', build: '17' }), null)
+  assert.equal(publishedItem(appcastFixture, { version: '1.2.6', build: '16' }), null)
+
+  // The repository's own feed must answer for the version it actually carries.
+  const configured = readXcconfig(fs.readFileSync(defaultPaths.xcconfig, 'utf8'))
+  const fromRepo = publishedItem(fs.readFileSync(defaultPaths.appcast, 'utf8'), configured)
+  assert.ok(fromRepo !== null, `the committed feed must carry ${configured.version} (build ${configured.build})`)
+  assert.ok(fromRepo.length > 0 && fromRepo.url.includes('releases/download/'))
+})
+
+test('an appcast item is replaced when the artifact was rebuilt', () => {
+  const rebuilt = appcastFixture.replace('length="1"', 'length="42"')
+  const replacement = item({ version: '1.2.5', build: '16', length: '42' })
+
+  const replaced = upsertAppcastItem(rebuilt, replacement, { version: '1.2.5', build: '16' })
+  assert.equal((replaced.match(/<item>/g) ?? []).length, 1, 'one release stays one item')
+  assert.match(replaced, /length="42"/)
+  assert.doesNotMatch(replaced, /length="1"/)
+  assert.ok(replaced.startsWith(appcastFixture.slice(0, appcastFixture.indexOf('<item>'))))
+
+  // The same bytes are not rewritten at all: a resume must not churn the feed.
+  const isFirstItem = publishedItem(appcastFixture, { version: '1.2.5', build: '16' }).item
+  assert.equal(upsertAppcastItem(appcastFixture, isFirstItem, { version: '1.2.5', build: '16' }), appcastFixture)
+
+  // A version the feed does not carry yet is still inserted as the newest item.
+  const withNewest = upsertAppcastItem(appcastFixture, item(), { version: '1.2.6', build: '17' })
+  assert.ok(withNewest.indexOf('1.2.6') < withNewest.indexOf('1.2.5'), 'the newest item leads the feed')
+})
+
+test('the published subcommand answers for the feed it is pointed at', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-published-'))
+  try {
+    const feed = path.join(directory, 'appcast-public.xml')
+    fs.writeFileSync(feed, appcastFixture)
+    const run = (...extra) => spawnSync(
+      process.execPath,
+      [
+        path.join(repositoryDirectory, 'scripts', 'release-metadata.mjs'),
+        'published',
+        '--appcast',
+        feed,
+        ...extra,
+      ],
+      { encoding: 'utf8' },
+    )
+
+    const found = run('--version', '1.2.5', '--build', '16')
+    assert.equal(found.status, 0, found.stderr || found.stdout)
+    assert.match(found.stdout, /^length=1$/m)
+    assert.match(found.stdout, /^url=https:\/\/github\.com\/summer-521\/deepseek-harness-swift\/releases\/download\/v1\.2\.5\//m)
+
+    const missing = run('--version', '1.2.6', '--build', '17')
+    assert.equal(missing.status, 1, 'a version the feed does not carry is not published')
+    assert.match(missing.stdout, /not published: 1\.2\.6 \(build 17\)/)
+    assert.equal(missing.stdout.includes('length='), false)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
 })

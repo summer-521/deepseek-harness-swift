@@ -41,7 +41,7 @@ test('the release script never stages the whole tree', () => {
 test('the release script publishes only on request and keeps the tag shape', () => {
   assert.match(script, /--publish\) publish=true/)
   assert.match(script, /if ! \$publish; then/)
-  assert.match(script, /gh release create "\$tag" --title "\$tag" --notes-file "\$notes_file" "\$dmg"/)
+  assert.match(script, /gh release create \$tag --title \$tag --notes-file \$quoted_notes \$quoted_dmg/)
   assert.match(script, /tag="v\$version"/)
   // The title is the bare tag: no product name, no prefix.
   assert.doesNotMatch(script, /--title "[^"]*DSH[^"]*"/)
@@ -110,9 +110,25 @@ test('the feed goes public only after the uploaded bytes are verified', () => {
   assert.match(verifier, /uploaded \$name is \$uploaded_size bytes, expected \$local_size/)
   assert.match(
     script,
-    /bash scripts\/release-verify-asset\.sh \$tag "\$dmg" \$digest/,
+    /bash scripts\/release-verify-asset\.sh \$tag \$quoted_dmg \$digest/,
     'the prepare-only instructions print a command that actually exists',
   )
+})
+
+test('the prepare-only instructions quote the paths they print', () => {
+  // The printed commands are meant to be pasted. A notes file under a path with
+  // a space would otherwise arrive as several arguments.
+  assert.match(script, /printf -v quoted_notes '%q' "\$notes_file"/)
+  assert.match(script, /printf -v quoted_dmg '%q' "\$dmg"/)
+  const instructions = script.match(/cat <<EOF\n([\s\S]*?)\nEOF\n/)?.[1] ?? ''
+  assert.ok(instructions.length > 0, 'the remaining steps are printed from a heredoc')
+  assert.doesNotMatch(
+    instructions,
+    /\$notes_file|\$dmg\b/,
+    'every printed path must go through the quoted form',
+  )
+  assert.match(instructions, /\$quoted_notes/)
+  assert.match(instructions, /\$quoted_dmg/)
 })
 
 test('a release that died halfway can be resumed', () => {
@@ -120,14 +136,51 @@ test('a release that died halfway can be resumed', () => {
   // else dirty is what the check exists for.
   assert.match(script, /release_files=\(Version\.xcconfig README\.md appcast-swift\.xml\)/)
   assert.match(script, /uncommitted changes outside the release files: \$path/)
-  // A tag from the failed attempt must be reused, never moved.
-  assert.match(script, /resuming: tag \$tag already points at HEAD/)
+  // A tag from the failed attempt must be reused, never moved — and only when it
+  // already describes this exact release: anything the publish step would still
+  // commit moves HEAD past the tag.
+  assert.match(script, /resuming: tag \$tag already points at HEAD and describes \$version/)
   assert.match(script, /refusing to move it/)
+  assert.match(script, /tag \$tag exists but \$\{release_files\[\*\]\} have uncommitted changes/)
+  assert.match(script, /tag \$tag exists but Version\.xcconfig\/README do not describe \$version/)
   assert.match(script, /git merge-base --is-ancestor origin\/main HEAD/)
   // Each publish step tolerates having already happened.
   assert.match(script, /if git diff --cached --quiet; then/)
   assert.match(script, /release commit already exists/)
   assert.match(script, /gh release upload "\$tag" "\$dmg" --clobber/)
+})
+
+test('creating the release commit re-checks the tag before anything is pushed', () => {
+  const publish = script.slice(script.indexOf('step "Publish"'))
+  const commit = publish.indexOf('git commit -m "release: prepare')
+  const tagCheck = publish.indexOf('tag $tag points at ')
+  const tagPush = publish.indexOf('git push origin "$tag"')
+  assert.ok(commit > 0 && tagCheck > commit, 'the tag is compared with HEAD after the commit')
+  assert.ok(tagPush > tagCheck, 'and before the tag is pushed')
+  // The message must not claim the tag matches when it does not.
+  assert.match(
+    publish,
+    /\[\[ "\$tag_commit" == "\$\(git rev-parse HEAD\)" \]\]/,
+    'the comparison is an equality test, not an existence test',
+  )
+})
+
+test('a version that is already public is never rebuilt', () => {
+  // A push can succeed remotely and fail locally; re-running the release would
+  // then rebuild the DMG and upload bytes under the signature the public feed
+  // still advertises.
+  assert.match(script, /git show origin\/main:appcast-swift\.xml/)
+  assert.match(script, /published \\\n\s*--version "\$version" --build "\$build" --appcast/)
+  const published = script.indexOf('step "$tag is already published"')
+  const build = script.indexOf('bash "$repository_directory/scripts/build-app.sh"')
+  assert.ok(published > 0 && build > published, 'the check runs before anything is built')
+  // Already public means: verify what the feed advertises, change nothing, stop.
+  const branch = script.slice(published, build)
+  assert.match(branch, /release-verify-asset\.sh" \\\n\s*--feed "\$tag" "\$published_url" "\$published_length"/)
+  assert.match(branch, /exit 0/)
+  assert.doesNotMatch(branch, /gh release upload|git push/)
+  // A dry run answers the question without downloading the published artifact.
+  assert.match(branch, /if \$dry_run; then[\s\S]*?exit 0\s*\n\s*fi/)
 })
 
 test('the verify script guards its own inputs', () => {
