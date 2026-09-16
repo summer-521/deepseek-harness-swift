@@ -122,23 +122,56 @@ const graphs = {
       body: { name: '@deepseek-ai/dsh-bar', version: '1.0.0-aligned' },
     },
   },
+  // A registry that is briefly flaky: this manifest answers only after two 5xx
+  // responses, which the loader retries instead of failing the walk.
+  '1.0.0-retry': {
+    '@deepseek-ai/dsh': {
+      status: 200,
+      body: {
+        name: '@deepseek-ai/dsh',
+        version: '1.0.0-retry',
+        dependencies: {
+          '@deepseek-ai/dsh-base': '^1.0.0',
+          '@deepseek-ai/dsh-flaky': '^1.0.0',
+        },
+      },
+    },
+    '@deepseek-ai/dsh-base': {
+      status: 200,
+      body: { name: '@deepseek-ai/dsh-base', version: '1.0.0-retry' },
+    },
+    '@deepseek-ai/dsh-web-app': {
+      status: 200,
+      body: { name: '@deepseek-ai/dsh-web-app', version: '1.0.0-retry' },
+    },
+    '@deepseek-ai/dsh-flaky': {
+      status: 200,
+      failuresBeforeSuccess: 2,
+      body: { name: '@deepseek-ai/dsh-flaky', version: '1.0.0-retry' },
+    },
+  },
 }
 
 test('the registry loader keeps absence, failure, and success apart', async () => {
   const requests = []
+  const attempts = new Map()
   const server = http.createServer((request, response) => {
     const segments = decodeURIComponent(request.url).split('/')
     const name = `${segments[1]}/${segments[2]}`
     const version = segments[3]
     requests.push({ path: request.url, accept: request.headers.accept ?? '' })
+    const attempt = (attempts.get(request.url) ?? 0) + 1
+    attempts.set(request.url, attempt)
     const entry = graphs[version]?.[name]
     if (!entry) {
       response.writeHead(404, { 'content-type': 'application/json' })
       response.end('{"error":"Not found"}')
       return
     }
-    response.writeHead(entry.status, { 'content-type': 'application/json' })
-    response.end(entry.status === 200 ? JSON.stringify(entry.body) : '{"error":"boom"}')
+    const failing = entry.failuresBeforeSuccess !== undefined && attempt <= entry.failuresBeforeSuccess
+    const status = failing ? 500 : entry.status
+    response.writeHead(status, { 'content-type': 'application/json' })
+    response.end(status === 200 ? JSON.stringify(entry.body) : '{"error":"boom"}')
   })
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -210,6 +243,22 @@ test('the registry loader keeps absence, failure, and success apart', async () =
       ],
       `five seam members, including the peer-only one: ${aligned.available}`
     )
+
+    // A manifest that fails twice and then answers must not fail the install:
+    // one flaky response in a walk of a few hundred requests is not evidence
+    // that a release is incomplete.
+    const retried = await probe('1.0.0-retry')
+    assert.equal(retried.complete, true, 'a transient 5xx must not fail the walk')
+    assert.deepEqual(retried.unreachable, [], 'the retried manifest is readable in the end')
+    assert.deepEqual(
+      retried.available,
+      ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-flaky', '@deepseek-ai/dsh-web-app'],
+      `the retried family is complete: ${retried.available}`
+    )
+    const flakyAttempts = requests.filter(
+      (entry) => entry.path === '/@deepseek-ai/dsh-flaky/1.0.0-retry'
+    ).length
+    assert.equal(flakyAttempts, 3, `the flaky manifest must be retried, saw ${flakyAttempts}`)
 
     // npm answers 406 when the packument-only install-v1 format is asked of a
     // version-specific URL, which would make every release look unreachable.

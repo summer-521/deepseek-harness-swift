@@ -47,9 +47,14 @@ public final class DshVersionManager {
     public static let defaultRegistry = "https://registry.npmjs.org"
     public static let mirrorRegistry = "https://registry.npmmirror.com"
 
-    /// A retry (or a candidate install followed by activation) re-resolves the
-    /// same version; only a complete derivation is memoized.
-    private static let familyClosureCache = DshFamilyClosureCache()
+    /// A retry, a candidate install followed by activation, or the next App
+    /// launch re-resolves the same version — and deriving a family costs one
+    /// registry request per package in the graph, so the memo is backed by a
+    /// file in the App Support root. Only a complete derivation is memoized.
+    private static let familyClosureCache = DshFamilyClosureCache(
+        storage: DshStateManager.appSupportDirectory
+            .appendingPathComponent("family-closure-cache.json")
+    )
 
     private init() {
         cleanupStaleStagingDirs()

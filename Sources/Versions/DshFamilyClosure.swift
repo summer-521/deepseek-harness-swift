@@ -21,7 +21,7 @@ enum DshFamilyManifestResult: Sendable {
 /// frozen list can keep in step with upstream: 0.1.6 replaced
 /// `@deepseek-ai/dsh-code-runtime` with the jobs/terminal/tool packages. This
 /// value is that set, read from the graph before a single byte is downloaded.
-struct DshFamilyClosure: Sendable {
+struct DshFamilyClosure: Sendable, Codable {
     /// Prefixed names the target graph declares and the registry publishes at
     /// the target version. These become the top-level pins.
     let available: [String]
@@ -54,13 +54,30 @@ struct DshFamilyClosure: Sendable {
 /// they do not lose them), so caching one is safe. Incomplete results are never
 /// stored: a mirror that is fixed five minutes later must be re-checked, not
 /// answered from a stale negative.
+///
+/// The memo survives the process when it is given `storage`: deriving a family
+/// costs one registry request per package in the graph (hundreds of them), and
+/// installing a Runtime, switching versions and activating a candidate would
+/// otherwise repeat that walk every time the App restarts.
 final class DshFamilyClosureCache {
+    /// Bumped when the stored shape changes, so an older file is ignored rather
+    /// than decoded into the wrong meaning.
+    static let fileFormatVersion = 1
+
     private let lock = NSLock()
     private var entries: [String: DshFamilyClosure] = [:]
+    /// Insertion order, oldest first, so a full cache drops the entry least
+    /// likely to be asked for again instead of everything at once.
+    private var order: [String] = []
     private let capacity: Int
+    private let storage: URL?
 
-    init(capacity: Int = 8) {
-        self.capacity = capacity
+    init(capacity: Int = 8, storage: URL? = nil) {
+        self.capacity = max(1, capacity)
+        self.storage = storage
+        if let storage {
+            load(from: storage)
+        }
     }
 
     func value(for key: String) -> DshFamilyClosure? {
@@ -72,10 +89,72 @@ final class DshFamilyClosureCache {
     func store(_ closure: DshFamilyClosure, for key: String) {
         lock.lock()
         defer { lock.unlock() }
-        if entries.count >= capacity {
-            entries.removeAll()
+        if entries[key] == nil {
+            order.append(key)
         }
         entries[key] = closure
+        while order.count > capacity {
+            let evicted = order.removeFirst()
+            entries.removeValue(forKey: evicted)
+        }
+        persist()
+    }
+
+    /// The keys currently memoized, oldest first. Test seam.
+    var keysInEvictionOrder: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return order
+    }
+
+    private struct StoredFile: Codable {
+        let formatVersion: Int
+        let entries: [String: DshFamilyClosure]
+    }
+
+    /// Best-effort: a missing, unreadable or older-shaped file only means the
+    /// walk runs again.
+    private func load(from storage: URL) {
+        guard let data = try? Data(contentsOf: storage),
+              let file = try? JSONDecoder().decode(StoredFile.self, from: data),
+              file.formatVersion == Self.fileFormatVersion else {
+            return
+        }
+        for (key, closure) in file.entries where closure.isComplete {
+            entries[key] = closure
+            order.append(key)
+        }
+        order.sort()
+    }
+
+    /// Best-effort and atomic: a sibling temporary file renamed over the target
+    /// cannot leave a half-written cache behind, and a failure to write costs
+    /// only the next walk.
+    private func persist() {
+        guard let storage, let data = encode() else { return }
+        let temporary = storage.deletingLastPathComponent()
+            .appendingPathComponent(".\(storage.lastPathComponent).\(UUID().uuidString)")
+        do {
+            try FileManager.default.createDirectory(
+                at: storage.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: temporary)
+            if rename(temporary.path, storage.path) != 0 {
+                try? FileManager.default.removeItem(at: temporary)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+        }
+    }
+
+    private func encode() -> Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try? encoder.encode(StoredFile(
+            formatVersion: Self.fileFormatVersion,
+            entries: entries
+        ))
     }
 }
 
@@ -106,6 +185,11 @@ enum DshFamilyGraph {
     static let maximumPackages = 400
     static let requestConcurrency = 16
     static let requestTimeout: TimeInterval = 10
+    /// Attempts per manifest, and the backoff between them (attempt × delay).
+    /// Three attempts turn one flaky response in a few hundred into a retry
+    /// instead of a failed install, without hiding a registry that is down.
+    static let requestAttempts = 3
+    static let retryDelay: TimeInterval = 0.2
 
     typealias ManifestLoader = @Sendable (_ package: String, _ version: String) async -> DshFamilyManifestResult
 
@@ -266,30 +350,60 @@ enum DshFamilyGraph {
     /// header — npm answers `406` when the packument-only
     /// `application/vnd.npm.install-v1+json` format is asked of a
     /// version-specific URL, which would make every release look unreachable.
+    ///
+    /// A transport failure or a 5xx is retried a couple of times with a short
+    /// backoff: one flaky response in a walk of a few hundred requests must not
+    /// fail an install, and the walk already treats "unreadable" as fail-closed
+    /// rather than as absence. A 404 is an answer, not a failure, and is never
+    /// retried.
     static func registryLoader(registry: String) -> ManifestLoader {
         let base = normalizedBase(registry)
         return { package, version in
             guard let url = URL(string: "\(base)/\(package)/\(version)") else {
                 return .unreachable
             }
-            var request = URLRequest(url: url)
-            request.timeoutInterval = requestTimeout
-            do {
-                let (data, response) = try await session.data(for: request)
-                guard let httpResponse = response as? HTTPURLResponse else {
-                    return .unreachable
+            var attempt = 1
+            while true {
+                let outcome = await requestManifest(at: url)
+                switch outcome {
+                case .manifest, .notFound:
+                    return outcome
+                case .unreachable:
+                    guard attempt < requestAttempts else { return .unreachable }
+                    do {
+                        try await Task.sleep(
+                            nanoseconds: UInt64(retryDelay * Double(attempt) * 1_000_000_000)
+                        )
+                    } catch {
+                        // Cancellation ends the walk instead of turning into a
+                        // tight retry loop.
+                        return .unreachable
+                    }
+                    attempt += 1
                 }
-                switch httpResponse.statusCode {
-                case 200 ... 299:
-                    return .manifest(data)
-                case 404:
-                    return .notFound
-                default:
-                    return .unreachable
-                }
-            } catch {
+            }
+        }
+    }
+
+    /// One attempt at one manifest URL.
+    private static func requestManifest(at url: URL) async -> DshFamilyManifestResult {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = requestTimeout
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
                 return .unreachable
             }
+            switch httpResponse.statusCode {
+            case 200 ... 299:
+                return .manifest(data)
+            case 404:
+                return .notFound
+            default:
+                return .unreachable
+            }
+        } catch {
+            return .unreachable
         }
     }
 

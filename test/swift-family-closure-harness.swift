@@ -380,6 +380,60 @@ struct DshFamilyClosureHarness {
             "the memo is scoped by registry"
         )
 
+        // The memo outlives the process: deriving a family costs one registry
+        // request per package, so the next App launch must read it back
+        // instead of walking the graph again.
+        let storageRoot = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("dsh-family-closure-cache-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: storageRoot) }
+        try FileManager.default.createDirectory(at: storageRoot, withIntermediateDirectories: true)
+        let storage = storageRoot.appendingPathComponent("family-closure-cache.json")
+
+        let stored = DshFamilyClosureCache(capacity: 2, storage: storage)
+        stored.store(closure, for: "registry-a|9.9.9")
+        expect(
+            FileManager.default.fileExists(atPath: storage.path),
+            "a stored closure must be written for the next launch"
+        )
+        let reloaded = DshFamilyClosureCache(capacity: 2, storage: storage)
+        expect(
+            reloaded.value(for: "registry-a|9.9.9")?.available == closure.available,
+            "the next launch must read the memo back"
+        )
+
+        // A full cache drops the oldest entry instead of everything.
+        stored.store(closure, for: "registry-b|9.9.9")
+        stored.store(closure, for: "registry-c|9.9.9")
+        expect(
+            stored.value(for: "registry-a|9.9.9") == nil
+                && stored.value(for: "registry-c|9.9.9") != nil,
+            "the oldest entry is evicted first: \(stored.keysInEvictionOrder)"
+        )
+
+        // Damaged or older-shaped storage only means the walk runs again.
+        try Data("not json".utf8).write(to: storage)
+        expect(
+            DshFamilyClosureCache(storage: storage).value(for: "registry-b|9.9.9") == nil,
+            "an unreadable cache file must be ignored"
+        )
+        try Data(#"{"formatVersion":0,"entries":{}}"#.utf8).write(to: storage)
+        expect(
+            DshFamilyClosureCache(storage: storage).value(for: "registry-b|9.9.9") == nil,
+            "an older cache format must be ignored"
+        )
+
+        // Writing is atomic and leaves exactly the cache file behind.
+        DshFamilyClosureCache(capacity: 2, storage: storage).store(closure, for: "registry-d|9.9.9")
+        let siblings = ((try? FileManager.default.contentsOfDirectory(atPath: storageRoot.path)) ?? []).sorted()
+        expect(
+            siblings == ["family-closure-cache.json"],
+            "a cache write must leave no temporary sibling, saw \(siblings)"
+        )
+        expect(
+            DshFamilyClosureCache(capacity: 2, storage: storage).value(for: "registry-d|9.9.9") != nil,
+            "the atomically written cache must be readable"
+        )
+
         let failing = CountingLoader { _, _ in .notFound }
         let negativeCache = DshFamilyClosureCache()
         _ = await DshFamilyGraph.resolve(
