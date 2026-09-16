@@ -273,6 +273,131 @@ test('a pushed tag whose release failed is resumed from the artifact it names', 
   assert.ok(consistency > build, 'the consistency test is outside both branches')
 })
 
+test('a feed nobody could read stops the release before it builds', () => {
+  // Preflight asks the public feed whether this release is already out there.
+  // `published` exits 1 for "the feed was read and does not carry it" and 2 for
+  // "the feed could not be read", and only the first of those may be followed by
+  // a build: an unreadable feed gives the second answer for every version, so an
+  // `if` on the exit status alone walks straight into rebuilding a release that
+  // is already public.
+  const readableAppcast = `<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+    <channel>
+        <title>DSH Swift Updates</title>
+        <item>
+            <title>1.2.5</title>
+            <sparkle:version>16</sparkle:version>
+            <enclosure url="https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.2.5/DSH-Desktop-1.2.5-arm64.dmg" length="1" type="application/octet-stream" sparkle:edSignature="AAAA"/>
+        </item>
+    </channel>
+</rss>
+`
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-prepare-preflight-'))
+  const origin = path.join(root, 'origin.git')
+  const work = path.join(root, 'work')
+  // `commit.gpgsign` is on for some operators, and a fixture commit has no key.
+  const git = (args, cwd) => spawnSync('git', args, { cwd, encoding: 'utf8' })
+  const ok = (result) => {
+    assert.equal(result.status, 0, result.stderr || result.stdout)
+    return result
+  }
+  const stage = (path) => ok(git(['add', path], work))
+  const commit = (message) => ok(git([
+    '-c', 'user.name=release test', '-c', 'user.email=release@example.test',
+    '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', message,
+  ], work))
+  const release = () => spawnSync('bash', [
+    path.join(work, 'scripts', 'release-prepare.sh'), '9.9.9', '999',
+    '--notes', path.join(root, 'notes.md'), '--skip-tests', '--dry-run',
+  ], { encoding: 'utf8', timeout: 120000 })
+  try {
+    ok(git(['init', '--quiet', '--bare', '--initial-branch=main', origin], root))
+    ok(git(['init', '--quiet', '--initial-branch=main', work], root))
+    fs.mkdirSync(path.join(work, 'scripts'))
+    for (const name of ['release-prepare.sh', 'release-metadata.mjs']) {
+      fs.copyFileSync(
+        path.join(repositoryDirectory, 'scripts', name),
+        path.join(work, 'scripts', name),
+      )
+    }
+    fs.writeFileSync(path.join(work, 'Version.xcconfig'), 'SWIFT_APP_VERSION = 1.2.5\nSWIFT_APP_BUILD = 16\n')
+    fs.writeFileSync(path.join(work, 'README.md'), '# DSH\n')
+    fs.writeFileSync(path.join(root, 'notes.md'), '## notes\n')
+    fs.writeFileSync(path.join(work, 'appcast-swift.xml'), 'not xml at all <<<<\n')
+    stage('.')
+    commit('fixture: a feed nobody can read')
+    ok(git(['remote', 'add', 'origin', origin], work))
+    ok(git(['push', '--quiet', 'origin', 'main'], work))
+
+    const refused = release()
+    assert.equal(refused.status, 1, refused.stderr || refused.stdout)
+    assert.match(refused.stderr, /could not be read \(release-metadata exited 2\)/)
+    assert.match(refused.stderr, /so whether v9\.9\.9 is already public cannot be established/)
+    assert.equal(refused.stdout.includes('Build and package'), false, 'nothing may be built')
+
+    // The same fixture with a readable feed goes straight past the check: what
+    // stopped the run above is the feed, not the repository it runs in.
+    fs.writeFileSync(path.join(work, 'appcast-swift.xml'), readableAppcast)
+    stage('appcast-swift.xml')
+    commit('fixture: a feed that can be read')
+    ok(git(['push', '--quiet', 'origin', 'main'], work))
+    const accepted = release()
+    assert.equal(accepted.status, 0, accepted.stderr || accepted.stdout)
+    assert.match(accepted.stdout, /Plan for v9\.9\.9/)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('the prepare-only instructions do not print a command that can only fail', () => {
+  // A resumed release already has its commit and its tag, and the tag cannot
+  // move: `git tag -a` for it could only fail, so the tag command is printed
+  // from the branch that knows this is a resume, and the shared tail never
+  // carries one.
+  const instructions = script.match(/cat <<EOF\n([\s\S]*?)\nEOF\n/)?.[1] ?? ''
+  assert.ok(instructions.length > 0, 'the remaining steps are printed from a heredoc')
+  assert.equal(instructions.includes('git tag -a'), false)
+  assert.match(instructions, /\$commit_steps/)
+  assert.match(
+    script,
+    /if \$resuming_release; then\n\t\tcommit_steps="  # the release commit and tag \$tag already exist"/,
+  )
+  assert.match(
+    script,
+    /printf -v commit_steps '  git add %s\\n  git commit -m "release: prepare %s build %s"\\n  git tag -a %s -m "DSH Swift %s"'/,
+  )
+  // Uploading is the same step whether the GitHub release exists or not, and
+  // `gh release create` a second time can only fail — exactly what the publish
+  // step itself guards against with `gh release view`.
+  assert.match(instructions, /gh release view \$tag >\/dev\/null 2>&1; then/)
+  assert.match(instructions, /gh release upload \$tag \$quoted_dmg --clobber/)
+  assert.match(instructions, /gh release create \$tag --title \$tag --notes-file \$quoted_notes \$quoted_dmg/)
+})
+
+test('a feed that could not be read is told apart from one that does not carry the release', () => {
+  // Both preflight questions use the same answer, and in both the difference
+  // between "read it, it is not there" and "could not read it" decides whether
+  // the release may go on. The statuses are therefore checked, not just tested
+  // for truth.
+  assert.match(script, /> "\$work_directory\/published\.txt" \|\| published_status=\$\?/)
+  assert.match(script, /if \[\[ "\$published_status" != 0 && "\$published_status" != 1 \]\]; then/)
+  assert.match(script, /so whether \$tag is already public cannot be established/)
+  assert.match(script, /> "\$work_directory\/release-item\.txt" \\\n\s*\|\| resume_status=\$\?/)
+  assert.match(script, /\[\[ "\$resume_status" == 0 \|\| "\$resume_status" == 1 \]\]/)
+  assert.match(script, /the appcast could not be read \(release-metadata exited \$resume_status\)/)
+  // The tool that answers is the one that reads the feed as a feed.
+  const metadata = fs.readFileSync(
+    path.join(repositoryDirectory, 'scripts', 'release-metadata.mjs'),
+    'utf8',
+  )
+  assert.match(metadata, /export function requireReadableAppcast/)
+  assert.match(
+    metadata,
+    /requireReadableAppcast\(fs\.readFileSync\(appcastPath, 'utf8'\), appcastPath\)/,
+    'published checks the feed before it answers for it',
+  )
+})
+
 test('the signature check refuses a file the app key did not sign', () => {
   // The public key is the one this app ships, so this is the same question a
   // client asks when it verifies a download. It runs for real here: the verifier

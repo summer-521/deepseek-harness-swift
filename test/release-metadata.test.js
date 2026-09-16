@@ -20,6 +20,7 @@ import {
   readXcconfig,
   readmeVersion,
   releaseRegression,
+  requireReadableAppcast,
   rfc822,
   upsertAppcastItem,
 } from '../scripts/release-metadata.mjs'
@@ -147,6 +148,14 @@ test('an appcast item rejects what Sparkle would refuse or misread', () => {
     /does not address the 1\.2\.6 arm64 DMG/,
   )
   assert.throws(() => item({ minimumSystemVersion: 'macOS 26' }), /minimum system version/)
+  // The url is written into an attribute without escaping: a quote would end the
+  // attribute, and a raw `&` or angle bracket would make the feed unparseable for
+  // every client that reads it.
+  const dmg = (suffix) => 'https://github.com/summer-521/deepseek-harness-swift/releases/download'
+    + `/v1.2.6/DSH-Desktop-1.2.6-arm64.dmg${suffix}`
+  assert.throws(() => item({ url: dmg('" length="1') }), /enclosure url/)
+  assert.throws(() => item({ url: dmg('?a=1&b=2') }), /enclosure url/)
+  assert.throws(() => item({ url: dmg('<tag>') }), /enclosure url/)
 })
 
 test('a new release becomes the newest item and never duplicates one', () => {
@@ -326,6 +335,18 @@ test('the guard refuses a release before any file or artifact exists', () => {
   const allowed = run('guard', '--version', nextVersion, '--build', nextBuild)
   assert.equal(allowed.status, 0, allowed.stderr || allowed.stdout)
   assert.match(allowed.stdout, new RegExp(`release ${nextVersion.replaceAll('.', '\\.')} \\(build ${nextBuild}\\)`))
+  assert.match(
+    allowed.stdout,
+    /is newer than \d+\.\d+\.\d+ \(build \d+\); the newest published build is \d+/,
+  )
+
+  // Re-running the release Version.xcconfig already carries is how a partial
+  // release resumes, and that is not "newer than" anything: the success line has
+  // to tell the two cases apart, because it is the only place they are reported.
+  const resume = run('guard', '--version', configured.version, '--build', configured.build)
+  assert.equal(resume.status, 0, resume.stderr || resume.stdout)
+  assert.match(resume.stdout, /is the release Version\.xcconfig already carries; resuming it/)
+  assert.doesNotMatch(resume.stdout, /is newer than/, 'a resume is not a newer release')
 
   const staleBuild = run('guard', '--version', nextVersion, '--build', configured.build)
   assert.equal(staleBuild.status, 2)
@@ -452,6 +473,83 @@ test('a field quoted inside the release notes is not a field', () => {
   assert.equal(publishedItem(decoy, { version: '9.9.9', build: '99' }), null)
   assert.equal(highestPublishedBuild(decoy), 16, 'a quoted build must not raise the published build')
   assert.deepEqual(appcastItems(decoy).map((fields) => `${fields.version}/${fields.build}`), ['1.2.5/16'])
+})
+
+test('release notes cannot escape the CDATA block they are read through', () => {
+  // The notes are markdown inside CDATA and may contain any literal the feed is
+  // read by — the closing tag of the element that carries them, a quoted
+  // `<item>`, an example enclosure. Reading an item by its text instead of
+  // through its CDATA block let a crafted note decide which artifact the feed
+  // points at.
+  const signature = 'B'.repeat(64)
+  const forged = `        <item>
+            <title>1.2.6</title>
+            <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.6</link>
+            <sparkle:version>17</sparkle:version>
+            <description sparkle:format="markdown"><![CDATA[
+an example </description> ends the element early, and what follows is read as
+<enclosure url="https://evil.example/DSH-Desktop-1.2.6-arm64.dmg" length="1" type="application/octet-stream" sparkle:edSignature="RVZJTAAA"/>
+if the next line is not masked as notes too: a quoted </item> used to cut the item short.
+]]></description>
+            <enclosure url="https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.2.6/DSH-Desktop-1.2.6-arm64.dmg" length="50425442" type="application/octet-stream" sparkle:edSignature="${signature}"/>
+        </item>`
+  const feed = appcastFixture.replace('<item>', `${forged}\n        <item>`)
+
+  const items = appcastItems(feed)
+  assert.equal(items.length, 2, 'a quoted <item> does not turn one release into two')
+  const [newest] = items
+  assert.equal(newest.length, 50425442, 'the enclosure length, not the one quoted in the notes')
+  assert.match(newest.url, /releases\/download\/v1\.2\.6\/DSH-Desktop-1\.2\.6-arm64\.dmg$/)
+  assert.equal(newest.signature, signature, 'the enclosure signature, not the one quoted in the notes')
+  assert.equal(newest.version, '1.2.6')
+  assert.equal(newest.build, '17')
+  assert.ok(newestItem(feed).trimEnd().endsWith('</item>'), 'a quoted </item> does not cut the item short')
+  // The release the feed already published is still read as it was.
+  assert.equal(publishedItem(feed, { version: '1.2.5', build: '16' }).length, 1)
+})
+
+test('a feed nobody could read is not an answer', () => {
+  // "not published" is what lets a release build, so it may only come from a
+  // feed that was actually read: every one of these gave that answer for every
+  // version before the feed was looked at.
+  assert.throws(() => requireReadableAppcast('', 'feed.xml'), /empty; it cannot be read as an appcast/)
+  assert.throws(
+    () => requireReadableAppcast('not xml at all <<<<\n', 'feed.xml'),
+    /cannot be read as an appcast/,
+  )
+  assert.throws(
+    () => requireReadableAppcast(appcastFixture.slice(0, appcastFixture.indexOf('<item>')), 'feed.xml'),
+    /cannot be read as an appcast/,
+    'a feed cut off before its first item is truncated, not empty',
+  )
+  assert.throws(
+    () => requireReadableAppcast('<rss><channel></channel></rss>', 'feed.xml'),
+    /no complete <item>/,
+  )
+  requireReadableAppcast(appcastFixture, 'feed.xml')
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-unreadable-feed-'))
+  try {
+    const feed = path.join(directory, 'appcast-public.xml')
+    const run = () => spawnSync(process.execPath, [
+      path.join(repositoryDirectory, 'scripts', 'release-metadata.mjs'),
+      'published', '--appcast', feed, '--version', '1.2.5', '--build', '16',
+    ], { encoding: 'utf8' })
+
+    fs.writeFileSync(feed, 'not xml at all <<<<\n')
+    const corrupt = run()
+    assert.equal(corrupt.status, 2, corrupt.stderr || corrupt.stdout)
+    assert.match(corrupt.stderr, /cannot be read as an appcast/)
+    assert.equal(corrupt.stdout.includes('not published'), false, 'an unreadable feed answers nothing')
+
+    // The same question asked of a feed that was read still answers 1.
+    fs.writeFileSync(feed, appcastFixture.replace('<title>1.2.5</title>', '<title>1.2.4</title>'))
+    const missing = run()
+    assert.equal(missing.status, 1, missing.stderr || missing.stdout)
+    assert.match(missing.stdout, /not published: 1\.2\.5 \(build 16\)/)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('release notes may live at a path with spaces', () => {

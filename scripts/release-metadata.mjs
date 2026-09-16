@@ -188,7 +188,10 @@ export function buildAppcastItem({
 }) {
   requireMatch(version, /^\d+\.\d+\.\d+$/, 'version')
   requireMatch(String(build), /^\d+$/, 'build')
-  requireMatch(url, /^https:\/\/\S+$/, 'enclosure url')
+  // The url is interpolated into an XML attribute without escaping, so it may
+  // only carry characters that need none: a quote would end the attribute, and a
+  // raw `&` or angle bracket would break the feed for every client that reads it.
+  requireMatch(url, /^https:\/\/[^\s"<>&]+$/, 'enclosure url')
   requireMatch(String(length), /^[1-9]\d*$/, 'archive length')
   requireMatch(signature, /^[A-Za-z0-9+/]{40,}={0,2}$/, 'EdDSA signature')
   requireMatch(minimumSystemVersion, /^\d+(\.\d+)?$/, 'minimum system version')
@@ -228,7 +231,7 @@ export function insertAppcastItem(appcast, item, { version, build }) {
   if (clash) {
     throw new Error(`appcast already publishes ${version} (build ${build})`)
   }
-  const firstItem = appcast.indexOf('<item>')
+  const firstItem = itemRanges(appcast)[0]?.[0] ?? -1
   if (firstItem < 0) throw new Error('appcast has no <item> to insert before')
   const lineStart = appcast.lastIndexOf('\n', firstItem) + 1
   return `${appcast.slice(0, lineStart)}${item}\n${appcast.slice(lineStart)}`
@@ -236,24 +239,45 @@ export function insertAppcastItem(appcast, item, { version, build }) {
 
 /** The newest item, which is what a release must have just written. */
 export function newestItem(appcast) {
-  const start = appcast.indexOf('<item>')
-  const end = appcast.indexOf('</item>', start)
-  if (start < 0 || end < 0) throw new Error('appcast has no item')
-  return appcast.slice(start, end)
+  const [first] = itemRanges(appcast)
+  if (first === undefined) throw new Error('appcast has no item')
+  return appcast.slice(first[0], first[1])
+}
+
+/**
+ * The feed with the contents of every CDATA block masked out.
+ *
+ * The release notes are markdown inside a CDATA block, so they can contain any
+ * literal the feed is read by — a quoted `<item>`, a closing `</description>`.
+ * Masking the blocks instead of deleting them keeps every offset in the original
+ * text, so an item can be found in the masked copy and then read from the real
+ * one; what is left in the masked copy is the structure alone.
+ */
+function structureOf(appcast) {
+  return appcast.replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, (block) => '\u0000'.repeat(block.length))
+}
+
+/** Where each item starts and ends in the feed, read from its structure. */
+function itemRanges(appcast) {
+  return [...structureOf(appcast).matchAll(/<item>[\s\S]*?<\/item>/g)]
+    .map((match) => [match.index, match.index + match[0].length])
 }
 
 /**
  * What one item says, read from its elements rather than from its text.
  *
- * Release notes are markdown inside a CDATA block, so they can contain any
- * literal a field is recognized by — a pasted `<sparkle:version>17</sparkle:version>`,
- * an example URL, a `length="…"`. Searching the raw item would let those decide
- * whether a release is already public, or which artifact the feed points at, so
- * the notes are removed first and every field is read from the element that
- * carries it.
+ * Everything a field is recognized by can also appear in the release notes: a
+ * pasted `<sparkle:version>17</sparkle:version>`, an example URL, a `length="…"`.
+ * Searching the raw item would let those decide whether a release is already
+ * public, or which artifact the feed points at, so the notes are removed first
+ * — as the CDATA block they are, not by looking for the element that carries
+ * them, because the markdown is free to contain that element's closing tag —
+ * and every field is then read from the element that carries it.
  */
 function itemFields(item) {
-  const elements = item.replace(/<description[\s\S]*?<\/description>/g, '')
+  const elements = item
+    .replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '')
+    .replace(/<description\b[\s\S]*?<\/description>/g, '')
   const enclosure = elements.match(/<enclosure\b[^>]*>/)?.[0] ?? ''
   const link = elements.match(/<link>([^<]*)<\/link>/)?.[1] ?? ''
   const url = enclosure.match(/\burl="([^"]*)"/)?.[1] ?? ''
@@ -269,7 +293,32 @@ function itemFields(item) {
 
 /** Every item in the feed, as the fields it actually declares. */
 export function appcastItems(appcast) {
-  return [...appcast.matchAll(/<item>[\s\S]*?<\/item>/g)].map((match) => itemFields(match[0]))
+  return itemRanges(appcast).map(([start, end]) => itemFields(appcast.slice(start, end)))
+}
+
+/**
+ * Refuse to answer for a feed that cannot be read as one.
+ *
+ * The "not published" answer is what lets a release build, so it is the one
+ * answer that must never come from a file nobody could read: a feed that is
+ * empty, truncated or not XML at all would give it for every version. Saying
+ * "this feed does not carry the release" and "there is no feed to ask" are two
+ * different things, and only the first one may be followed by a build.
+ */
+export function requireReadableAppcast(appcast, label = 'appcast') {
+  if (typeof appcast !== 'string' || appcast.trim().length === 0) {
+    throw new Error(`${label} is empty; it cannot be read as an appcast`)
+  }
+  if (!appcast.includes('<channel>') || !appcast.includes('</channel>')) {
+    throw new Error(`${label} carries no <channel>…</channel>; it cannot be read as an appcast`)
+  }
+  if (!appcast.trimEnd().endsWith('</rss>')) {
+    throw new Error(`${label} does not end with </rss>; it is truncated`)
+  }
+  if (itemRanges(appcast).length === 0) {
+    throw new Error(`${label} carries no complete <item>; it cannot be read as an appcast`)
+  }
+  return appcast
 }
 
 /**
@@ -432,14 +481,19 @@ function runAppcast({ options, paths }) {
 /**
  * Report the artifact one version and build has in a feed.
  *
- * Exits 0 and prints `length=`/`url=` when the feed carries it, non-zero when it
- * does not. `release-prepare.sh` runs this against `origin/main` before it
+ * Exits 0 and prints `length=`/`url=`/`signature=` when the feed carries it, 1
+ * when the feed was read and does not carry it, and 2 when it could not be read
+ * at all: only the first two are answers, and the caller may only build on the
+ * second one. `release-prepare.sh` runs this against `origin/main` before it
  * builds anything: a build that is already public must never be rebuilt, because
  * the DMG — and the signature the public feed advertises for it — would then
  * stop describing the bytes a client downloads.
  */
 function runPublished({ options, paths }) {
-  const appcast = fs.readFileSync(options.appcast ?? paths.appcast, 'utf8')
+  const appcastPath = options.appcast ?? paths.appcast
+  // Asked of a file nobody could read, this question has one answer for every
+  // version — "not published" — and that answer is what lets a release build.
+  const appcast = requireReadableAppcast(fs.readFileSync(appcastPath, 'utf8'), appcastPath)
   const version = requireMatch(options.version, /^\d+\.\d+\.\d+$/, 'version')
   const build = requireMatch(options.build, /^\d+$/, 'build')
   const found = publishedItem(appcast, { version, build })
@@ -477,9 +531,17 @@ function runGuard({ options, paths }) {
     publishedBuild,
   })
   if (regression !== null) throw new Error(regression)
+  // Re-running the release Version.xcconfig already carries is how a half-finished
+  // release is resumed, and calling that "newer than" would be a lie in the log
+  // line the two cases are told apart by.
+  const resuming = compareVersions(version, configured.version) === 0
+    && Number(build) === Number(configured.build)
   console.log(
-    `release ${version} (build ${build}) is newer than ${configured.version} (build ${configured.build}) ` +
-      `and the newest published build ${publishedBuild}`
+    resuming
+      ? `release ${version} (build ${build}) is the release Version.xcconfig already carries; ` +
+        `resuming it (newest published build ${publishedBuild})`
+      : `release ${version} (build ${build}) is newer than ${configured.version} (build ${configured.build}); ` +
+        `the newest published build is ${publishedBuild}`
   )
   return 0
 }

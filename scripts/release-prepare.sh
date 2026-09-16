@@ -103,9 +103,18 @@ node "$repository_directory/scripts/release-metadata.mjs" guard --version "$vers
 # the same release is then the obvious — and wrong — thing to do.
 git show origin/main:appcast-swift.xml > "$work_directory/appcast-public.xml" 2>/dev/null \
 	|| fail "origin/main does not carry appcast-swift.xml, so what is published cannot be established"
-if node "$repository_directory/scripts/release-metadata.mjs" published \
+published_status=0
+node "$repository_directory/scripts/release-metadata.mjs" published \
 	--version "$version" --build "$build" --appcast "$work_directory/appcast-public.xml" \
-	> "$work_directory/published.txt"; then
+	> "$work_directory/published.txt" || published_status=$?
+# Exit 1 is the answer this release builds on: the feed was read and does not
+# carry this version yet. Exit 2 means it could not be read at all, and a feed
+# nobody could read answers 1 for every version — so it must never be the answer
+# that starts a build.
+if [[ "$published_status" != 0 && "$published_status" != 1 ]]; then
+	fail "origin/main's appcast-swift.xml could not be read (release-metadata exited $published_status), so whether $tag is already public cannot be established"
+fi
+if [[ "$published_status" == 0 ]]; then
 	published_length="$(sed -nE 's/^length=([0-9]+)$/\1/p' "$work_directory/published.txt" | head -n 1)"
 	published_url="$(sed -nE 's/^url=(.+)$/\1/p' "$work_directory/published.txt" | head -n 1)"
 	published_signature="$(sed -nE 's/^signature=(.+)$/\1/p' "$work_directory/published.txt" | head -n 1)"
@@ -154,10 +163,18 @@ echo "releasing $version (build $build) as $tag"
 # When that cannot be shown, the release stops and asks for a new build instead.
 resume_length=""
 resume_signature=""
-if $resuming_release; then
-	node "$repository_directory/scripts/release-metadata.mjs" published \
-		--version "$version" --build "$build" > "$work_directory/release-item.txt" \
-		|| fail "tag $tag exists but the local appcast does not describe $version (build $build), so the artifact it names cannot be identified; release a new build or version instead of rebuilding a tagged release"
+	if $resuming_release; then
+		resume_status=0
+		node "$repository_directory/scripts/release-metadata.mjs" published \
+			--version "$version" --build "$build" > "$work_directory/release-item.txt" \
+			|| resume_status=$?
+		# 1 is "the local feed was read and does not describe this release"; 2 is
+		# "the local feed could not be read", which is a different failure and
+		# gets a message that says so.
+		[[ "$resume_status" == 0 || "$resume_status" == 1 ]] \
+			|| fail "the appcast could not be read (release-metadata exited $resume_status), so the artifact tag $tag names cannot be identified; release a new build or version instead of rebuilding a tagged release"
+		[[ "$resume_status" == 0 ]] \
+			|| fail "tag $tag exists but the local appcast does not describe $version (build $build), so the artifact it names cannot be identified; release a new build or version instead of rebuilding a tagged release"
 	resume_length="$(sed -nE 's/^length=([0-9]+)$/\1/p' "$work_directory/release-item.txt" | head -n 1)"
 	resume_signature="$(sed -nE 's/^signature=(.+)$/\1/p' "$work_directory/release-item.txt" | head -n 1)"
 	[[ -n "$resume_length" && -n "$resume_signature" ]] \
@@ -259,19 +276,29 @@ if ! $publish; then
 	step "Prepared, not published"
 	# The printed commands are meant to be copied, so every path goes in with the
 	# quoting it needs: a notes file under "Release Notes" would otherwise arrive
-	# as three arguments.
+	# as three arguments. A resumed release already has its commit and its tag,
+	# and the tag cannot move, so `git tag -a` is printed only when it still has
+	# to run — for a tag that exists it could only fail.
 	printf -v quoted_notes '%q' "$notes_file"
 	printf -v quoted_dmg '%q' "$dmg"
+	if $resuming_release; then
+		commit_steps="  # the release commit and tag $tag already exist"
+	else
+		printf -v commit_steps '  git add %s\n  git commit -m "release: prepare %s build %s"\n  git tag -a %s -m "DSH Swift %s"' \
+			"${release_files[*]}" "$version" "$build" "$tag" "$version"
+	fi
 	cat <<EOF
 Next steps — or re-run this script with --publish, which is resumable and does
 all of them. The order matters: the artifact is uploaded and verified first, and
 main — which carries the appcast — is pushed last, so the feed never points at a
 download that does not exist yet.
-  git add ${release_files[*]}
-  git commit -m "release: prepare $version build $build"
-  git tag -a $tag -m "DSH Swift $version"
+$commit_steps
   git push origin $tag
-  gh release create $tag --title $tag --notes-file $quoted_notes $quoted_dmg
+  if gh release view $tag >/dev/null 2>&1; then
+    gh release upload $tag $quoted_dmg --clobber
+  else
+    gh release create $tag --title $tag --notes-file $quoted_notes $quoted_dmg
+  fi
   bash scripts/release-verify-asset.sh $tag $quoted_dmg $digest --signature '$signature'
   git push origin main
 EOF
