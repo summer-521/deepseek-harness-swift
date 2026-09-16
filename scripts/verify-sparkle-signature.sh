@@ -56,4 +56,9 @@ xcrun swiftc -O -module-cache-path "$work_directory/module-cache" \
 	"$repository_directory/scripts/sparkle-signature.swift" -o "$verifier" \
 	|| fail "could not build the signature verifier"
 
-exec "$verifier" "$info_plist" "$signature" "$file"
+# No `exec`: it would replace this shell, and the EXIT trap that deletes the
+# work directory — the compiled verifier and its module cache, about 30 MB —
+# would never run. The verifier's own status is passed through explicitly.
+status=0
+"$verifier" "$info_plist" "$signature" "$file" || status=$?
+exit "$status"

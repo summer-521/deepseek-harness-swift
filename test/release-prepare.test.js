@@ -280,6 +280,12 @@ test('the signature check refuses a file the app key did not sign', () => {
   // than pass everything.
   const wrapper = path.join(repositoryDirectory, 'scripts', 'verify-sparkle-signature.sh')
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-signature-test-'))
+  // The verifier is compiled into a temporary directory of its own — about 30 MB
+  // with its module cache. `exec` used to replace the shell before the EXIT trap
+  // that removes it could run, so every call leaked one, this test included.
+  const verifyDirectories = () => fs.readdirSync(os.tmpdir())
+    .filter((entry) => entry.startsWith('dsh-sparkle-verify.'))
+  const before = verifyDirectories()
   try {
     const artifact = path.join(directory, 'artifact.bin')
     fs.writeFileSync(artifact, 'not the published bytes')
@@ -290,6 +296,11 @@ test('the signature check refuses a file the app key did not sign', () => {
     })
     assert.equal(bogus.status, 1, bogus.stderr || bogus.stdout)
     assert.match(bogus.stderr, /does not carry the signature/)
+    assert.deepEqual(
+      verifyDirectories().filter((entry) => !before.includes(entry)),
+      [],
+      'the verifier deletes its work directory on every exit path',
+    )
 
     const noKey = spawnSync('bash', [wrapper, 'A'.repeat(86) + '==', artifact, '--info-plist', path.join(directory, 'missing.plist')], {
       encoding: 'utf8',
