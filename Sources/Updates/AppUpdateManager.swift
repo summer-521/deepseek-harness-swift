@@ -11,10 +11,16 @@ public final class AppUpdateManager: ObservableObject {
 
     public let updaterController: SPUStandardUpdaterController
 
+    /// Sparkle holds its updater delegate weakly, so the install gate is owned
+    /// here for the app's lifetime.
+    private let updateDelegate: AppUpdateDelegate
+
     private init() {
+        let updateDelegate = AppUpdateDelegate()
+        self.updateDelegate = updateDelegate
         updaterController = SPUStandardUpdaterController(
             startingUpdater: false,
-            updaterDelegate: nil,
+            updaterDelegate: updateDelegate,
             userDriverDelegate: nil
         )
         // M1 packages are ad-hoc signed and are not publishable Sparkle
@@ -31,6 +37,23 @@ public final class AppUpdateManager: ObservableObject {
         updaterController.updater
     }
 }
+
+/// Stops the managed service before Sparkle replaces the bundle.
+///
+/// Sparkle installs while the bundle is no longer running, but the install path
+/// is not guaranteed to pass through `applicationWillTerminate` first: the
+/// installer tool reports the pending install to the host driver when it
+/// reaches its second stage, which may be after the target has already been
+/// asked to terminate and may equally be before it. Owning the stop here makes
+/// the update path independent of the quit path, and it is safe to do twice —
+/// `DshService.stop()` takes the managed process before signalling, so a quit
+/// that already ran the terminate callback leaves this a no-op.
+final class AppUpdateDelegate: NSObject, SPUUpdaterDelegate {
+    func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
+        DshService.shared.stop()
+    }
+}
+
 
 /// Publishes Sparkle's KVO-backed check availability for SwiftUI controls.
 public final class CheckForUpdatesViewModel: ObservableObject {
