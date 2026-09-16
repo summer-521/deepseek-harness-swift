@@ -144,6 +144,7 @@ npm test
 - Runtime 版本目录以 npm Registry 为唯一来源；当前只接受 stable、`alpha.N` 与 `rc.N` 版本，GitHub 独有版本、beta 及任意降级暂不参与运行时选择。
 - Sparkle 公钥写入 [Info.plist](Info.plist)，Ed25519 私钥只保存在发布机器的 Keychain 中，禁止提交到仓库。
 - 当前更新 feed 位于 `appcast-swift.xml`，发布新版本时需要先构建 arm64 DMG，再使用 Sparkle `sign_update` 生成签名并更新 feed。
+- 发布流程已脚本化：`bash scripts/release-prepare.sh <版本> <构建号> --notes <发布说明.md>` 会依次执行 `npm test` → 更新 `Version.xcconfig` 与 README 三处引用 → 构建并打包 → 用 Sparkle 签名 → 写入 appcast（长度与签名取自同一份 DMG 字节）→ 跑版本一致性测试；加 `--publish` 才继续提交、打 tag、推送并创建 GitHub Release，加 `--dry-run` 只打印计划。
 
 ## 已知限制
 
