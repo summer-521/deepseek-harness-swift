@@ -179,7 +179,21 @@ test('WebKit receives a strict, HttpOnly, session-only host cookie for each gene
     /DshProfileLinkRepair\.repairDanglingLinks\([\s\S]*?profilesRoot:\s*context\.profileDirectory\.deletingLastPathComponent\(\)[\s\S]*?restrictingTo:\s*\[context\.profileDirectory\]/
   )
   assert.match(WINDOW_SOURCE, /F04 profile link repair: repointed=/)
-  assert.match(WINDOW_SOURCE, /case \.runtimeBootstrapFailed:[\s\S]*?\.pluginConfigurationInvalid/)
+  // A native module built for another Node has the same symptom as a missing
+  // host package but a different remedy, so the classification must tell them
+  // apart before it tells the user what to do.
+  assert.match(
+    WINDOW_SOURCE,
+    /case \.runtimeBootstrapFailed\(let detail\):[\s\S]*?DshProcessIO\.isNativeModuleMismatch\(detail\)[\s\S]*?原生模块与当前内置的 Node\.js 不匹配/
+  )
+  assert.match(
+    WINDOW_SOURCE,
+    /case \.runtimeBootstrapFailed\(let detail\):[\s\S]*?Profile 插件依赖的宿主包不完整[\s\S]*?\.pluginConfigurationInvalid/
+  )
+  assert.match(
+    PROCESS_IO_SOURCE,
+    /public static func nativeModuleMismatchHint\(_ detail: String\) -> String\?/
+  )
   assert.match(WINDOW_SOURCE, /URLRequest\([\s\S]*url:\s*firstNavigationURL,[\s\S]*cachePolicy:\s*\.reloadIgnoringLocalCacheData[\s\S]*\)/)
   assert.match(WINDOW_SOURCE, /webView\?\.load\(bootstrapRequest\)/)
   assert.match(UPSTREAM_COOKIE_SOURCE, /dsh-auth-/)

@@ -66,6 +66,26 @@ test("Swift ProcessIO reports a Runtime bootstrap failure instead of a handshake
   }
 });
 
+test("Swift ProcessIO names a native-module bootstrap failure instead of a missing package", () => {
+  const binaryPath = path.join(os.tmpdir(), `dsh-process-io-native-${process.pid}`);
+  try {
+    const compile = spawnSync("xcrun", ["swiftc", ...sources, "-o", binaryPath], {
+      encoding: "utf8",
+      timeout: 120000,
+    });
+    assert.equal(compile.status, 0, compile.stderr || compile.stdout);
+
+    // An App update changes the bundled Node; a Profile that keeps packages
+    // built for the previous one fails at load time with NODE_MODULE_VERSION,
+    // which the user cannot act on unless the App says what it means.
+    const run = spawnSync(binaryPath, ["--native-module-failure"], { encoding: "utf8", timeout: 20000 });
+    assert.equal(run.status, 0, run.stderr || run.stdout);
+    assert.match(run.stdout, /endpoint and redaction harness passed/);
+  } finally {
+    try { fs.unlinkSync(binaryPath); } catch { /* no binary after failed compile */ }
+  }
+});
+
 test("DshWebEndpoint applies the strict origin and query contract", () => {
   const endpointSource = fs.readFileSync(path.join(testDirectory, "..", "Sources", "Service", "DshWebEndpoint.swift"), "utf8");
   assert.match(endpointSource, /expectedPort/);

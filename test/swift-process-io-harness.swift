@@ -20,6 +20,7 @@ struct ProcessIOHarness {
         let conflict = CommandLine.arguments.contains("--conflict")
         let lateWait = CommandLine.arguments.contains("--late-wait")
         let bootstrapFailure = CommandLine.arguments.contains("--bootstrap-failure")
+        let nativeModuleFailure = CommandLine.arguments.contains("--native-module-failure")
 
         let legacy = try? DshWebEndpoint.parse(
             URL(string: "http://127.0.0.1:3187/")!,
@@ -63,7 +64,38 @@ struct ProcessIOHarness {
         printf '%s\\n' "dsh runtime bootstrap failed: dsh: plugin tree failed to load: failed to import loader entry codex-subscription (dsh-codex-subscription): Cannot find package '@earendil-works/pi-ai' imported from /tmp/plugin.js" >&2;
         sleep 5
         """
-        let script = bootstrapFailure ? bootstrapScript : """
+        // The same producer line, but the failure is a prebuilt native module
+        // built for another Node ABI — what an App update can leave behind.
+        let nativeModuleScript = """
+        printf '%s\\n' "dsh runtime bootstrap failed: dsh: plugin tree failed to load: failed to import loader entry native (dsh-native): Error: The module '/tmp/better_sqlite3.node' was compiled against a different Node.js version using NODE_MODULE_VERSION 115. This version of Node.js requires NODE_MODULE_VERSION 127." >&2;
+        sleep 5
+        """
+        // Recognition is a pure decision; check it without a process in the way.
+        require(
+            DshProcessIO.isNativeModuleMismatch(
+                "Error: The module '/tmp/x.node' was compiled against a different Node.js version using NODE_MODULE_VERSION 115."
+            ),
+            "an NODE_MODULE_VERSION mismatch must be recognized"
+        )
+        require(
+            DshProcessIO.isNativeModuleMismatch(
+                "mach-o file, but is an incompatible architecture (have 'x86_64', need 'arm64e')"
+            ),
+            "a foreign architecture must be recognized"
+        )
+        require(
+            DshProcessIO.isNativeModuleMismatch(
+                "dlopen(/tmp/x.node, 0x0001): tried: '/tmp/x.node' (no such file or directory)"
+            ),
+            "a missing .node binary must be recognized"
+        )
+        require(
+            !DshProcessIO.isNativeModuleMismatch("Cannot find package '@earendil-works/pi-ai' imported from /tmp/plugin.js"),
+            "a missing package is not a native-module failure"
+        )
+        require(!DshProcessIO.isNativeModuleMismatch(""), "empty detail carries no signal")
+
+        let script = bootstrapFailure ? bootstrapScript : (nativeModuleFailure ? nativeModuleScript : """
         printf 'dsh web: http://127.0.0.1:3187/?token=\(launchToken)';
         printf '\\033[32m\\n';
         printf 'Cookie: dsh_swift_renderer=\(rendererToken); dsh-auth-fixture=\(cookieSecret)\\n' >&2;
@@ -74,7 +106,7 @@ struct ProcessIOHarness {
         \(secondReady)
         printf 'dsh desktop control ready: \(generation.uuidString)\\n';
         sleep 1
-        """
+        """)
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -100,7 +132,7 @@ struct ProcessIOHarness {
             exit(1)
         }
 
-        if bootstrapFailure {
+        if bootstrapFailure || nativeModuleFailure {
             let started = Date()
             do {
                 _ = try await io.waitForReady(timeout: 8)
@@ -111,10 +143,22 @@ struct ProcessIOHarness {
                     message.contains("Runtime 插件树加载失败"),
                     "bootstrap failure must name the Runtime plugin tree, saw: \(message)"
                 )
-                require(
-                    message.contains("@earendil-works/pi-ai"),
-                    "bootstrap failure must name the package the Host could not import"
-                )
+                if bootstrapFailure {
+                    require(
+                        message.contains("@earendil-works/pi-ai"),
+                        "bootstrap failure must name the package the Host could not import"
+                    )
+                }
+                if nativeModuleFailure {
+                    require(
+                        message.contains("原生模块") && message.contains("Node.js 版本不匹配"),
+                        "a native-module failure must say what it is, saw: \(message)"
+                    )
+                    require(
+                        !message.contains("找不到包"),
+                        "an ABI mismatch must not be reported as a missing package, saw: \(message)"
+                    )
+                }
                 require(
                     Date().timeIntervalSince(started) < 5,
                     "bootstrap failure must fail fast instead of waiting for the handshake timeout"

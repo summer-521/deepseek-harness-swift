@@ -1983,7 +1983,19 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                 return (.startupTimeout, "等待 DSH 服务就绪超时。", .retryable, .processOutput)
             case .processExited:
                 return (.processExited, "DSH 服务在完成启动握手前退出。", .retryable, .processOutput)
-            case .runtimeBootstrapFailed:
+            case .runtimeBootstrapFailed(let detail):
+                // A prebuilt native module that no longer matches the bundled
+                // Node has the same symptom but a different remedy than a
+                // genuinely missing host package, and the raw text names only
+                // `NODE_MODULE_VERSION`.
+                if DshProcessIO.isNativeModuleMismatch(detail) {
+                    return (
+                        .pluginConfigurationInvalid,
+                        "Runtime 插件树加载失败：插件的原生模块与当前内置的 Node.js 不匹配。",
+                        .retryable,
+                        .processOutput
+                    )
+                }
                 return (
                     .pluginConfigurationInvalid,
                     "Runtime 插件树加载失败：Profile 插件依赖的宿主包不完整。",

@@ -153,19 +153,62 @@ public final class DshProcessIO: @unchecked Sendable {
         return String(data: ringBuffer, encoding: .utf8) ?? ""
     }
 
-    /// One readable reason out of the Runtime's bootstrap failure line: the
-    /// missing package when the failure names one, then the line itself, both
-    /// capped so a single long line cannot fill the diagnostic panel.
+    /// One readable reason out of the Runtime's bootstrap failure line: what the
+    /// failure means when it is recognizable, then the line itself, both capped
+    /// so a single long line cannot fill the diagnostic panel.
     private static func bootstrapFailureDetail(_ reason: String) -> String {
         let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
         let capped = trimmed.count > 600 ? String(trimmed.prefix(600)) + "…" : trimmed
+        if let hint = nativeModuleMismatchHint(capped) {
+            return "\(hint)\n\n\(capped)"
+        }
         let range = NSRange(capped.startIndex..., in: capped)
         guard let match = missingPackageRegex.firstMatch(in: capped, range: range),
               let packageRange = Range(match.range(at: 1), in: capped) else {
             return capped
         }
         return "找不到包 \(String(capped[packageRange]))。\n\n\(capped)"
+    }
+
+    /// What to do when a plugin tree failed because a prebuilt native module
+    /// does not match the Node.js loading it — or is missing entirely.
+    ///
+    /// Plugins are installed with `--ignore-scripts` (see `DshPluginManager`),
+    /// so nothing is compiled locally: a package that ships a `.node` binary is
+    /// tied to the Node ABI, and to the CPU architecture, it was built for. An
+    /// App update changes the bundled Node while the Profile keeps the packages
+    /// installed for the previous one, and Node then reports the mismatch in
+    /// terms of `NODE_MODULE_VERSION` — which says nothing about what the user
+    /// can do about it.
+    public static func nativeModuleMismatchHint(_ detail: String) -> String? {
+        let lowered = detail.lowercased()
+        let abiSignals = [
+            "node_module_version",
+            "was compiled against a different node.js version",
+        ]
+        if abiSignals.contains(where: lowered.contains) {
+            return "插件的原生模块与当前内置的 Node.js 版本不匹配（App 更新后常见）。"
+                + "在「设置 → 插件」重新安装受影响的插件即可重新编译/获取匹配的二进制。"
+        }
+        let architectureSignals = [
+            "incompatible architecture",
+        ]
+        if architectureSignals.contains(where: lowered.contains) {
+            return "插件的原生模块是另一个 CPU 架构的二进制。"
+                + "在「设置 → 插件」重新安装受影响的插件即可获取匹配的二进制。"
+        }
+        // A `.node` binary that is simply not there fails the same way at load
+        // time and has the same remedy.
+        if lowered.contains("dlopen") && lowered.contains("no such file or directory") {
+            return "插件的原生模块缺失。在「设置 → 插件」重新安装受影响的插件即可补齐。"
+        }
+        return nil
+    }
+
+    /// Whether `detail` carries a native-module signal.
+    public static func isNativeModuleMismatch(_ detail: String) -> Bool {
+        nativeModuleMismatchHint(detail) != nil
     }
 
     public func waitForPolicyApplied(
