@@ -210,7 +210,14 @@ public enum DshProfileLinkRepair {
                 continue
             }
             for link in listing.links {
-                guard let storedDestination = try? fileManager.destinationOfSymbolicLink(atPath: link.path) else {
+                let storedDestination: String
+                do {
+                    storedDestination = try fileManager.destinationOfSymbolicLink(atPath: link.path)
+                } catch {
+                    // A link whose target cannot be read may well point into the
+                    // Runtime this pass is deciding about, so it is a place that
+                    // could not be inspected rather than one with nothing to do.
+                    scanFailures.append(link.standardizedFileURL.path)
                     continue
                 }
                 let target = absolutePath(of: storedDestination, at: link)
@@ -368,9 +375,16 @@ public enum DshProfileLinkRepair {
             }
         }
         for entry in entries {
-            guard let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
-                  values.isDirectory == true,
-                  values.isSymbolicLink != true else { continue }
+            let values: URLResourceValues
+            do {
+                values = try entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            } catch {
+                // Whether this entry is a Profile at all could not be
+                // established, and it may hold links into the Runtime.
+                failures.append(entry.path)
+                continue
+            }
+            guard values.isDirectory == true, values.isSymbolicLink != true else { continue }
             directories.append(entry.appendingPathComponent("node_modules", isDirectory: true))
             directories.append(
                 entry.appendingPathComponent(".dsh-module-fallback", isDirectory: true)
@@ -389,8 +403,12 @@ public enum DshProfileLinkRepair {
         fileManager: FileManager
     ) -> (links: [URL], failure: String?) {
         // A directory that does not exist is simply not part of this Profile;
-        // anything else is a read failure the caller has to know about.
-        guard fileManager.fileExists(atPath: directory.path) else { return ([], nil) }
+        // anything else — a permission failure, an I/O error — is a read
+        // failure the caller has to know about. `fileExists` cannot tell those
+        // apart, so ask the kernel directly.
+        if access(directory.path, F_OK) != 0 {
+            return errno == ENOENT ? ([], nil) : ([], directory.path)
+        }
         let entries: [URL]
         do {
             entries = try fileManager.contentsOfDirectory(
@@ -407,12 +425,19 @@ public enum DshProfileLinkRepair {
             // the Profile's dependency tree; the next pass would otherwise keep
             // inspecting its own leftovers.
             guard !entry.lastPathComponent.hasPrefix(temporaryLinkPrefix) else { continue }
-            let values = try? entry.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
-            if values?.isSymbolicLink == true {
+            let values: URLResourceValues
+            do {
+                values = try entry.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
+            } catch {
+                // Not knowing what this entry is means not knowing whether it
+                // resolves into the Runtime.
+                return (found, entry.path)
+            }
+            if values.isSymbolicLink == true {
                 found.append(entry)
                 continue
             }
-            guard values?.isDirectory == true, entry.lastPathComponent.hasPrefix("@") else { continue }
+            guard values.isDirectory == true, entry.lastPathComponent.hasPrefix("@") else { continue }
             let scoped: [URL]
             do {
                 scoped = try fileManager.contentsOfDirectory(
@@ -426,9 +451,16 @@ public enum DshProfileLinkRepair {
                 return (found, entry.path)
             }
             for candidate in scoped
-            where (try? candidate.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true
-                && !candidate.lastPathComponent.hasPrefix(temporaryLinkPrefix) {
-                found.append(candidate)
+            where !candidate.lastPathComponent.hasPrefix(temporaryLinkPrefix) {
+                let candidateValues: URLResourceValues
+                do {
+                    candidateValues = try candidate.resourceValues(forKeys: [.isSymbolicLinkKey])
+                } catch {
+                    return (found, candidate.path)
+                }
+                if candidateValues.isSymbolicLink == true {
+                    found.append(candidate)
+                }
             }
         }
         return (found, nil)

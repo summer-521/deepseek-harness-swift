@@ -2330,24 +2330,31 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             )
             return
         }
+        // Checking the coordinator is not enough: it says nothing about a
+        // Runtime update, a profile switch or a start that is about to begin.
+        // The whole pass therefore runs under the same serial gate every
+        // Runtime/Profile transaction takes, so nothing else can write this
+        // tree while it is being inspected and rewritten.
+        let outcome: DshProfileLinkRepair.Outcome
         do {
-            try await DshService.shared.prepareForProfileMutation(context: context)
+            outcome = try await withRuntimeOperation {
+                try await DshService.shared.prepareForProfileMutation(context: context)
+                return DshProfileLinkRepair.repairDanglingLinks(
+                    profilesRoot: context.profileDirectory.deletingLastPathComponent(),
+                    versionsDirectory: DshStateManager.versionsDirectory,
+                    toRuntime: DshStateManager.versionsDirectory.appendingPathComponent(
+                        context.runtimeDescriptor.version,
+                        isDirectory: true
+                    )
+                )
+            }
         } catch {
             presentProfileLinkRepairAlert(
                 title: "暂时无法修复 Profile 依赖链接",
-                detail: "停止 DSH 服务失败：\(DshMainWindowUIMessage.safe(error))。稍后重试。"
+                detail: "无法取得运行时操作门或停止 DSH 服务：\(DshMainWindowUIMessage.safe(error))。稍后重试。"
             )
             return
         }
-
-        let outcome = DshProfileLinkRepair.repairDanglingLinks(
-            profilesRoot: context.profileDirectory.deletingLastPathComponent(),
-            versionsDirectory: DshStateManager.versionsDirectory,
-            toRuntime: DshStateManager.versionsDirectory.appendingPathComponent(
-                context.runtimeDescriptor.version,
-                isDirectory: true
-            )
-        )
         _ = diagnosticStore.appendLog(
             "F11 profile link repair (every Profile): repointed=\(outcome.repointed.count) "
                 + "unresolved=\(outcome.unresolved.count) unreadable=\(outcome.scanFailures.count) "

@@ -62,6 +62,14 @@ test('the explicit repair covers every Profile and reports what it did', () => {
 
 test('the explicit repair is a writer and takes the writer gates', () => {
   const body = functionBody(controller, 'private func performProfileLinkRepair() async')
+  // Checking the coordinator is not enough: a Runtime update, a Profile switch
+  // or a start can begin while the await above is suspended. The pass therefore
+  // runs under the same serial gate every Runtime/Profile transaction takes.
+  assert.match(
+    body,
+    /try await withRuntimeOperation \{/,
+    'the pass must hold the runtime operation gate, not only observe the coordinator',
+  )
   // The managed service installs and removes plugins in the same tree; the
   // repair quiesces it exactly like a plugin or Runtime transaction does.
   assert.match(
