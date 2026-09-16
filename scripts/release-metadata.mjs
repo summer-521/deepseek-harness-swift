@@ -116,6 +116,51 @@ function requireMatch(value, pattern, label) {
   return value
 }
 
+/** Numeric comparison of `x.y.z` versions; these releases never carry a suffix. */
+export function compareVersions(left, right) {
+  const leftParts = left.split('.').map(Number)
+  const rightParts = right.split('.').map(Number)
+  for (let index = 0; index < 3; index += 1) {
+    if (leftParts[index] !== rightParts[index]) {
+      return leftParts[index] < rightParts[index] ? -1 : 1
+    }
+  }
+  return 0
+}
+
+/** The highest build number the feed already publishes. */
+export function highestPublishedBuild(appcast) {
+  const builds = [...appcast.matchAll(/<sparkle:version>(\d+)<\/sparkle:version>/g)]
+    .map((match) => Number(match[1]))
+  return builds.length > 0 ? Math.max(...builds) : 0
+}
+
+/**
+ * Refuse a release that cannot reach the users it is meant for.
+ *
+ * Sparkle compares the build number, so a build that does not advance is
+ * invisible to everyone already on it however correct the version string looks,
+ * and a version that moves backwards is a mistake by definition. Re-running the
+ * exact release already in `Version.xcconfig` stays allowed: that is how a
+ * half-finished release is resumed, and the appcast insert refuses a duplicate
+ * item on its own.
+ */
+export function releaseRegression({ version, build, currentVersion, currentBuild, publishedBuild }) {
+  const targetVersion = String(version)
+  const targetBuild = Number(build)
+  if (compareVersions(targetVersion, currentVersion) < 0) {
+    return `version ${targetVersion} is older than the current ${currentVersion}`
+  }
+  if (publishedBuild > targetBuild) {
+    return `build ${targetBuild} is not newer than the newest published build ${publishedBuild}`
+  }
+  const resuming = compareVersions(targetVersion, currentVersion) === 0 && targetBuild === currentBuild
+  if (!resuming && targetBuild <= currentBuild) {
+    return `build ${targetBuild} is not newer than the current build ${currentBuild}`
+  }
+  return null
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
@@ -225,6 +270,7 @@ function report(mode, file, changed, detail) {
 function runBump({ options, paths }) {
   const xcconfig = fs.readFileSync(paths.xcconfig, 'utf8')
   const readme = fs.readFileSync(paths.readme, 'utf8')
+  const appcast = fs.readFileSync(paths.appcast, 'utf8')
   const configured = readXcconfig(xcconfig)
   // The README is the authority for its own previous version: a re-run after a
   // partial failure must not look for a version the README never carried.
@@ -232,6 +278,17 @@ function runBump({ options, paths }) {
   const { version, build } = options
   requireMatch(version, /^\d+\.\d+\.\d+$/, 'version')
   requireMatch(build, /^\d+$/, 'build')
+
+  // A release that cannot reach its users is refused before anything is
+  // rewritten, not after the DMG has been built.
+  const regression = releaseRegression({
+    version,
+    build,
+    currentVersion: configured.version,
+    currentBuild: Number(configured.build),
+    publishedBuild: highestPublishedBuild(appcast),
+  })
+  if (regression !== null) throw new Error(regression)
 
   const nextXcconfig = bumpXcconfig(xcconfig, { version, build })
   const { source: nextReadme, replacements } = bumpReadme(readme, {
@@ -283,10 +340,39 @@ function runAppcast({ options, paths }) {
   return report(options.mode, paths.appcast, next, `${version} build ${build}, length ${length}`)
 }
 
+/**
+ * Check a release before anything is rewritten or built.
+ *
+ * The release script runs this in preflight so a version that moves backwards,
+ * or a build Sparkle would ignore, fails in seconds instead of after a DMG has
+ * been produced and signed.
+ */
+function runGuard({ options, paths }) {
+  const configured = readXcconfig(fs.readFileSync(paths.xcconfig, 'utf8'))
+  const publishedBuild = highestPublishedBuild(fs.readFileSync(paths.appcast, 'utf8'))
+  const version = requireMatch(options.version, /^\d+\.\d+\.\d+$/, 'version')
+  const build = requireMatch(options.build, /^\d+$/, 'build')
+  const regression = releaseRegression({
+    version,
+    build,
+    currentVersion: configured.version,
+    currentBuild: Number(configured.build),
+    publishedBuild,
+  })
+  if (regression !== null) throw new Error(regression)
+  console.log(
+    `release ${version} (build ${build}) is newer than ${configured.version} (build ${configured.build}) ` +
+      `and the newest published build ${publishedBuild}`
+  )
+  return 0
+}
+
 function main() {
   const { command, options } = parseArguments(process.argv.slice(2))
   const paths = defaultPaths
   switch (command) {
+    case 'guard':
+      return runGuard({ options, paths })
     case 'bump':
       return runBump({ options, paths })
     case 'appcast':
@@ -295,7 +381,7 @@ function main() {
       console.log(JSON.stringify({ ...readXcconfig(fs.readFileSync(paths.xcconfig, 'utf8')), newest: newestItem(fs.readFileSync(paths.appcast, 'utf8')).trim() }, null, 2))
       return 0
     default:
-      throw new Error(`unknown command: ${command ?? '(none)'} (bump | appcast | show)`)
+      throw new Error(`unknown command: ${command ?? '(none)'} (guard | bump | appcast | show)`)
   }
 }
 

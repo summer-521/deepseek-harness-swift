@@ -56,6 +56,31 @@ done
 fail() { echo "release-prepare: $1" >&2; exit 1; }
 step() { printf '\n=== %s ===\n' "$1"; }
 
+# Scratch space for the copied signing tool and the verification download. It is
+# removed on every exit path, including a failure.
+work_directory="$(mktemp -d "${TMPDIR:-/tmp}/dsh-release.XXXXXX")"
+cleanup() { rm -rf "$work_directory"; }
+trap cleanup EXIT
+
+# Fetch the asset back from the release and hash it. The feed is only pushed
+# afterwards, so a truncated or missing upload stops the release instead of
+# being advertised to every installed copy.
+verifyUploadedAsset() {
+	local release_tag="$1" local_dmg="$2" local_digest="$3"
+	local name downloaded size uploaded_digest
+	name="$(basename "$local_dmg")"
+	gh release download "$release_tag" --pattern "$name" --dir "$work_directory" --clobber
+	downloaded="$work_directory/$name"
+	[[ -f "$downloaded" ]] || fail "GitHub release $release_tag does not carry $name"
+	size="$(stat -f%z "$downloaded")"
+	[[ "$size" == "$(stat -f%z "$local_dmg")" ]] \
+		|| fail "uploaded $name is $size bytes, expected $(stat -f%z "$local_dmg")"
+	uploaded_digest="$(shasum -a 256 "$downloaded" | awk '{print $1}')"
+	[[ "$uploaded_digest" == "$local_digest" ]] \
+		|| fail "uploaded $name hashes to $uploaded_digest, expected $local_digest"
+	echo "verified uploaded asset: $name ($size bytes, sha256 $uploaded_digest)"
+}
+
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "version must look like 1.2.6, got: $version"
 [[ "$build" =~ ^[0-9]+$ ]] || fail "build must be a whole number, got: $build"
 [[ -n "$notes_file" && -s "$notes_file" ]] || fail "--notes must name a non-empty release-notes file"
@@ -79,15 +104,20 @@ if git ls-remote --exit-code --tags origin "$tag" >/dev/null 2>&1; then
 fi
 echo "releasing $version (build $build) as $tag"
 
+# Fail in seconds, before anything is rewritten or built, when the release cannot
+# reach its users: a lower build number is invisible to Sparkle however correct
+# the version looks.
+node "$repository_directory/scripts/release-metadata.mjs" guard --version "$version" --build "$build"
+
 if $dry_run; then
 	printf '%s\n' \
 		"Plan for $tag:" \
 		"  1. bump Version.xcconfig and the three README references" \
 		"  2. npm test$($run_tests || echo ' (skipped)')" \
-		"  3. bash scripts/release-local.sh arm64 → $dmg" \
+		"  3. scripts/build-app.sh, then copy Sparkle's sign_update out of .build, then scripts/package-dmg.sh → $dmg" \
 		"  4. sign the DMG with Sparkle account $sparkle_account" \
 		"  5. write the newest appcast item with that length and signature" \
-		"  6. release commit, annotated tag, push, gh release create$($publish || echo ' (prepare only; pass --publish to continue)')"
+		"  6. release commit, annotated tag, push tag, create the release and verify the uploaded bytes, then push main (the feed)$($publish || echo ' (prepare only; pass --publish to continue)')"
 	exit 0
 fi
 
@@ -101,17 +131,23 @@ if $run_tests; then
 fi
 
 step "Build and package"
-bash "$repository_directory/scripts/release-local.sh" arm64
-[[ -f "$dmg" ]] || fail "the packager did not produce $dmg"
-
-# `build-app.sh` clears `.build/xcode/<arch>` at the start of every run and
-# checks Sparkle out again, so the signing tool is located after the build.
-sign_update=""
+# Sparkle's signing tool lives in the SPM checkout that `build-app.sh` creates
+# under `.build`, and `package-dmg.sh` deletes `.build` once the DMG verifies.
+# The tool is therefore copied out between the two steps: a release flow that
+# runs the packager first and looks for it afterwards can only ever fail.
+bash "$repository_directory/scripts/build-app.sh"
+sign_update_source=""
 while IFS= read -r candidate; do
-	sign_update="$candidate"
+	sign_update_source="$candidate"
 	break
 done < <(find "$repository_directory/.build" -maxdepth 8 -name sign_update -path '*sparkle*' -not -path '*old_dsa_scripts*' 2>/dev/null | head -n 1)
-[[ -n "$sign_update" ]] || fail "Sparkle's sign_update was not found under .build; build Sparkle first or install the Sparkle tools"
+[[ -n "$sign_update_source" ]] || fail "Sparkle's sign_update was not found under .build after the build; install the Sparkle tools and retry"
+sign_update="$work_directory/sign_update"
+cp "$sign_update_source" "$sign_update"
+chmod +x "$sign_update"
+
+bash "$repository_directory/scripts/package-dmg.sh"
+[[ -f "$dmg" ]] || fail "the packager did not produce $dmg"
 
 length="$(stat -f%z "$dmg")"
 digest="$(shasum -a 256 "$dmg" | awk '{print $1}')"
@@ -139,13 +175,16 @@ node --test "$repository_directory/test/swift-release-consistency.test.js"
 if ! $publish; then
 	step "Prepared, not published"
 	cat <<EOF
-Next steps (or re-run with --publish):
+Next steps (or re-run with --publish). The order matters: the artifact is
+uploaded and verified first, and main — which carries the appcast — is pushed
+last, so the feed never points at a download that does not exist yet.
   git add Version.xcconfig README.md appcast-swift.xml
   git commit -m "release: prepare $version build $build"
   git tag -a $tag -m "DSH Swift $version"
-  git push origin main
   git push origin $tag
   gh release create $tag --title $tag --notes-file $notes_file "$dmg"
+  # verify the uploaded bytes, then:
+  git push origin main
 EOF
 	exit 0
 fi
@@ -154,8 +193,13 @@ step "Publish"
 git add Version.xcconfig README.md appcast-swift.xml
 git commit -m "release: prepare $version build $build"
 git tag -a "$tag" -m "DSH Swift $version"
-git push origin main
+
+# The artifact must exist, and be verified byte for byte, before the feed that
+# points at it becomes public: `main` carries the appcast, so pushing main
+# before the upload would publish an update whose download 404s.
 git push origin "$tag"
 gh release create "$tag" --title "$tag" --notes-file "$notes_file" "$dmg"
+verifyUploadedAsset "$tag" "$dmg" "$digest"
+git push origin main
 
 printf '\nReleased %s\n  DMG:    %s\n  length: %s\n  sha256: %s\n' "$tag" "$dmg" "$length" "$digest"

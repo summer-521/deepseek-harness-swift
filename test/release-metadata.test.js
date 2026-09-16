@@ -10,11 +10,14 @@ import {
   buildAppcastItem,
   bumpReadme,
   bumpXcconfig,
+  compareVersions,
   defaultPaths,
+  highestPublishedBuild,
   insertAppcastItem,
   newestItem,
   readXcconfig,
   readmeVersion,
+  releaseRegression,
   rfc822,
 } from '../scripts/release-metadata.mjs'
 
@@ -251,4 +254,67 @@ test('check mode reports without rewriting the release files', () => {
   for (const [name, file] of Object.entries(defaultPaths)) {
     assert.equal(fs.readFileSync(file, 'utf8'), before.get(name), `${name} must not change in check mode`)
   }
+})
+
+test('a release must be strictly newer, in build as well as in version', () => {
+  assert.equal(compareVersions('1.2.6', '1.2.5'), 1)
+  assert.equal(compareVersions('1.2.5', '1.2.5'), 0)
+  assert.equal(compareVersions('1.2.4', '1.2.5'), -1)
+  assert.equal(compareVersions('1.10.0', '1.9.9'), 1)
+  assert.equal(highestPublishedBuild(appcastFixture), 16)
+  assert.equal(highestPublishedBuild('<rss><channel></channel></rss>'), 0)
+
+  const base = { version: '1.2.6', build: '17', currentVersion: '1.2.5', currentBuild: 16, publishedBuild: 16 }
+  assert.equal(releaseRegression(base), null, 'a newer version and build is allowed')
+  assert.equal(
+    releaseRegression({ version: '1.2.5', build: '16', currentVersion: '1.2.5', currentBuild: 16, publishedBuild: 16 }),
+    null,
+    're-running the release already in Version.xcconfig is how a partial release resumes',
+  )
+  assert.match(
+    releaseRegression({ ...base, build: '16' }),
+    /not newer than the current build 16/,
+    'a new version with an unchanged build never reaches installed copies',
+  )
+  assert.match(releaseRegression({ ...base, build: '15' }), /build 15 is not newer/)
+  assert.match(releaseRegression({ ...base, version: '1.2.4' }), /older than the current 1\.2\.5/)
+  assert.match(
+    releaseRegression({ ...base, publishedBuild: 18 }),
+    /not newer than the newest published build 18/,
+    'the feed is the other authority on what has shipped',
+  )
+})
+
+test('the guard refuses a release before any file or artifact exists', () => {
+  // Derived from the repository's own release state, so this stays true after
+  // the next release instead of pinning today's numbers.
+  const configured = readXcconfig(fs.readFileSync(defaultPaths.xcconfig, 'utf8'))
+  const published = highestPublishedBuild(fs.readFileSync(defaultPaths.appcast, 'utf8'))
+  const [major, minor, patch] = configured.version.split('.').map(Number)
+  const nextVersion = `${major}.${minor}.${patch + 1}`
+  const nextBuild = String(Math.max(Number(configured.build), published) + 1)
+  const run = (...args) => spawnSync(
+    process.execPath,
+    [path.join(repositoryDirectory, 'scripts', 'release-metadata.mjs'), ...args],
+    { encoding: 'utf8' },
+  )
+
+  const allowed = run('guard', '--version', nextVersion, '--build', nextBuild)
+  assert.equal(allowed.status, 0, allowed.stderr || allowed.stdout)
+  assert.match(allowed.stdout, new RegExp(`release ${nextVersion.replaceAll('.', '\\.')} \\(build ${nextBuild}\\)`))
+
+  const staleBuild = run('guard', '--version', nextVersion, '--build', configured.build)
+  assert.equal(staleBuild.status, 2)
+  assert.match(staleBuild.stderr, new RegExp(`not newer than the current build ${configured.build}`))
+
+  const staleVersion = run('guard', '--version', '0.0.1', '--build', nextBuild)
+  assert.equal(staleVersion.status, 2)
+  assert.match(staleVersion.stderr, /is older than the current/)
+
+  // A refused bump must not touch a release file either.
+  const before = fs.readFileSync(defaultPaths.xcconfig, 'utf8')
+  const refusedBump = run('bump', '--version', nextVersion, '--build', configured.build, '--write')
+  assert.equal(refusedBump.status, 2)
+  assert.match(refusedBump.stderr, /not newer than the current build/)
+  assert.equal(fs.readFileSync(defaultPaths.xcconfig, 'utf8'), before, 'a refused bump writes nothing')
 })

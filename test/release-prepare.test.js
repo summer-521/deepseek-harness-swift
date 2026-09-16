@@ -66,3 +66,45 @@ test('the release script guards the state it is about to rewrite', () => {
   assert.match(script, /releases are built on Apple Silicon only/)
   assert.match(script, /--dry-run\) dry_run=true/)
 })
+
+test('the signing tool is taken out of .build before the packager deletes it', () => {
+  // `build-app.sh` creates the Sparkle checkout under `.build`, and
+  // `package-dmg.sh` deletes `.build` once the DMG verifies. Looking for
+  // sign_update after running both can only ever fail.
+  const build = script.indexOf('bash "$repository_directory/scripts/build-app.sh"')
+  const copy = script.indexOf('cp "$sign_update_source" "$sign_update"')
+  const packageIt = script.indexOf('bash "$repository_directory/scripts/package-dmg.sh"')
+  assert.ok(build > 0 && copy > build && packageIt > copy, 'order must be build → copy sign_update → package')
+  assert.doesNotMatch(script, /release-local\.sh/)
+
+  const packager = fs.readFileSync(
+    path.join(repositoryDirectory, 'scripts', 'package-dmg.sh'),
+    'utf8',
+  )
+  assert.match(packager, /rm -rf "\$\{BUILD_DIR\}"/, 'the packager does delete the build directory')
+})
+
+test('the feed goes public only after the uploaded bytes are verified', () => {
+  const publish = script.slice(script.indexOf('step "Publish"'))
+  assert.ok(publish.length > 0)
+  const tagPush = publish.indexOf('git push origin "$tag"')
+  const release = publish.indexOf('gh release create')
+  const verify = publish.indexOf('verifyUploadedAsset "$tag" "$dmg" "$digest"')
+  const mainPush = publish.indexOf('git push origin main')
+  assert.ok(
+    tagPush > 0 && release > tagPush && verify > release && mainPush > verify,
+    'order must be tag → release upload → verification → main (which carries the feed)',
+  )
+
+  assert.match(script, /verifyUploadedAsset\(\) \{/)
+  assert.match(script, /gh release download "\$release_tag" --pattern "\$name"/)
+  assert.match(script, /hashes to \$uploaded_digest, expected \$local_digest/)
+  assert.match(script, /uploaded \$name is \$size bytes, expected/)
+})
+
+test('the release script refuses a release Sparkle could never deliver', () => {
+  assert.match(script, /release-metadata\.mjs" guard --version "\$version" --build "\$build"/)
+  const guard = script.indexOf('release-metadata.mjs" guard')
+  const bump = script.indexOf('release-metadata.mjs" bump')
+  assert.ok(guard > 0 && bump > guard, 'the guard runs before anything is rewritten')
+})
