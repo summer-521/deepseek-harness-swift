@@ -141,8 +141,15 @@ public final class DshVersionManager {
                     "[DshVersionManager] Retaining Runtime \(version): "
                         + "\(repair.unresolved.count) link(s) still resolve through it, "
                         + "\(repair.scanFailures.count) directory(ies) could not be read, "
-                        + "\(repair.rollbackFailures.count) link(s) were not restored"
+                        + "\(repair.rollbackFailures.count) link(s) were not restored, "
+                        + "\(repair.conflicts.count) link(s) were changed by another writer"
                 )
+                // Counts of zero everywhere would otherwise read like a Runtime
+                // that was kept for no reason: name what was actually seen.
+                for path in (repair.unresolved + repair.scanFailures + repair.rollbackFailures + repair.conflicts)
+                    .prefix(5) {
+                    print("[DshVersionManager]   \(path)")
+                }
                 continue
             }
             do {
@@ -829,8 +836,16 @@ public final class DshVersionManager {
         let repair = moveProfileLinksOff(version: version)
         guard repair.canRemoveSourceRuntime else {
             print(
-                "[DshVersionManager] Retaining discarded Runtime \(version): \(repair.unresolved.count) Profile link(s) still resolve through it"
+                "[DshVersionManager] Retaining discarded Runtime \(version): "
+                    + "\(repair.unresolved.count) link(s) still resolve through it, "
+                    + "\(repair.scanFailures.count) directory(ies) could not be read, "
+                    + "\(repair.rollbackFailures.count) link(s) were not restored, "
+                    + "\(repair.conflicts.count) link(s) were changed by another writer"
             )
+            for path in (repair.unresolved + repair.scanFailures + repair.rollbackFailures + repair.conflicts)
+                .prefix(5) {
+                print("[DshVersionManager]   \(path)")
+            }
             return
         }
         try FileManager.default.removeItem(at: target)

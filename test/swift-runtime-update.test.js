@@ -158,6 +158,22 @@ test('npm runtime updates use SemVer ordering and a staging candidate', () => {
     VERSION_MANAGER_SOURCE,
     /public func discardInstalledVersion\(_ version: String\) throws \{[\s\S]*?moveProfileLinksOff\(version: version\)[\s\S]*?guard repair\.canRemoveSourceRuntime else \{/
   )
+  // A retained Runtime has to say why it was retained, all four reasons
+  // included: with conflicts counted as zero everywhere the log read like a
+  // Runtime kept for no reason at all.
+  assert.match(
+    VERSION_MANAGER_SOURCE,
+    /Retaining Runtime \\\(version\): [\s\S]*?repair\.rollbackFailures\.count[\s\S]*?repair\.conflicts\.count/,
+  )
+  assert.match(
+    VERSION_MANAGER_SOURCE,
+    /Retaining discarded Runtime \\\(version\): [\s\S]*?repair\.scanFailures\.count[\s\S]*?repair\.conflicts\.count/,
+  )
+  assert.match(
+    VERSION_MANAGER_SOURCE,
+    /for path in \(repair\.unresolved \+ repair\.scanFailures \+ repair\.rollbackFailures \+ repair\.conflicts\)/,
+    'the paths behind the counts travel with the log line',
+  )
   assert.match(VERSION_MANAGER_SOURCE, /let alignedFamily = try await resolveAlignedFamily\(version: version, registry: reg\)/)
   assert.match(VERSION_MANAGER_SOURCE, /activateWhenMissing: Bool = true/)
   assert.match(VERSION_MANAGER_SOURCE, /private func verifyNpmIntegrity\(/)
