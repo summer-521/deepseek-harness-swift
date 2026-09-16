@@ -1,5 +1,26 @@
 import Foundation
 
+/// Version of the shell↔page bridge contract.
+///
+/// The two halves ship separately. The shell half is
+/// `DshBridgeHandler.scriptSource`, compiled into the app bundle; the page half
+/// is `assets/dsh-desktop-host/client.js`, which the app installs into the
+/// active Profile. Updating the app therefore does not update a page half that
+/// was installed earlier, and a page half built against a different message
+/// shape would otherwise be rejected field by field with nothing to say why.
+///
+/// The page half declares its version in the `ready` handshake; a declaration
+/// that differs from this constant is reported as a protocol mismatch instead
+/// of as a malformed message, and a handshake with no declaration at all stays
+/// valid because it comes from a page half that predates versioning. Bump this
+/// constant, the injected constant and the page constant together whenever a
+/// message's shape or capability changes.
+public enum DshBridgeProtocol {
+    public static let version = 1
+    /// Payload field carrying the page half's declared version.
+    public static let versionField = "protocolVersion"
+}
+
 /// The message kinds understood by the native desktop bridge. Keeping this
 /// list in one value makes capability selection explicit for normal,
 /// recovery, and other app-owned pages.
@@ -151,6 +172,7 @@ public enum DshBridgeMessageValidationError: Error, LocalizedError, Equatable, S
     case payloadTooLarge
     case unsupportedPayloadField(String)
     case payloadValueTooLong(String)
+    case protocolVersionMismatch(declared: Int)
 
     public var errorDescription: String? {
         switch self {
@@ -181,6 +203,7 @@ public enum DshBridgeMessageValidationError: Error, LocalizedError, Equatable, S
         case .payloadTooLarge: return "桥接 payload 超过大小上限。"
         case .unsupportedPayloadField(let field): return "桥接 payload 包含不受支持的字段：\(field)。"
         case .payloadValueTooLong(let field): return "桥接 payload 字段过长：\(field)。"
+        case .protocolVersionMismatch(let declared): return "页面桥接协议版本 \(declared) 与外壳 \(DshBridgeProtocol.version) 不一致。"
         }
     }
 }
@@ -305,6 +328,32 @@ public final class DshBridgeMessageValidator: @unchecked Sendable {
         _ payload: Any?,
         for type: DshBridgeMessageType
     ) -> Result<Void, DshBridgeMessageValidationError> {
+        if type == .ready {
+            // The handshake may carry the page half's protocol version. A page
+            // half installed before versioning sends no payload at all, and it
+            // must keep working; a declared version that disagrees is a
+            // protocol mismatch rather than a malformed message, so the host
+            // can say what is actually wrong.
+            guard let payload else { return .success(()) }
+            guard let object = payload as? [String: Any] else { return .failure(.invalidPayload) }
+            for key in object.keys where key != DshBridgeProtocol.versionField {
+                return .failure(.unsupportedPayloadField(key))
+            }
+            guard let raw = object[DshBridgeProtocol.versionField],
+                  let number = raw as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID() else {
+                return .failure(.invalidPayload)
+            }
+            let declared = number.intValue
+            guard number.doubleValue == Double(declared), declared > 0 else {
+                return .failure(.invalidPayload)
+            }
+            guard declared == DshBridgeProtocol.version else {
+                return .failure(.protocolVersionMismatch(declared: declared))
+            }
+            return .success(())
+        }
+
         let objectTypes: Set<DshBridgeMessageType> = [.theme, .locale, .notify]
         if type == .debug {
             guard let payload else { return .failure(.payloadRequired) }

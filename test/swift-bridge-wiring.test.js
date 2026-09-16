@@ -42,6 +42,43 @@ test('page bridge API sends requests only; native shell owns identity binding', 
   assert.match(controllerSource, /updateBridgeValidationContext\(for: session\)/)
 })
 
+test('the two halves of the bridge agree on one protocol version', () => {
+  const validatorSource = fs.readFileSync(
+    path.join(testDirectory, '..', 'Sources', 'Bridge', 'DshBridgeMessageValidator.swift'),
+    'utf8',
+  )
+  const clientSource = fs.readFileSync(
+    path.join(testDirectory, '..', 'assets', 'dsh-desktop-host', 'client.js'),
+    'utf8',
+  )
+
+  // The shell half is compiled into the app; the page half is installed into
+  // the Profile. An app update does not update an already-installed page half,
+  // so the two constants must be bumped together and the pair must be able to
+  // notice when they were not.
+  const shellVersion = validatorSource.match(/public static let version = (\d+)/)?.[1]
+  const pageVersion = clientSource.match(/var PAGE_BRIDGE_PROTOCOL_VERSION = (\d+)/)?.[1]
+  assert.ok(shellVersion, 'DshBridgeProtocol.version must be declared in the validator')
+  assert.ok(pageVersion, 'the page half must declare its protocol version')
+  assert.equal(pageVersion, shellVersion, 'the shell and page halves must be bumped together')
+
+  const scriptStart = handlerSource.indexOf('public static let scriptSource')
+  const scriptEnd = handlerSource.indexOf('    """', scriptStart)
+  const script = handlerSource.slice(scriptStart, scriptEnd)
+  assert.match(script, /protocolVersion: \\\(DshBridgeProtocol\.version\)/)
+  assert.match(script, /ready: function\(payload\)/)
+  assert.match(script, /if \(payload !== undefined && payload !== null\) \{ message\.payload = payload; \}/)
+
+  assert.match(clientSource, /host\.ready\(\{ protocolVersion: PAGE_BRIDGE_PROTOCOL_VERSION \}\)/)
+  // A mismatch is a fact about our own artifacts, so it is reported; only
+  // untrusted bodies stay silent at the WebKit boundary.
+  assert.match(
+    handlerSource,
+    /if case \.failure\(\.protocolVersionMismatch\(let declared\)\) = validation/,
+  )
+  assert.match(handlerSource, /does not match shell/)
+})
+
 test('restart and safe-mode return invalidate stale bridge context at service boundaries', () => {
   const restartStart = controllerSource.indexOf(
     '    public func restartDshServiceDuringOperation('

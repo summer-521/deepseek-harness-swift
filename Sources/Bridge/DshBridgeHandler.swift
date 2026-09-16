@@ -39,8 +39,11 @@ public final class DshBridgeHandler: NSObject, WKScriptMessageHandler {
     (function() {
         if (window.dshDesktop) return;
         window.dshDesktop = {
-            ready: function() {
-                window.webkit.messageHandlers.dshDesktop.postMessage({ type: 'ready' });
+            protocolVersion: \(DshBridgeProtocol.version),
+            ready: function(payload) {
+                var message = { type: 'ready' };
+                if (payload !== undefined && payload !== null) { message.payload = payload; }
+                window.webkit.messageHandlers.dshDesktop.postMessage(message);
             },
             openSettings: function() {
                 window.webkit.messageHandlers.dshDesktop.postMessage({ type: 'openSettings' });
@@ -79,7 +82,18 @@ public final class DshBridgeHandler: NSObject, WKScriptMessageHandler {
             origin: origin,
             body: body
         )
-        guard case .success(let validated) = validator.validate(incoming, context: context) else {
+        let validation = validator.validate(incoming, context: context)
+        if case .failure(.protocolVersionMismatch(let declared)) = validation {
+            // A version number and a mismatch reason are facts about our own
+            // artifacts, not untrusted content: the page half installed in the
+            // Profile was built against a different bridge contract. Without
+            // this line the page simply goes quiet while every message it sends
+            // is rejected field by field.
+            print(
+                "[DshBridge] page bridge protocol \(declared) does not match shell \(DshBridgeProtocol.version)"
+            )
+        }
+        guard case .success(let validated) = validation else {
             // Do not echo untrusted bodies or payloads into logs. Rejection is
             // intentionally silent at the WebKit boundary.
             return

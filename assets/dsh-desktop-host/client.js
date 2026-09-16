@@ -3,6 +3,15 @@
 // factory, which the client module system materializes when the plugin entry
 // activates. Kept dependency-free on purpose.
 
+// Version of the shell↔page bridge contract this half speaks. It must match
+// `DshBridgeProtocol.version` in the shell: the app installs this file into the
+// active Profile, so an app update does not update a copy installed earlier.
+// The shell is the authority and reports a mismatch through the `ready`
+// handshake below instead of silently rejecting every message this file sends.
+// Bump it together with the shell constant, and only when a message's shape
+// changes.
+var PAGE_BRIDGE_PROTOCOL_VERSION = 1
+
 // Claude's palette from DeepSeek-Code. This deliberately contains only color
 // tokens: the DSH Web UI keeps its original text, typography, layout, spacing,
 // radius, and component behavior.
@@ -233,7 +242,7 @@ window.__ModuleLoader__.load({
           }
           bridgeReadyReported = true
           bridgeReadyTimer = null
-          host.ready()
+          host.ready({ protocolVersion: PAGE_BRIDGE_PROTOCOL_VERSION })
         }
 
         // --- Locale bridge ---

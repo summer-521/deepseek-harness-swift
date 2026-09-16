@@ -161,7 +161,37 @@ struct DshBridgeDiagnosticHarness {
             payload: ["unknown": "field"]))), .unsupportedPayloadField("unknown"), "unknown payload field")
         failure(validator.validate(incoming(body: makeBody(
             type: "ready", launchID: launchID, generationID: generationID,
-            payload: ["unexpected": "value"]))), .payloadForbidden, "payload on ready")
+            payload: ["unexpected": "value"]))), .unsupportedPayloadField("unexpected"), "unknown ready payload field")
+
+        // The page half of the bridge ships in the Profile and declares its
+        // contract version in the ready handshake. A matching declaration is
+        // accepted, a page half from before versioning sends no payload at all
+        // and keeps working (asserted above), and a different declaration is a
+        // protocol mismatch the host can report, not a malformed message.
+        let versionedReady = validator.validate(incoming(body: makeBody(
+            type: "ready", launchID: launchID, generationID: generationID,
+            payload: ["protocolVersion": DshBridgeProtocol.version])))
+        require(
+            { if case .success = versionedReady { return true }; return false }(),
+            "a ready handshake declaring the shell's protocol version should be accepted"
+        )
+        failure(validator.validate(incoming(body: makeBody(
+            type: "ready", launchID: launchID, generationID: generationID,
+            payload: ["protocolVersion": DshBridgeProtocol.version + 1]))),
+            .protocolVersionMismatch(declared: DshBridgeProtocol.version + 1),
+            "an older page half")
+        failure(validator.validate(incoming(body: makeBody(
+            type: "ready", launchID: launchID, generationID: generationID,
+            payload: ["protocolVersion": true]))), .invalidPayload, "boolean protocol version")
+        failure(validator.validate(incoming(body: makeBody(
+            type: "ready", launchID: launchID, generationID: generationID,
+            payload: ["protocolVersion": 1.5]))), .invalidPayload, "fractional protocol version")
+        failure(validator.validate(incoming(body: makeBody(
+            type: "ready", launchID: launchID, generationID: generationID,
+            payload: ["protocolVersion": 0]))), .invalidPayload, "zero protocol version")
+        failure(validator.validate(incoming(body: makeBody(
+            type: "ready", launchID: launchID, generationID: generationID,
+            payload: [:]))), .invalidPayload, "empty ready payload")
         failure(validator.validate(incoming(body: makeBody(
             type: "notify", launchID: launchID, generationID: generationID,
             payload: ["title": 42]))), .invalidPayload, "wrong payload value type")
