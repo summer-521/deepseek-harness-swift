@@ -771,7 +771,7 @@ public enum DshRuntimeTransaction {
 }
 
 /// Persistent configuration and state model for DSH Desktop.
-public struct DshStateConfig: Codable, Equatable {
+public struct DshStateConfig: Codable, Equatable, Sendable {
     public var selectedVersion: String?
     public var appProfile: DshAppProfile
     /// Non-nil while a Profile switch has not yet completed its startup and
@@ -977,7 +977,7 @@ public enum DshStatePersistenceError: Error, LocalizedError, Equatable, Sendable
     }
 }
 
-public final class DshStateManager {
+public final class DshStateManager: @unchecked Sendable {
     public static let shared = DshStateManager()
 
     private let lock = NSLock()

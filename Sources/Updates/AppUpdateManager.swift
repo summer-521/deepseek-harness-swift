@@ -6,6 +6,7 @@ import Sparkle
 /// The Swift shell uses one updater instance for automatic checks, the app
 /// menu, and the About settings page. DSH service versions and plugin versions
 /// remain managed by their existing version managers.
+@MainActor
 public final class AppUpdateManager: ObservableObject {
     public static let shared = AppUpdateManager()
 
@@ -56,6 +57,7 @@ final class AppUpdateDelegate: NSObject, SPUUpdaterDelegate {
 
 
 /// Publishes Sparkle's KVO-backed check availability for SwiftUI controls.
+@MainActor
 public final class CheckForUpdatesViewModel: ObservableObject {
     @Published public private(set) var canCheckForUpdates = false
 

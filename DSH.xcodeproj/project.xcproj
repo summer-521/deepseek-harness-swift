@@ -1,0 +1,253 @@
+{
+  "organization": "Krystal Cao",
+  "default-configuration": "Release",
+  "configurations": [
+    "Debug",
+    "Release",
+  ],
+  "localizations": {
+    "development": "zh_CN",
+    "supported": [
+      "en",
+    ],
+  },
+  "packages": [
+    {
+      "kind": "remote",
+      "repository": "https://github.com/sparkle-project/Sparkle",
+      "version": {
+        "up-to-next-major-version": "2.9.3",
+      },
+    },
+  ],
+  "files": [
+    { "path": "app.icon", "target-membership": [ "DSH/resources" ] },
+    {
+      "kind": "group",
+      "path": "Sources",
+      "children": [
+        { "path": "main.swift", "target-membership": [ "DSH/compile-sources" ] },
+        { "path": "AppDelegate.swift", "target-membership": [ "DSH/compile-sources" ] },
+        { "path": "ApplicationIcon.swift", "target-membership": [ "DSH/compile-sources" ] },
+        {
+          "kind": "group",
+          "path": "State",
+          "children": [
+            { "path": "DshState.swift", "target-membership": [ "DSH/compile-sources" ] },
+          ],
+        }, {
+          "kind": "group",
+          "path": "Diagnostics",
+          "children": [
+            { "path": "DshDiagnostic.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshDiagnosticStore.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshDiagnosticExporter.swift", "target-membership": [ "DSH/compile-sources" ] },
+          ],
+        }, {
+          "kind": "group",
+          "path": "Service",
+          "children": [
+            { "path": "NodeRuntime.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "NodeChildEnvironment.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshLaunchContext.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshService.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshInstanceLock.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshAsyncOperationGate.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshControlProtocol.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshAccessController.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshWebEndpoint.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshSecretRedactor.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshRuntimeHealthClient.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshProcessIO.swift", "target-membership": [ "DSH/compile-sources" ] },
+          ],
+        }, {
+          "kind": "group",
+          "path": "Recovery",
+          "children": [
+            { "path": "DshRecoveryState.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshRecoveryProfileManager.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "RecoveryViewModel.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "RecoveryView.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "RecoveryWindowController.swift", "target-membership": [ "DSH/compile-sources" ] },
+          ],
+        }, {
+          "kind": "group",
+          "path": "Startup",
+          "children": [
+            { "path": "StartupView.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "StartupWindowController.swift", "target-membership": [ "DSH/compile-sources" ] },
+          ],
+        }, {
+          "kind": "group",
+          "path": "Versions",
+          "children": [
+            { "path": "DshSemanticVersion.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshVersionManager.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshFamilyClosure.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshProfileLinkRepair.swift", "target-membership": [ "DSH/compile-sources" ] },
+          ],
+        }, {
+          "kind": "group",
+          "path": "Plugins",
+          "children": [
+            { "path": "DshPluginManager.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshPluginInspector.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshPluginOperationState.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshPluginOperationCoordinator.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshPluginFailureResolver.swift", "target-membership": [ "DSH/compile-sources" ] },
+          ],
+        }, {
+          "kind": "group",
+          "path": "Notification",
+          "children": [
+            { "path": "NotificationManager.swift", "target-membership": [ "DSH/compile-sources" ] },
+          ],
+        }, {
+          "kind": "group",
+          "path": "Bridge",
+          "children": [
+            { "path": "DshBridgeHandler.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshBridgeMessageValidator.swift", "target-membership": [ "DSH/compile-sources" ] },
+          ],
+        }, {
+          "kind": "group",
+          "path": "About",
+          "children": [
+            { "path": "AboutWindowController.swift", "target-membership": [ "DSH/compile-sources" ] },
+          ],
+        }, {
+          "kind": "group",
+          "path": "MainWindow",
+          "children": [
+            { "path": "MainWindowController.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshWebShell.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshRendererCookieStore.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshUpstreamCookieStore.swift", "target-membership": [ "DSH/compile-sources" ] },
+          ],
+        }, {
+          "kind": "group",
+          "path": "SettingsUI",
+          "children": [
+            { "path": "SettingsViewModel.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "VersionsTabView.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "PluginsTabView.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "GeneralTabView.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "AboutTabView.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "SettingsView.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "SettingsWindowController.swift", "target-membership": [ "DSH/compile-sources" ] },
+          ],
+        }, {
+          "kind": "group",
+          "path": "Updates",
+          "children": [
+            { "path": "AppUpdateManager.swift", "target-membership": [ "DSH/compile-sources" ] },
+          ],
+        },
+      ],
+    },
+    { "path": "Info.plist" },
+    { "path": "Version.xcconfig" },
+    {
+      "kind": "group",
+      "name": "Frameworks",
+      "children": [
+        { "path": "<SDK>/System/Library/Frameworks/AppKit.framework", "target-membership": [ "DSH/frameworks" ] },
+        { "path": "<SDK>/System/Library/Frameworks/WebKit.framework", "target-membership": [ "DSH/frameworks" ] },
+        { "path": "<SDK>/System/Library/Frameworks/SwiftUI.framework", "target-membership": [ "DSH/frameworks" ] },
+        { "path": "<SDK>/System/Library/Frameworks/UserNotifications.framework", "target-membership": [ "DSH/frameworks" ] },
+        { "path": "<SDK>/System/Library/Frameworks/Security.framework", "target-membership": [ "DSH/frameworks" ] },
+      ],
+    }, {
+      "kind": "group",
+      "name": "Products",
+      "children": [
+        { "path": "<PRODUCTS>/DSH.app", "id": "D00000000000000000000008", "type": "wrapper.application", "index": false },
+      ],
+    },
+  ],
+  "targets": [
+    {
+      "name": "DSH",
+      "id": "D00000000000000000000002",
+      "product": "Products/DSH.app",
+      "product-type": "application",
+      "last-swift-migration": "26.0",
+      "specialized-configurations": [
+        { "name": "Debug", "file": "Version.xcconfig" },
+        { "name": "Release", "file": "Version.xcconfig" },
+      ],
+      "build-phases": [
+        "compile-sources",
+        "frameworks",
+        "resources",
+        {
+          "kind": "script",
+          "name": "Copy DSH runtime resources",
+          "log-environment-variables": true,
+          "run-on-every-build": true,
+          "shell": "/bin/bash",
+          "script": [
+            "set -euo pipefail",
+            "SWIFT_ASSETS_DIR=\"${SRCROOT}/assets\"",
+            "RESOURCES_DIR=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"",
+            "mkdir -p \"${RESOURCES_DIR}/node/bin\" \"${RESOURCES_DIR}/assets/bin\"",
+            "cp \"${SWIFT_ASSETS_DIR}/dsh-family.json\" \"${RESOURCES_DIR}/assets/dsh-family.json\"",
+            "cp \"${SWIFT_ASSETS_DIR}/dsh-runtime-bootstrap.mjs\" \"${RESOURCES_DIR}/assets/dsh-runtime-bootstrap.mjs\"",
+            "cp \"${SWIFT_ASSETS_DIR}/bin/pnpm\" \"${RESOURCES_DIR}/assets/bin/pnpm\"",
+            "if [ -d \"${SWIFT_ASSETS_DIR}/node/bin\" ]; then",
+            "\tcp -R \"${SWIFT_ASSETS_DIR}/node/bin/.\" \"${RESOURCES_DIR}/node/bin/\"",
+            "fi",
+            "if [ ! -f \"${SWIFT_ASSETS_DIR}/bin/pnpm-pkg/bin/pnpm.cjs\" ]; then",
+            "\tbash \"${SRCROOT}/scripts/fetch-pnpm.sh\"",
+            "fi",
+            "cp -R \"${SWIFT_ASSETS_DIR}/bin/pnpm-pkg\" \"${RESOURCES_DIR}/assets/bin/\"",
+            "if [ ! -d \"${SWIFT_ASSETS_DIR}/dsh-desktop-host\" ]; then",
+            "\techo \"Swift bridge plugin is missing: ${SWIFT_ASSETS_DIR}/dsh-desktop-host\" >&2",
+            "\texit 1",
+            "fi",
+            "cp -R \"${SWIFT_ASSETS_DIR}/dsh-desktop-host\" \"${RESOURCES_DIR}/assets/\"",
+            "chmod +x \"${RESOURCES_DIR}/node/bin/node\" \"${RESOURCES_DIR}/assets/bin/pnpm\" 2>/dev/null || true",
+            "",
+          ],
+        },
+      ],
+      "package-product-members": [
+        {
+          "package": "Sparkle",
+          "product-name": "Sparkle",
+          "build-phase": { "build-phase": "frameworks" },
+        },
+      ],
+      "build-settings": {
+        "ARCHS": "arm64",
+        "ASSETCATALOG_COMPILER_APPICON_NAME": "app",
+        "ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS": "NO",
+        "CODE_SIGNING_ALLOWED": "NO",
+        "CODE_SIGNING_REQUIRED": "NO",
+        "CODE_SIGN_IDENTITY": "-",
+        "ENABLE_HARDENED_RUNTIME": "NO",
+        "GENERATE_INFOPLIST_FILE": "NO",
+        "INFOPLIST_FILE": "Info.plist",
+        "INFOPLIST_KEY_LSApplicationCategoryType": "public.app-category.utilities",
+        "LD_RUNPATH_SEARCH_PATHS": [
+          "$(inherited)",
+          "@executable_path/../Frameworks",
+        ],
+        "MACOSX_DEPLOYMENT_TARGET": "26.0",
+        "OTHER_SWIFT_FLAGS": "-parse-as-library",
+        "PRODUCT_BUNDLE_IDENTIFIER": "$(SWIFT_BUNDLE_IDENTIFIER)",
+        "PRODUCT_NAME": "DSH",
+        "SWIFT_OPTIMIZATION_LEVEL[config=Release]": "-O",
+        "SWIFT_VERSION": "6.0",
+      },
+    },
+  ],
+  "build-settings": {
+    "CLANG_ENABLE_MODULES": "YES",
+    "MACOSX_DEPLOYMENT_TARGET": "26.0",
+    "SWIFT_OPTIMIZATION_LEVEL[config=Release]": "-O",
+    "SWIFT_VERSION": "6.0",
+  },
+  "last-upgrade": "26.6",
+  "last-swift-update": "26.0",
+}

@@ -1,6 +1,6 @@
 import Foundation
 
-public struct DshVersionItem: Identifiable, Equatable {
+public struct DshVersionItem: Identifiable, Equatable, Sendable {
     public var id: String { version }
     public let version: String
     public let publishedAt: String?
@@ -26,7 +26,7 @@ public struct DshVersionItem: Identifiable, Equatable {
     }
 }
 
-public struct InstallProgress: Equatable {
+public struct InstallProgress: Equatable, Sendable {
     public let version: String
     public let phase: String
     public let detail: String?
@@ -41,7 +41,51 @@ private struct DshFamilyAlignment {
     let missing: [String]
 }
 
-public final class DshVersionManager {
+/// Collects process output from FileHandle readability callbacks. The
+/// callbacks are Sendable in Swift 6, so the mutable buffer and progress
+/// callback live behind one explicitly locked reference type.
+private final class DshProcessOutputAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer = ""
+    private let version: String
+    private let phase: String
+    private let onProgress: @Sendable (InstallProgress) -> Void
+
+    init(
+        version: String,
+        phase: String,
+        onProgress: @escaping @Sendable (InstallProgress) -> Void
+    ) {
+        self.version = version
+        self.phase = phase
+        self.onProgress = onProgress
+    }
+
+    func consume(_ data: Data) {
+        guard !data.isEmpty,
+              let chunk = String(data: data, encoding: .utf8),
+              !chunk.isEmpty else { return }
+
+        lock.lock()
+        buffer.append(chunk)
+        lock.unlock()
+
+        let detail = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !detail.isEmpty else { return }
+        let progress = InstallProgress(version: version, phase: phase, detail: detail)
+        DispatchQueue.main.async { [onProgress] in
+            onProgress(progress)
+        }
+    }
+
+    var output: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+public final class DshVersionManager: @unchecked Sendable {
     public static let shared = DshVersionManager()
 
     public static let defaultRegistry = "https://registry.npmjs.org"
@@ -617,7 +661,7 @@ public final class DshVersionManager {
         registry: String? = nil,
         activateWhenMissing: Bool = true,
         expectedIntegrity: String,
-        onProgress: @escaping (InstallProgress) -> Void
+        onProgress: @escaping @Sendable (InstallProgress) -> Void
     ) async throws -> Bool {
         guard Self.isValidVersion(version) else {
             throw NSError(domain: "DshVersionManager", code: -8, userInfo: [NSLocalizedDescriptionKey: "无效的 DSH 版本号：\(version)"])
@@ -827,7 +871,7 @@ public final class DshVersionManager {
         version: String,
         registry: String? = nil,
         expectedIntegrity: String,
-        onProgress: @escaping (InstallProgress) -> Void
+        onProgress: @escaping @Sendable (InstallProgress) -> Void
     ) async throws {
         _ = try await installVersion(
             version: version,
@@ -964,7 +1008,7 @@ public final class DshVersionManager {
         environment: [String: String],
         version: String,
         phase: String,
-        onProgress: @escaping (InstallProgress) -> Void
+        onProgress: @escaping @Sendable (InstallProgress) -> Void
     ) throws -> String {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: pnpm)
@@ -979,23 +1023,18 @@ public final class DshVersionManager {
         proc.standardOutput = stdout
         proc.standardError = stderr
 
-        let outputLock = NSLock()
-        var output = ""
-        func consume(_ data: Data) {
-            guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8), !chunk.isEmpty else { return }
-            outputLock.lock()
-            output.append(chunk)
-            outputLock.unlock()
-            let detail = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !detail.isEmpty {
-                DispatchQueue.main.async {
-                    onProgress(InstallProgress(version: version, phase: phase, detail: detail))
-                }
-            }
-        }
+        let outputAccumulator = DshProcessOutputAccumulator(
+            version: version,
+            phase: phase,
+            onProgress: onProgress
+        )
 
-        stdout.fileHandleForReading.readabilityHandler = { handle in consume(handle.availableData) }
-        stderr.fileHandleForReading.readabilityHandler = { handle in consume(handle.availableData) }
+        stdout.fileHandleForReading.readabilityHandler = { handle in
+            outputAccumulator.consume(handle.availableData)
+        }
+        stderr.fileHandleForReading.readabilityHandler = { handle in
+            outputAccumulator.consume(handle.availableData)
+        }
 
         do {
             try proc.run()
@@ -1008,12 +1047,10 @@ public final class DshVersionManager {
 
         stdout.fileHandleForReading.readabilityHandler = nil
         stderr.fileHandleForReading.readabilityHandler = nil
-        consume(stdout.fileHandleForReading.readDataToEndOfFile())
-        consume(stderr.fileHandleForReading.readDataToEndOfFile())
+        outputAccumulator.consume(stdout.fileHandleForReading.readDataToEndOfFile())
+        outputAccumulator.consume(stderr.fileHandleForReading.readDataToEndOfFile())
 
-        outputLock.lock()
-        let finalOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        outputLock.unlock()
+        let finalOutput = outputAccumulator.output
 
         guard proc.terminationStatus == 0 else {
             let detail = finalOutput.isEmpty ? "未返回具体错误信息" : String(finalOutput.suffix(1200))

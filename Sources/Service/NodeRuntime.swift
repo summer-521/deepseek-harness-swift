@@ -1,7 +1,7 @@
 import Foundation
 
 /// Discovers and manages the Node.js runtime, bundled pnpm, and user shell environment.
-public final class NodeRuntime {
+public final class NodeRuntime: @unchecked Sendable {
     public static let shared = NodeRuntime()
 
     private let lock = NSLock()

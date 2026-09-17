@@ -59,7 +59,7 @@ struct DshFamilyClosure: Sendable, Codable {
 /// costs one registry request per package in the graph (hundreds of them), and
 /// installing a Runtime, switching versions and activating a candidate would
 /// otherwise repeat that walk every time the App restarts.
-final class DshFamilyClosureCache {
+final class DshFamilyClosureCache: @unchecked Sendable {
     /// Bumped when the stored shape changes, so an older file is ignored rather
     /// than decoded into the wrong meaning.
     static let fileFormatVersion = 1

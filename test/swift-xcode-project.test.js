@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import test from 'node:test'
 
 const PROJECT_SOURCE = fs.readFileSync(
-  new URL('../DSH.xcodeproj/project.pbxproj', import.meta.url),
+  new URL('../DSH.xcodeproj/project.xcproj', import.meta.url),
   'utf8',
 )
 const INFO_PLIST_SOURCE = fs.readFileSync(
@@ -81,15 +81,10 @@ const SWIFT_SOURCES = [
 ]
 
 test('Swift shell Xcode project owns the complete native app target', () => {
-  assert.match(PROJECT_SOURCE, /productType = "com\.apple\.product-type\.application"/)
-  // Both configurations take the identifier from Version.xcconfig, so a stale
-  // literal cannot survive in one of them, and no literal is left in the
-  // project file for a rebase to resurrect.
-  assert.equal(
-    (PROJECT_SOURCE.match(/PRODUCT_BUNDLE_IDENTIFIER = "\$\(SWIFT_BUNDLE_IDENTIFIER\)";/g) ?? [])
-      .length,
-    2,
-  )
+  assert.match(PROJECT_SOURCE, /"product-type": "application"/)
+  // Both configurations take the identifier from Version.xcconfig, so no
+  // literal is left in the project file for a rebase to resurrect.
+  assert.match(PROJECT_SOURCE, /"PRODUCT_BUNDLE_IDENTIFIER": "\$\(SWIFT_BUNDLE_IDENTIFIER\)"/)
   const bundleIdentifier = VERSION_CONFIG_SOURCE.match(/^SWIFT_BUNDLE_IDENTIFIER = (\S+)$/m)?.[1]
   assert.ok(bundleIdentifier, 'Version.xcconfig must define SWIFT_BUNDLE_IDENTIFIER')
   // A self-signed app is labelled by the vendor of its reverse-DNS prefix, so
@@ -102,14 +97,14 @@ test('Swift shell Xcode project owns the complete native app target', () => {
     assert.match(source, /SWIFT_BUNDLE_IDENTIFIER/)
     assert.match(source, /Print :CFBundleIdentifier/)
   }
-  assert.match(PROJECT_SOURCE, /INFOPLIST_FILE = Info\.plist/)
-  assert.match(PROJECT_SOURCE, /app\.icon in Resources/)
-  assert.match(PROJECT_SOURCE, /ASSETCATALOG_COMPILER_APPICON_NAME = app/)
-  assert.match(PROJECT_SOURCE, /baseConfigurationReference = .*Version\.xcconfig/)
-  assert.match(PROJECT_SOURCE, /OTHER_SWIFT_FLAGS = "-parse-as-library"/)
-  assert.match(PROJECT_SOURCE, /XCRemoteSwiftPackageReference "Sparkle"/)
-  assert.match(PROJECT_SOURCE, /minimumVersion = 2\.9\.3/)
-  assert.match(PROJECT_SOURCE, /productName = Sparkle/)
+  assert.match(PROJECT_SOURCE, /"INFOPLIST_FILE": "Info\.plist"/)
+  assert.match(PROJECT_SOURCE, /"path": "app\.icon", "target-membership": \[ "DSH\/resources" \]/)
+  assert.match(PROJECT_SOURCE, /"ASSETCATALOG_COMPILER_APPICON_NAME": "app"/)
+  assert.match(PROJECT_SOURCE, /"file": "Version\.xcconfig"/)
+  assert.match(PROJECT_SOURCE, /"OTHER_SWIFT_FLAGS": "-parse-as-library"/)
+  assert.match(PROJECT_SOURCE, /"repository": "https:\/\/github\.com\/sparkle-project\/Sparkle"/)
+  assert.match(PROJECT_SOURCE, /"up-to-major-version": "2\.9\.3"|"up-to-next-major-version": "2\.9\.3"/)
+  assert.match(PROJECT_SOURCE, /"product-name": "Sparkle"/)
   assert.match(PROJECT_SOURCE, /Copy DSH runtime resources/)
   assert.match(PROJECT_SOURCE, /SWIFT_ASSETS_DIR=\\"\$\{SRCROOT\}\/assets\\"/)
   assert.match(PROJECT_SOURCE, /SWIFT_ASSETS_DIR.*dsh-family\.json/)
@@ -121,14 +116,17 @@ test('Swift shell Xcode project owns the complete native app target', () => {
   assert.doesNotMatch(PROJECT_SOURCE, /REPO_DIR.*assets\/bin\/pnpm-pkg/)
   assert.doesNotMatch(PROJECT_SOURCE, /REPO_DIR.*dsh-desktop-host/)
   assert.doesNotMatch(PROJECT_SOURCE, /assets\/bin\/dsh-node/)
-  assert.match(PROJECT_SOURCE, /path = Sources;\n\s+sourceTree = "<group>"/)
-  assert.doesNotMatch(PROJECT_SOURCE, /name = DSHShell;/)
-  assert.match(PROJECT_SOURCE, /path = Info\.plist; sourceTree = "<group>"/)
-  assert.doesNotMatch(PROJECT_SOURCE, /path = Sources\/DSHShell\/[^;]+; sourceTree = SOURCE_ROOT/)
+  assert.match(PROJECT_SOURCE, /"kind": "group",\n\s+"path": "Sources"/)
+  assert.doesNotMatch(PROJECT_SOURCE, /DSHShell/)
+  assert.match(PROJECT_SOURCE, /\{ "path": "Info\.plist" \}/)
+  assert.doesNotMatch(PROJECT_SOURCE, /Sources\/DSHShell/)
 
   for (const source of SWIFT_SOURCES) {
     const fileName = source.split('/').at(-1)
-    assert.match(PROJECT_SOURCE, new RegExp(`path = ${fileName}; sourceTree = "<group>"`))
+    assert.match(
+      PROJECT_SOURCE,
+      new RegExp(`"path": "${fileName}", "target-membership": \\[ "DSH/compile-sources" \\]`),
+    )
   }
 })
 
@@ -184,7 +182,7 @@ test('the Help menu opens the same project page the About tab links to', () => {
 })
 
 test('Swift application build, packaging, and bundled Node are arm64-only', () => {
-  assert.equal((PROJECT_SOURCE.match(/ARCHS = arm64;/g) ?? []).length, 2)
+  assert.match(PROJECT_SOURCE, /"ARCHS": "arm64"/)
   for (const source of [BUILD_SOURCE, PACKAGE_SOURCE, FETCH_NODE_SOURCE]) {
     assert.match(source, /arm64/)
     assert.doesNotMatch(source, /x86_64|x64|Intel|universal/i)

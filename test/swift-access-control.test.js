@@ -24,7 +24,7 @@ const PLUGIN_SOURCE = read('../Sources/Plugins/DshPluginManager.swift')
 const COORDINATOR_SOURCE = read('../Sources/Plugins/DshPluginOperationCoordinator.swift')
 const PLUGIN_STATE_SOURCE = read('../Sources/Plugins/DshPluginOperationState.swift')
 const INSPECTOR_SOURCE = read('../Sources/Plugins/DshPluginInspector.swift')
-const PROJECT_SOURCE = read('../DSH.xcodeproj/project.pbxproj')
+const PROJECT_SOURCE = read('../DSH.xcodeproj/project.xcproj')
 const HOST_PACKAGE = read('../assets/dsh-desktop-host/package.json')
 const HOST_PATCH = read('../assets/dsh-desktop-host/cordis.patch.yml')
 const HOST_WEB_SERVER = read('../assets/dsh-desktop-host/webserver.js')
@@ -400,7 +400,7 @@ test('M1 launch and settings boundaries reject stale work and retain blocked con
   assert.match(WINDOW_SOURCE, /DshMainWindowUIMessage\.safe/)
   assert.match(WINDOW_SOURCE, /case -7:[\s\S]*\.pluginPackageMissing/)
   assert.match(WINDOW_SOURCE, /default:[\s\S]*\.unknown, "DSH 插件操作失败，原因尚未分类。"/)
-  assert.match(APP_SOURCE, /MainWindowController\.shared\.withRuntimeOperation \{[\s\S]*prepareForProfileMutation\(\)[\s\S]*recoverPendingProfileSwitch\(\)[\s\S]*recoverPendingRuntimeUpdate\(\)/)
+  assert.match(APP_SOURCE, /MainWindowController\.shared\.withRuntimeOperation \{[\s\S]*prepareForProfileMutation\(port: port\)[\s\S]*recoverPendingProfileSwitch\(\)[\s\S]*recoverPendingRuntimeUpdate\(\)/)
 })
 
 test('startup recovery classifies only the plugin handoff as plugin recovery', () => {

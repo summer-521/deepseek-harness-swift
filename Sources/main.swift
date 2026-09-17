@@ -1,13 +1,14 @@
 import AppKit
 
-private var strongDelegate: AppDelegate?
-
 @main
+@MainActor
 struct DSHApp {
+    private static var strongDelegate: AppDelegate?
+
     static func main() {
         let app = NSApplication.shared
         let delegate = AppDelegate()
-        strongDelegate = delegate
+        Self.strongDelegate = delegate
         app.delegate = delegate
         app.setActivationPolicy(.regular)
         app.run()

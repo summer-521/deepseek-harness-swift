@@ -15,7 +15,7 @@ const ABOUT_TAB_SOURCE = fs.readFileSync(
   'utf8',
 )
 const PROJECT_SOURCE = fs.readFileSync(
-  new URL('../DSH.xcodeproj/project.pbxproj', import.meta.url),
+  new URL('../DSH.xcodeproj/project.xcproj', import.meta.url),
   'utf8',
 )
 const BUILD_SOURCE = fs.readFileSync(
@@ -35,10 +35,9 @@ test('Swift About views load the app icon from the Icon Composer bundle', () => 
   assert.doesNotMatch(ICON_SOURCE, /forResource: "DSH"/)
   assert.match(ABOUT_WINDOW_SOURCE, /ApplicationIcon\.image/)
   assert.match(ABOUT_TAB_SOURCE, /ApplicationIcon\.image/)
-  assert.match(PROJECT_SOURCE, /ApplicationIcon\.swift in Sources/)
-  assert.match(PROJECT_SOURCE, /app\.icon in Resources/)
-  assert.match(PROJECT_SOURCE, /lastKnownFileType = folder\.iconcomposer\.icon/)
-  assert.match(PROJECT_SOURCE, /ASSETCATALOG_COMPILER_APPICON_NAME = app/)
+  assert.match(PROJECT_SOURCE, /"path": "ApplicationIcon\.swift", "target-membership": \[ "DSH\/compile-sources" \]/)
+  assert.match(PROJECT_SOURCE, /"path": "app\.icon", "target-membership": \[ "DSH\/resources" \]/)
+  assert.match(PROJECT_SOURCE, /"ASSETCATALOG_COMPILER_APPICON_NAME": "app"/)
   assert.doesNotMatch(PROJECT_SOURCE, /assets\/icon\.icns/)
   assert.match(BUILD_SOURCE, /APP_ICON_SOURCE=.*app\.icon/)
   assert.match(BUILD_SOURCE, /APP_ICON_NAME="app"/)

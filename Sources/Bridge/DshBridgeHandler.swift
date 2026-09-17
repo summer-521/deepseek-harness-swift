@@ -2,6 +2,7 @@ import Foundation
 import WebKit
 import AppKit
 
+@MainActor
 public protocol DshBridgeDelegate: AnyObject {
     func bridgeDidReceiveReady()
     func bridgeDidReceiveTheme(colorScheme: String?, externalTheme: String?)
@@ -129,8 +130,10 @@ public final class DshBridgeHandler: NSObject, WKScriptMessageHandler {
             // window must be told about the last three: the turn stays open
             // while it waits, so the completion edge never arrives.
             let reason = payload?["reason"] as? String
-            if !MainWindowController.shared.isFocusedForNotifications {
-                switch payload?["kind"] as? String {
+            let kind = payload?["kind"] as? String
+            Task { @MainActor in
+                guard !MainWindowController.shared.isFocusedForNotifications else { return }
+                switch kind {
                 case "needs-approval":
                     NotificationManager.shared.showNeedsApprovalNotification(title: title, reason: reason)
                 case "needs-review":

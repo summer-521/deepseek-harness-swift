@@ -295,9 +295,10 @@ test('the notify payload contract and routing cover the needs-input extension', 
   )
   assert.match(validatorSource, /"title", "cwd", "sessionId", "completedAt", "kind", "reason"/)
   assert.match(validatorSource, /value == "needs-input"[\s\S]{0,120}value == "needs-approval"[\s\S]{0,120}value == "needs-review"/)
+  assert.match(handlerSource, /let kind = payload\?\["kind"\] as\? String/)
   assert.match(
     handlerSource,
-    /switch payload\?\["kind"\] as\? String \{[\s\S]{0,600}showNeedsApprovalNotification[\s\S]{0,200}showNeedsReviewNotification[\s\S]{0,200}showNeedsInputNotification[\s\S]{0,200}showTaskDoneNotification/
+    /switch kind \{[\s\S]{0,600}showNeedsApprovalNotification[\s\S]{0,200}showNeedsReviewNotification[\s\S]{0,200}showNeedsInputNotification[\s\S]{0,200}showTaskDoneNotification/
   )
 })
 

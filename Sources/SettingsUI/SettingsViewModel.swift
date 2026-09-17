@@ -3322,12 +3322,12 @@ public final class SettingsViewModel: ObservableObject {
         // pnpm or Node work begins. A force-quit after this point can therefore
         // be repaired deterministically during the next app launch.
         var didPersistTransaction = false
-        switch DshStateManager.shared.update { state in
+        switch DshStateManager.shared.update({ state in
             guard state.appProfile == previous, state.pendingProfileSwitch == nil else { return }
             state.appProfile = profile
             state.pendingProfileSwitch = transaction
             didPersistTransaction = true
-        } {
+        }) {
         case .success:
             break
         case .failure(let error):

@@ -4,7 +4,7 @@ import SwiftUI
 @MainActor
 public final class AboutWindowController: NSWindowController {
     public static let shared = AboutWindowController()
-    private var appearanceObserver: NSObjectProtocol?
+    private nonisolated(unsafe) var appearanceObserver: NSObjectProtocol?
 
     private init() {
         let hostingController = NSHostingController(rootView: AboutWindowView())

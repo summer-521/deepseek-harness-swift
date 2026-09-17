@@ -93,10 +93,10 @@ test('the newest appcast item publishes the current build', () => {
 
 test('the appcast advertises a system and architecture the bundle can run on', () => {
   const newest = newestAppcastItem(read('appcast-swift.xml'))
-  const project = read(path.join('DSH.xcodeproj', 'project.pbxproj'))
+  const project = read(path.join('DSH.xcodeproj', 'project.xcproj'))
 
   const deploymentTargets = new Set(
-    [...project.matchAll(/MACOSX_DEPLOYMENT_TARGET = ([\d.]+);/g)].map((match) => match[1]),
+    [...project.matchAll(/"MACOSX_DEPLOYMENT_TARGET": "([\d.]+)"/g)].map((match) => match[1]),
   )
   assert.equal(deploymentTargets.size, 1, `one deployment target, saw ${[...deploymentTargets]}`)
   const [deploymentTarget] = deploymentTargets

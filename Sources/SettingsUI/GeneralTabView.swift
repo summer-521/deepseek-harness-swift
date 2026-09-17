@@ -275,7 +275,7 @@ public struct GeneralTabView: View {
                 focusedField = nil
             }
         }
-        .onChange(of: viewModel.dshPort) { newPort in
+        .onChange(of: viewModel.dshPort) { _, newPort in
             let value = String(newPort)
             if localState.tempPort != value {
                 localState.tempPort = value

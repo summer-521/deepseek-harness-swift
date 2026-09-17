@@ -193,7 +193,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 // queueing a start between the stale-process check and a
                 // recovery write.
                 try await MainWindowController.shared.withRuntimeOperation {
-                    try await DshService.shared.prepareForProfileMutation()
+                    let port = DshStateManager.shared.current.dshPort ?? 3080
+                    try await DshService.shared.prepareForProfileMutation(port: port)
                     try await SettingsViewModel.shared.recoverPendingProfileSwitch()
                     try await SettingsViewModel.shared.recoverPendingRuntimeUpdate()
                     try await SettingsViewModel.shared.retryRetainedWebProfileSnapshotCleanup()

@@ -115,7 +115,7 @@ test('Profile switches are recoverable across force-quit and commit only after a
   assert.match(WINDOW_SOURCE, /retryPendingProfileSwitchCleanup\(for: context\)/)
   assert.match(WINDOW_SOURCE, /try await DshService\.shared\.prepareForProfileMutation\(context: context\)/)
   assert.match(APP_SOURCE, /await SettingsViewModel\.shared\.recoverPendingProfileSwitch\(\)/)
-  assert.match(APP_SOURCE, /await DshService\.shared\.prepareForProfileMutation\(\)/)
+  assert.match(APP_SOURCE, /let port = DshStateManager\.shared\.current\.dshPort \?\? 3080[\s\S]*await DshService\.shared\.prepareForProfileMutation\(port: port\)/)
   assert.ok(APP_SOURCE.indexOf('prepareForProfileMutation') < APP_SOURCE.indexOf('recoverPendingProfileSwitch'))
   assert.ok(APP_SOURCE.indexOf('recoverPendingProfileSwitch') < APP_SOURCE.indexOf('MainWindowController.shared.launch'))
 })

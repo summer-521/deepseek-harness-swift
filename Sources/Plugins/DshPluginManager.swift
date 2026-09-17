@@ -447,7 +447,7 @@ private enum DshPluginOperationCoding {
     }
 }
 
-public final class DshPluginManager {
+public final class DshPluginManager: @unchecked Sendable {
     public static let shared = DshPluginManager()
 
     public static let desktopHostPluginName = "dsh-desktop-host"

@@ -3267,7 +3267,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         let generation = webUIReadinessGeneration
         let deadline = Date().addingTimeInterval(timeout)
 
-        var check: (() -> Void)!
+        var check: (@MainActor @Sendable () -> Void)!
         check = { [weak self] in
             guard let self,
                   self.webUIReadinessGeneration == generation,
@@ -3604,7 +3604,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     }
 
     public func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
-                        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                        decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else {
             decisionHandler(.cancel)
             return
@@ -3627,7 +3627,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     }
 
     public func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
-                        decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+                        decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
         guard let url = navigationResponse.response.url,
               isCurrentRuntimeWebURL(url) else {
             decisionHandler(.cancel)
@@ -3762,7 +3762,8 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     }
 
     public func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
-                         suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
+                         suggestedFilename: String,
+                         completionHandler: @escaping @MainActor @Sendable (URL?) -> Void) {
         do {
             let defaults = try downloadSelectionDefaults(suggestedFilename: suggestedFilename)
             guard let window else {
@@ -3841,7 +3842,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         _ webView: WKWebView,
         runOpenPanelWith parameters: WKOpenPanelParameters,
         initiatedByFrame frame: WKFrameInfo,
-        completionHandler: @escaping ([URL]?) -> Void
+        completionHandler: @escaping @MainActor @Sendable ([URL]?) -> Void
     ) {
         let panel = NSOpenPanel()
         panel.title = "上传附件"
@@ -3858,7 +3859,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         // different key window can appear behind DSH and make a working
         // picker look like a no-op.
         let parentWindow = webView.window ?? window
-        let finish: (NSApplication.ModalResponse) -> Void = { response in
+        let finish: @MainActor @Sendable (NSApplication.ModalResponse) -> Void = { response in
             guard response == .OK else {
                 completionHandler(nil)
                 return

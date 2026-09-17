@@ -149,7 +149,7 @@ public final class DshRuntimeHealthClient: @unchecked Sendable {
         }
     }
 
-    private final class RedirectDelegate: NSObject, URLSessionTaskDelegate {
+    private final class RedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         let origin: Origin
         let credentials: DshRuntimeHealthCredentials
         let requireCleanRedirectTargets: Bool

@@ -95,13 +95,20 @@ public final class DshService: @unchecked Sendable {
     /// pnpm cleanup when ownership cannot be established safely.
     @available(*, deprecated, message: "Use prepareForProfileMutation(context:) so the target Profile and port are immutable.")
     public func prepareForProfileMutation() async throws {
+        try await prepareForProfileMutation(port: DshStateManager.shared.current.dshPort ?? 3080)
+    }
+
+    /// Startup-only preparation when no Runtime context exists yet, such as
+    /// the first-run onboarding path. The caller captures the port before the
+    /// asynchronous cleanup begins, so settings cannot redirect the safety
+    /// check halfway through the operation.
+    public func prepareForProfileMutation(port: Int) async throws {
         try await startOperationGate.acquire()
         defer { startOperationGate.release() }
 
         await stopAndWait()
 
-        let actualPort = DshStateManager.shared.current.dshPort ?? 3080
-        try await waitForProfileMutationPort(actualPort)
+        try await waitForProfileMutationPort(port)
     }
 
     /// Context-bound variant used by a launch/restart transaction. The port
@@ -465,7 +472,11 @@ public final class DshService: @unchecked Sendable {
         var buffer = [CChar](repeating: 0, count: 16 * 1024)
         let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
         guard length > 0 else { return nil }
-        return canonicalPath(String(cString: buffer))
+        let path = String(
+            decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) },
+            as: UTF8.self
+        )
+        return canonicalPath(path)
     }
 
     private func processStartTime(_ pid: pid_t) -> Double? {

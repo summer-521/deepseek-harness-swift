@@ -1,8 +1,8 @@
 import Foundation
-import UserNotifications
+@preconcurrency import UserNotifications
 import AppKit
 
-public final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
+public final class NotificationManager: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
     public static let shared = NotificationManager()
 
     private override init() {
@@ -125,11 +125,15 @@ public final class NotificationManager: NSObject, UNUserNotificationCenterDelega
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
+        // Complete the UserNotifications callback in its originating
+        // isolation domain. Only the AppKit window operation needs the main
+        // queue; capturing the completion handler in that closure is rejected
+        // by Swift 6's region-isolation checking.
+        completionHandler()
         DispatchQueue.main.async {
             // Match Electron's click behavior: bring the actual DSH window
             // back when it was hidden behind the Dock or the red light.
             MainWindowController.shared.showMainWindow()
-            completionHandler()
         }
     }
 

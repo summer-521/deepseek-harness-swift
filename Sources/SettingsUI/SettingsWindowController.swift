@@ -5,6 +5,7 @@ import SwiftUI
 /// the DSH host. The host can use a theme that is independent of macOS'
 /// system appearance, so leaving these windows on the default NSAppearance
 /// makes About and Settings disagree with the main page.
+@MainActor
 public enum DshNativeAppearance {
     public static let didChangeNotification = Notification.Name("dsh.nativeAppearanceDidChange")
 
@@ -45,8 +46,8 @@ public enum DshNativeAppearance {
 
 public final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     public static let shared = SettingsWindowController()
-    private var titleObserver: NSObjectProtocol?
-    private var appearanceObserver: NSObjectProtocol?
+    private nonisolated(unsafe) var titleObserver: NSObjectProtocol?
+    private nonisolated(unsafe) var appearanceObserver: NSObjectProtocol?
 
     private init() {
         let hostingController = NSHostingController(rootView: SettingsView())
@@ -77,14 +78,19 @@ public final class SettingsWindowController: NSWindowController, NSWindowDelegat
             queue: .main
         ) { [weak self] notification in
             guard let panel = notification.object as? SettingsPanel else { return }
-            self?.updateTitle(for: panel.rawValue)
+            let panelIndex = panel.rawValue
+            Task { @MainActor in
+                self?.updateTitle(for: panelIndex)
+            }
         }
         appearanceObserver = NotificationCenter.default.addObserver(
             forName: DshNativeAppearance.didChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.applyNativeAppearance()
+            Task { @MainActor in
+                self?.applyNativeAppearance()
+            }
         }
     }
 
