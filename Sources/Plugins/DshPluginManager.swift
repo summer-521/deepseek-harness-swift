@@ -3620,6 +3620,165 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         return true
     }
 
+    /// Align the DSH-owned bundles in the app's Profile with the Runtime that
+    /// is about to start. Runtime upgrades replace the managed tree atomically,
+    /// but the Profile has its own direct dependency lockfile; leaving those
+    /// bundles on the previous release can load an old generated `./typert`
+    /// artifact into a newer typert-loader and fail the whole plugin tree.
+    ///
+    /// Only active DSH bundles (plus the bridge's internal webserver peer) are
+    /// eligible, and only when the target Runtime exposes the same package at
+    /// the requested version. User-owned packages and local bridge sources are
+    /// left untouched. pnpm owns both the manifest and lockfile update so the
+    /// Profile remains a normal, reproducible dependency tree.
+    @discardableResult
+    public func alignManagedProfileDependencies(
+        runtimeVersion: String,
+        registry: String? = nil,
+        profileDirectory: URL? = nil,
+        profile: DshAppProfile? = nil,
+        progress: (@Sendable (String) -> Void)? = nil
+    ) async throws -> [String] {
+        let stateSnapshot = DshStateManager.shared.current
+        let targetProfile = profile ?? stateSnapshot.appProfile
+        guard targetProfile == .desktop,
+              DshVersionManager.isValidVersion(runtimeVersion) else {
+            return []
+        }
+
+        let profileDir = profileDirectory ?? Self.profileDirectory(for: targetProfile)
+        let packageURL = profileDir.appendingPathComponent("package.json")
+        guard let data = try? Data(contentsOf: packageURL),
+              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var dependencies = root["dependencies"] as? [String: Any],
+              let dsh = root["dsh"] as? [String: Any],
+              let profileMetadata = dsh["profile"] as? [String: Any],
+              let bundles = profileMetadata["bundles"] as? [String] else {
+            return []
+        }
+
+        let activeBundles = Set(bundles)
+        let runtimeRoot = DshStateManager.versionsDirectory
+            .appendingPathComponent(runtimeVersion, isDirectory: true)
+            .appendingPathComponent("node_modules", isDirectory: true)
+        let names = dependencies.keys
+            .filter { name in
+                guard name.hasPrefix("@deepseek-ai/dsh-"),
+                      activeBundles.contains(name) || name == "@deepseek-ai/dsh-host-webserver",
+                      let spec = dependencies[name] as? String,
+                      !spec.hasPrefix("file:"),
+                      !spec.hasPrefix("link:") else {
+                    return false
+                }
+                let manifestURL = runtimeRoot
+                    .appendingPathComponent(name, isDirectory: true)
+                    .appendingPathComponent("package.json")
+                guard let manifestData = try? Data(contentsOf: manifestURL),
+                      let manifest = try? JSONSerialization.jsonObject(with: manifestData) as? [String: Any],
+                      manifest["name"] as? String == name,
+                      manifest["version"] as? String == runtimeVersion else {
+                    return false
+                }
+                return spec != runtimeVersion
+            }
+            .sorted()
+
+        guard !names.isEmpty else { return [] }
+
+        try ensureManagedProfileWorkspaceConfiguration(at: profileDir, profile: targetProfile)
+        if let hostBundle = NodeRuntime.shared.resolveDesktopHostBundlePath() {
+            _ = repairDesktopHostDependency(hostBundle, profileDirectory: profileDir)
+        }
+        let capturedRegistry = DshVersionManager.normalizedRegistry(registry ?? stateSnapshot.npmRegistry)
+        let (node, pnpm) = try dshRequireNodeAndPnpm(context: "无法对齐 \(runtimeVersion) Runtime 的 Profile 依赖")
+
+        let specs = names.map { "\($0)@\(runtimeVersion)" }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: pnpm)
+        proc.currentDirectoryURL = profileDir
+        proc.arguments = ["add"] + specs + [
+            "--save-exact",
+            "--config.auto-install-peers=false",
+            "--config.strict-peer-dependencies=false",
+            "--config.minimum-release-age=0",
+        ] + Self.thinLinkFetchArguments + registryArguments(capturedRegistry) + [
+            "--reporter=append-only",
+        ]
+
+        var env = NodeRuntime.shared.buildEnvironment()
+        env["DSH_NODE_BIN"] = node
+        proc.environment = env
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        proc.standardOutput = stdout
+        proc.standardError = stderr
+
+        let result: DshProcessExecutionResult
+        do {
+            result = try await runProcess(
+                proc,
+                stdout: stdout,
+                stderr: stderr,
+                onProgressLine: progress,
+                maximumRuntime: Self.profileBridgeProcessMaximumRuntime
+            )
+        } catch {
+            throw NSError(
+                domain: "DshPluginManager",
+                code: -23,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "无法启动 pnpm 对齐 Runtime Profile 依赖：\(error.localizedDescription)"
+                ]
+            )
+        }
+        guard result.status == 0 else {
+            throw NSError(
+                domain: "DshPluginManager",
+                code: -24,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "对齐 Runtime Profile 依赖失败（退出码 \(result.status)）\(processOutput(result))"
+                ]
+            )
+        }
+
+        dependencies = (try? Data(contentsOf: packageURL))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            .flatMap { $0["dependencies"] as? [String: Any] } ?? dependencies
+        for name in names {
+            guard dependencies[name] as? String == runtimeVersion else {
+                throw NSError(
+                    domain: "DshPluginManager",
+                    code: -25,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Runtime Profile 对齐后 \(name) 仍未固定到 \(runtimeVersion)"
+                    ]
+                )
+            }
+            let installedManifest = profileDir
+                .appendingPathComponent("node_modules", isDirectory: true)
+                .appendingPathComponent(name, isDirectory: true)
+                .appendingPathComponent("package.json")
+            guard let installedData = try? Data(contentsOf: installedManifest),
+                  let installed = try? JSONSerialization.jsonObject(with: installedData) as? [String: Any],
+                  installed["name"] as? String == name,
+                  installed["version"] as? String == runtimeVersion else {
+                throw NSError(
+                    domain: "DshPluginManager",
+                    code: -26,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Runtime Profile 对齐后未物化 \(name)@\(runtimeVersion)"
+                    ]
+                )
+            }
+        }
+        return names
+    }
+
     /// Repair an incomplete application-owned Profile install before DSH is
     /// launched. `dsh plugin` deliberately forwards pnpm arguments verbatim,
     /// so a Profile created during a fresh DSH family release can be left with

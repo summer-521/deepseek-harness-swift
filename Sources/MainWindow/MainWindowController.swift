@@ -1054,6 +1054,13 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
                 at: context.profileDirectory,
                 profile: context.profile
             )
+            _ = try await DshPluginManager.shared.alignManagedProfileDependencies(
+                runtimeVersion: context.runtimeDescriptor.version,
+                registry: context.runtimeDescriptor.registry,
+                profileDirectory: context.profileDirectory,
+                profile: context.profile,
+                progress: profileBridgeProgress
+            )
             _ = try await DshPluginManager.shared.ensureDesktopHostPlugin(
                 registry: context.runtimeDescriptor.registry,
                 profileDirectory: context.profileDirectory,

@@ -158,6 +158,27 @@ test('npm runtime updates use SemVer ordering and a staging candidate', () => {
     VERSION_MANAGER_SOURCE,
     /public func discardInstalledVersion\(_ version: String\) throws \{[\s\S]*?moveProfileLinksOff\(version: version\)[\s\S]*?guard repair\.canRemoveSourceRuntime else \{/
   )
+  // A new Runtime can change generated Typert artifacts while the app-owned
+  // Profile still has direct DSH bundle pins from the previous release. Align
+  // those pins before the candidate starts, while the transaction snapshot is
+  // still available for rollback.
+  assert.match(PLUGIN_SOURCE, /public func alignManagedProfileDependencies\(/)
+  assert.match(PLUGIN_SOURCE, /config\.auto-install-peers=false/)
+  assert.match(PLUGIN_SOURCE, /config\.strict-peer-dependencies=false/)
+  assert.match(PLUGIN_SOURCE, /manifest\["version"\] as\? String == runtimeVersion/)
+  const launchPreparation = WINDOW_SOURCE.slice(
+    WINDOW_SOURCE.indexOf('try DshPluginManager.shared.bootstrapWebProfileManifestIfMissing('),
+    WINDOW_SOURCE.indexOf(
+      'setDiagnosticPhase(.startingService',
+      WINDOW_SOURCE.indexOf('try DshPluginManager.shared.bootstrapWebProfileManifestIfMissing('),
+    ),
+  )
+  assert.match(launchPreparation, /alignManagedProfileDependencies\(/)
+  assert.ok(
+    launchPreparation.indexOf('alignManagedProfileDependencies')
+      < launchPreparation.indexOf('ensureDesktopHostPlugin'),
+    'Profile DSH bundle alignment must happen before the candidate starts',
+  )
   // A retained Runtime has to say why it was retained, all four reasons
   // included: with conflicts counted as zero everywhere the log read like a
   // Runtime kept for no reason at all.

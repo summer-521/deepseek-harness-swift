@@ -353,7 +353,7 @@ private struct SettingsNavigationButtons: View {
     let goForward: () -> Void
 
     var body: some View {
-        buttons.glassEffect(.regular, in: Capsule())
+        buttons.glassEffect(.regular.interactive(), in: Capsule())
     }
 
     private var buttons: some View {
