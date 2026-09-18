@@ -108,9 +108,11 @@ test('Swift titlebar leaves WebKit in charge of every click', () => {
 
 test('Swift traffic lights stay aligned after AppKit lays out the main window', () => {
   assert.match(MAIN_WINDOW_SOURCE, /trafficLightHorizontalOffset: CGFloat = 7/)
-  assert.match(MAIN_WINDOW_SOURCE, /trafficLightVerticalOffset: CGFloat = -7/)
+  assert.match(MAIN_WINDOW_SOURCE, /trafficLightVerticalOffset: CGFloat = -9/)
   assert.match(MAIN_WINDOW_SOURCE, /trafficLightBaseFrames/)
+  assert.match(MAIN_WINDOW_SOURCE, /trafficLightLayoutWindowSize: NSSize\?/)
   assert.match(MAIN_WINDOW_SOURCE, /public func windowDidBecomeMain\(_ notification: Notification\)/)
+  assert.match(MAIN_WINDOW_SOURCE, /public func windowDidResize\(_ notification: Notification\)/)
   assert.match(MAIN_WINDOW_SOURCE, /self\??\.adjustTrafficLights\(in: win\)/)
 })
 

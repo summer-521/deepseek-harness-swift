@@ -21,17 +21,21 @@ public final class DshWebShell {
 
     private static let shellCSS = """
     :root {
-      --dsh-shell-traffic-light-safe-height: 20px;
       --dsh-shell-traffic-light-safe-width: 72px;
-      --dsh-shell-sidebar-width: 88px;
     }
     [class*="sidebarCol"] {
-      padding-top: var(--dsh-shell-traffic-light-safe-height) !important;
-      min-width: var(--dsh-shell-sidebar-width) !important;
       background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 70%, transparent) !important;
     }
-    [data-sidebar-collapsed] {
-      grid-template-columns: var(--dsh-shell-sidebar-width) minmax(0px, 1fr) 0px !important;
+    /* Match the official macOS desktop layout: a closed sidebar has no rail.
+       Its reopen and New Session controls live in the conversation header. */
+    html[data-platform="darwin"] [data-sidebar-collapsed] {
+      grid-template-columns: 0px minmax(0px, 1fr) 0px !important;
+    }
+    html[data-platform="darwin"] [data-sidebar-collapsed] [class*="sidebarCol"] {
+      width: 0 !important;
+      min-width: 0 !important;
+      padding: 0 !important;
+      border: 0 !important;
     }
     [data-sidebar-right-panel="fullscreen"] {
       left: var(--dsh-shell-traffic-light-safe-width) !important;
@@ -54,28 +58,12 @@ public final class DshWebShell {
     [class*="detailsCol"] {
       padding-top: 20px !important;
     }
-    [class*="sidebarCol"] [class*="logoRow"] {
-      position: relative !important;
-      top: 6px !important;
-    }
     [class*="sidebarCol"] [class*="_root"],
     [class*="sidebarCol"] [class*="listArea"] { background: transparent !important; }
     [class*="sidebarCol"] [class*="footArea"],
     [class*="sidebarCol"] [class*="footerActions"],
     [class*="sidebarCol"] [class*="settingsArea"],
     [class*="sidebarCol"] [class*="fade"] { background: transparent !important; }
-    [class*="railIn"] [class*="iconButton"],
-    [class*="railIn"] [class*="newSession"],
-    [class*="railIn"] [class*="searchButton"],
-    [class*="railIn"] [class*="headerActions"],
-    [class*="railIn"] [class*="search"] {
-      margin-left: auto !important;
-      margin-right: auto !important;
-    }
-    /* Keep the Runtime icon centered only when the sidebar is collapsed. */
-    [class*="sidebarCol"] [class*="root"][class*="collapsed"] [class*="panelList"]:has([aria-label="插件"], [aria-label="Plugins"]) [class*="panelRow"] {
-      align-self: center !important;
-    }
     html.dsh-native-window-drag,
     html.dsh-native-window-drag * {
       cursor: default !important;
@@ -92,6 +80,18 @@ public final class DshWebShell {
     #dsh-plugin-loading-overlay, [class*="pluginLoading"] {
       display: none !important;
     }
+    """
+
+    /// Mirror the official desktop preload's platform marker so the shared
+    /// Runtime enables its macOS-specific sidebar and titlebar layout.
+    private static let platformScript = """
+    (() => {
+      const mark = () => {
+        document.documentElement?.setAttribute('data-platform', 'darwin');
+      };
+      if (document.documentElement) mark();
+      else window.addEventListener('DOMContentLoaded', mark, { once: true });
+    })();
     """
 
     /// Disable browser-style menus on non-interactive page chrome while
@@ -310,6 +310,11 @@ public final class DshWebShell {
             source: DshBridgeHandler.scriptSource,
             injectionTime: .atDocumentStart,
             forMainFrameOnly: false
+        ))
+        userContent.addUserScript(WKUserScript(
+            source: Self.platformScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
         ))
         userContent.addUserScript(WKUserScript(
             source: Self.windowDragScript,

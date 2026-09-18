@@ -237,9 +237,10 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     private let runtimeHealthClient = DshRuntimeHealthClient()
     private var runtimeReloadTask: Task<Void, Never>?
     private var trafficLightBaseFrames: [NSWindow.ButtonType: NSRect] = [:]
+    private var trafficLightLayoutWindowSize: NSSize?
 
     private static let trafficLightHorizontalOffset: CGFloat = 7
-    private static let trafficLightVerticalOffset: CGFloat = -7
+    private static let trafficLightVerticalOffset: CGFloat = -9
     private static let trafficLightSafeWidthMargin: CGFloat = 8
     private static let maxAutomaticAuthenticationRecoveries = 1
     private enum RuntimeHealthError: LocalizedError {
@@ -317,6 +318,13 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     /// of normal macOS titlebars while keeping the content visually fused.
     private func adjustTrafficLights(in win: NSWindow) {
         win.layoutIfNeeded()
+        if trafficLightLayoutWindowSize != win.frame.size {
+            // AppKit lays out the standard buttons again after a zoom or
+            // resize. The old cached frames belong to the previous window
+            // geometry and must not be reused for the new titlebar layout.
+            trafficLightBaseFrames.removeAll()
+            trafficLightLayoutWindowSize = win.frame.size
+        }
         for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             guard let button = win.standardWindowButton(type) else { continue }
             let baseFrame = trafficLightBaseFrames[type] ?? button.frame
@@ -343,6 +351,13 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
 
     public func windowDidBecomeMain(_ notification: Notification) {
         guard let win = window else { return }
+        adjustTrafficLights(in: win)
+    }
+
+    public func windowDidResize(_ notification: Notification) {
+        guard let win = window,
+              let resizedWindow = notification.object as? NSWindow,
+              resizedWindow === win else { return }
         adjustTrafficLights(in: win)
     }
 
