@@ -24,7 +24,7 @@ jobs:
   test:
     # Apple Silicon only: the shell is arm64-only, and the harnesses compile
     # for the host architecture.
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
