@@ -192,8 +192,8 @@ fi
 if $dry_run; then
 	printf '%s\n' \
 		"Plan for $tag:" \
-		"  1. bump Version.xcconfig and the three README references" \
-		"  2. npm test$($run_tests || echo ' (skipped)')" \
+		"  1. npm test$($run_tests || echo ' (skipped)')" \
+		"  2. bump Version.xcconfig and the three README references" \
 		"  3. scripts/build-app.sh, then copy Sparkle's sign_update out of .build, then scripts/package-dmg.sh → $dmg" \
 		"  4. sign the DMG with Sparkle account $sparkle_account" \
 		"  5. write the newest appcast item with that length and signature" \
@@ -204,14 +204,14 @@ if $dry_run; then
 	exit 0
 fi
 
+if $run_tests; then
+	step "Test the current release content"
+	npm test
+fi
+
 step "Bump release metadata"
 node "$repository_directory/scripts/release-metadata.mjs" bump --version "$version" --build "$build" --write
 node "$repository_directory/scripts/release-metadata.mjs" show
-
-if $run_tests; then
-	step "Test the release commit's content"
-	npm test
-fi
 
 if $resuming_release; then
 	# The tag cannot move, so the bytes it already names are the only artifact
