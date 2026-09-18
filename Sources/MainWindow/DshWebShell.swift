@@ -72,6 +72,10 @@ public final class DshWebShell {
       margin-left: auto !important;
       margin-right: auto !important;
     }
+    /* Keep the Runtime icon centered only when the sidebar is collapsed. */
+    [class*="sidebarCol"] [class*="root"][class*="collapsed"] [class*="panelList"]:has([aria-label="插件"], [aria-label="Plugins"]) [class*="panelRow"] {
+      align-self: center !important;
+    }
     html.dsh-native-window-drag,
     html.dsh-native-window-drag * {
       cursor: default !important;
