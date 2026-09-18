@@ -256,6 +256,30 @@ private func setupAdoptInterrupted() async throws {
     require(state.phase == .recoveryRequired, "adopt fixture must persist recoveryRequired")
 }
 
+private func setupAdoptExternalModification() async throws {
+    try resetFixture()
+    let manager = DshPluginManager.shared
+    let operationID = UUID().uuidString
+    let snapshot = try await manager.createPluginOperationSnapshot(
+        operationID: operationID,
+        profile: .desktop,
+        profileDirectory: profileURL()
+    )
+    try marker("adopted-tree")
+    let mutationDigest = try await manager.pluginProfileDigest(at: profileURL())
+    let state = DshPluginOperationState(
+        operationID: operationID,
+        profile: .desktop,
+        targetPackage: "plugin",
+        action: .update,
+        snapshot: snapshot,
+        phase: .recoveryRequired,
+        mutationDigest: mutationDigest,
+        lastError: DshPluginOperationError.externalModification.localizedDescription
+    )
+    try writeOperationState(state)
+}
+
 private func recoverAdoptVerified() async throws {
     let operationID = try readOperationState().operationID
     let coordinator = DshPluginOperationCoordinator(operationStoreURL: operationStoreURL())
@@ -317,6 +341,22 @@ private func runAdoptGatingMatrix() throws {
     require(
         adoptable?.operationID == interrupted.operationID,
         "recoveryRequired record without digest on desktop must be adoptable"
+    )
+    interrupted = DshPluginOperationState(
+        operationID: interrupted.operationID,
+        profile: interrupted.profile,
+        targetPackage: interrupted.targetPackage,
+        targetPackages: interrupted.targetPackages,
+        action: interrupted.action,
+        snapshot: interrupted.snapshot,
+        phase: .recoveryRequired,
+        mutationDigest: "stale-mutation-digest",
+        lastError: interrupted.lastError
+    )
+    require(
+        DshPluginOperationCoordinator.adoptableInterruptedTransaction(from: interrupted)?.operationID
+            == interrupted.operationID,
+        "recoveryRequired record with a stale digest must remain explicitly adoptable"
     )
     interrupted = DshPluginOperationState(
         operationID: interrupted.operationID,
@@ -1032,6 +1072,10 @@ private func runCommittedRetention() async throws {
         request,
         hooks: DshPluginOperationHooks(
             mutate: { request in
+                require(
+                    DshPluginOperationCoordinator.isProfileRepairSuppressed,
+                    "application-owned Profile repair must be suppressed during mutation"
+                )
                 try Data("committed".utf8).write(
                     to: request.profileDirectory.appendingPathComponent("marker"),
                     options: .atomic
@@ -1040,6 +1084,10 @@ private func runCommittedRetention() async throws {
         )
     )
     require(result.phase == .committed, "successful operation must commit")
+    require(
+        !DshPluginOperationCoordinator.isProfileRepairSuppressed,
+        "Profile repair suppression must end after the transaction"
+    )
     guard let pending = coordinator.pendingOperation else {
         require(false, "committed record must remain until health confirmation")
         return
@@ -1741,6 +1789,7 @@ struct PluginOperationHarness {
         case "mutating-no-digest-recover": try await recoverMutatingWithoutDigest()
         case "mutating-no-digest-recover-again": try await recoverMutatingWithoutDigestAfterConflictResolution()
         case "adopt-setup": try await setupAdoptInterrupted()
+        case "external-adopt-setup": try await setupAdoptExternalModification()
         case "adopt-verified": try await recoverAdoptVerified()
         case "adopt-unhealthy": try await recoverAdoptUnhealthy()
         case "adopt-rejects-committed": try await recoverAdoptRejectsCommitted()

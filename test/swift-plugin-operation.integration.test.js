@@ -147,6 +147,7 @@ test('P01 restart and rollback matrix stays fail-closed', () => {
     runSingle(binaryPath, 'install-downgrade-gate')
     runAcrossRestart(binaryPath, 'adopt-setup', 'adopt-verified')
     runAcrossRestart(binaryPath, 'adopt-setup', 'adopt-unhealthy')
+    runAcrossRestart(binaryPath, 'external-adopt-setup', 'adopt-verified')
     runSingle(binaryPath, 'adopt-rejects-committed')
     runSingle(binaryPath, 'adopt-gating-matrix')
     runSingle(binaryPath, 'owned-snapshot-delete-guard')

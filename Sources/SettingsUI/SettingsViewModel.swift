@@ -551,6 +551,14 @@ public final class SettingsViewModel: ObservableObject {
                 // managed child, reaps an orphaned process, and confirms the
                 // selected port is safe before the snapshot is taken.
                 try await DshService.shared.prepareForProfileMutation(context: context)
+                // Reconcile app-owned metadata before P01 snapshots the tree.
+                // The coordinator then suppresses the same repair during the
+                // mutation and health window, preventing a self-write from
+                // being classified as an external modification.
+                try DshPluginManager.shared.prepareProfileForPluginOperation(
+                    profileDirectory: context.profileDirectory,
+                    profile: context.profile
+                )
             },
             mutate: { request in
                 switch request.action {

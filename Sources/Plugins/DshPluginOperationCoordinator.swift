@@ -180,6 +180,14 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
         operationStore.hasPersistedRecord()
     }
 
+    /// Application-owned Profile repair must not run while a plugin operation
+    /// is mutating, verifying, or recovering the same tree. External writers
+    /// such as dshmarket and the CLI remain valid and are still detected by
+    /// the digest checks.
+    static var isProfileRepairSuppressed: Bool {
+        DshPluginProfileRepairGate.isSuppressed
+    }
+
     /// Execute one desktop plugin operation.  The record is persisted as
     /// `prepared` before `mutating`, and as `verifying` before the health hook
     /// is called.  A successful operation returns `committed`; its snapshot
@@ -241,6 +249,13 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
             throw error
         }
 
+        // The preparation hook ran before the snapshot, so any app-owned
+        // reconciliation it needed is part of the baseline. From this point
+        // through mutation, health verification, and rollback, app-owned
+        // repair must stay out of the live Profile.
+        DshPluginProfileRepairGate.begin()
+        defer { DshPluginProfileRepairGate.end() }
+
         do {
             try Task.checkCancellation()
             try await ensureProfileDigest(operation.snapshot.baselineDigest, at: request.profileDirectory)
@@ -295,6 +310,8 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
     ) async throws -> DshPluginOperationResult? {
         await Self.gate.acquire()
         defer { Self.gate.release() }
+        DshPluginProfileRepairGate.begin()
+        defer { DshPluginProfileRepairGate.end() }
         var operation: DshPluginOperationState
         switch operationStore.status() {
         case .absent:
@@ -511,14 +528,15 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
 
     /// Decide whether a persisted operation is adoptable without touching
     /// the Profile. Adopt applies only to records that automatic recovery
-    /// refuses to overwrite: recoveryRequired, no mutation digest, desktop.
+    /// refuses to overwrite: recoveryRequired and desktop. A mutation digest
+    /// does not authorize an automatic restore after an external write, but it
+    /// also must not make the explicit recovery action disappear.
     /// Snapshot ownership is revalidated by the coordinator when the action
     /// runs. Pure and behavior-covered in the operation harness.
     static func adoptableInterruptedTransaction(
         from operation: DshPluginOperationState
     ) -> (operationID: String, targetPackage: String?)? {
         guard operation.phase == .recoveryRequired,
-              operation.mutationDigest == nil,
               operation.profile == .desktop,
               operation.snapshot.profile == .desktop else {
             return nil
@@ -530,7 +548,8 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
     }
 
     /// Adopt the current tree after an interruption that left no mutation
-    /// digest, **only with explicit user consent from the recovery surface**.
+    /// digest or an external modification, **only with explicit user consent
+    /// from the recovery surface**.
     /// Automatic recovery must keep refusing to overwrite such a tree
     /// (see recoverInterruptedMutation). The caller owns the serial gate
     /// held by perform/recover paths; this method re-acquires it, so it must
@@ -547,6 +566,8 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
     ) async throws -> DshPluginOperationResult {
         await Self.gate.acquire()
         defer { Self.gate.release() }
+        DshPluginProfileRepairGate.begin()
+        defer { DshPluginProfileRepairGate.end() }
         let operation: DshPluginOperationState
         switch operationStore.status() {
         case .absent:
@@ -562,8 +583,7 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
                 actual: operation.operationID
             )
         }
-        guard operation.phase == .recoveryRequired,
-              operation.mutationDigest == nil else {
+        guard operation.phase == .recoveryRequired else {
             throw DshPluginOperationError.invalidTransition(operation.phase, .verifying)
         }
         guard operation.profile == .desktop,
@@ -584,7 +604,15 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
         guard try await pluginManager.hasOwnedPluginOperationSnapshot(operation.snapshot) else {
             throw DshPluginOperationError.recoveryRequired("插件事务快照已缺失或不再归属本机，无法验证当前状态。")
         }
-        let currentDigest = try await pluginManager.pluginProfileDigest(at: profileURL)
+        let currentDigest: String
+        do {
+            currentDigest = try await stableProfileDigest(at: profileURL)
+        } catch {
+            let recoveryError = (error as? DshPluginOperationError) ??
+                DshPluginOperationError.recoveryRequired(Self.redacted(error.localizedDescription))
+            _ = try markRecoveryRequired(operation, error: recoveryError)
+            throw recoveryError
+        }
         var verifying = try advance(operation, to: .verifying, mutationDigest: currentDigest)
         verifying.lastError = nil
         try persist(verifying, replacing: operation.operationID)
@@ -594,6 +622,20 @@ public final class DshPluginOperationCoordinator: @unchecked Sendable {
             mutationDigest: currentDigest,
             hooks: hooks
         )
+    }
+
+    /// Read the live Profile twice with a quiet window between reads. This is
+    /// required for the explicit recovery action because the persisted
+    /// mutation digest may be stale after a concurrent writer has finished.
+    /// A single unstable observation remains fail-closed.
+    private func stableProfileDigest(at profileURL: URL) async throws -> String {
+        let first = try await pluginManager.pluginProfileDigest(at: profileURL)
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        let second = try await pluginManager.pluginProfileDigest(at: profileURL)
+        guard first == second else {
+            throw DshPluginOperationError.externalModification
+        }
+        return second
     }
 
     private func recoverInterruptedMutation(

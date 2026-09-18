@@ -1045,7 +1045,8 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             }
         }
 
-        if context.purpose != .recovery {
+        if context.purpose != .recovery,
+           !DshPluginOperationCoordinator.isProfileRepairSuppressed {
             // The profile must be complete and the access-control bundle must
             // be mounted before Node starts. An isolated recovery launch skips
             // these writes so an unresolved transaction cannot mutate the

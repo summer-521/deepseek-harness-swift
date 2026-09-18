@@ -1,5 +1,32 @@
 import Foundation
 
+/// Shared between the plugin manager and the transaction coordinator. The
+/// manager is also compiled by focused process-lifecycle harnesses that do not
+/// include the coordinator, so the repair fence must not live in the latter.
+final class DshPluginProfileRepairGate: @unchecked Sendable {
+    private static let shared = DshPluginProfileRepairGate()
+    private let lock = NSLock()
+    private var depth = 0
+
+    static var isSuppressed: Bool {
+        shared.lock.lock()
+        defer { shared.lock.unlock() }
+        return shared.depth > 0
+    }
+
+    static func begin() {
+        shared.lock.lock()
+        shared.depth += 1
+        shared.lock.unlock()
+    }
+
+    static func end() {
+        shared.lock.lock()
+        shared.depth = max(0, shared.depth - 1)
+        shared.lock.unlock()
+    }
+}
+
 /// Validation shared by the durable P01 record and the manager's pnpm
 /// command boundary.  These values eventually become one argv element, but
 /// pnpm still treats an argv element beginning with `-` as an option.  Keep

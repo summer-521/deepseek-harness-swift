@@ -2019,6 +2019,31 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         }
     }
 
+    /// Reconcile the application-owned desktop metadata before the plugin
+    /// transaction snapshot is taken. Any writes here become part of the
+    /// transaction baseline; the same repair is suppressed after the snapshot
+    /// so it cannot be mistaken for a concurrent external modification.
+    public func prepareProfileForPluginOperation(
+        profileDirectory: URL,
+        profile: DshAppProfile
+    ) throws {
+        guard profile == .desktop else { return }
+        try ensureManagedProfileWorkspaceConfiguration(
+            at: profileDirectory,
+            profile: profile
+        )
+        try bootstrapWebProfileManifestIfMissing(
+            at: profileDirectory,
+            profile: profile
+        )
+        if let hostBundle = NodeRuntime.shared.resolveDesktopHostBundlePath() {
+            _ = repairDesktopHostDependency(
+                hostBundle,
+                profileDirectory: profileDirectory
+            )
+        }
+    }
+
     /// The UI uses this marker to offer a one-time opt-in retry. Keep the
     /// policy override scoped to the requested install instead of changing
     /// global pnpm configuration.
@@ -2960,6 +2985,9 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
     /// app.asar.unpacked; Swift packages store it directly under Resources.
     @discardableResult
     private func repairDesktopHostDependency(_ hostBundle: String, profileDirectory: URL? = nil) -> Bool {
+        guard !DshPluginProfileRepairGate.isSuppressed else {
+            return false
+        }
         let profileDir = profileDirectory ?? Self.activeProfileDirectory
         let packageURL = profileDir.appendingPathComponent("package.json")
         let lockURL = profileDir.appendingPathComponent("pnpm-lock.yaml")
