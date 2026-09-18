@@ -6,6 +6,36 @@
         <description>Updates for the native Swift shell of DSH Desktop.</description>
         <language>zh-CN</language>
         <item>
+            <title>1.2.6</title>
+            <pubDate>Fri, 18 Sep 2026 12:40:29 +0800</pubDate>
+            <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.6</link>
+            <sparkle:version>17</sparkle:version>
+            <sparkle:shortVersionString>1.2.6</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[
+## 主要功能与稳定性
+
+- 完成 DSH Swift 6 迁移，更新 Xcode 工程和并发相关代码。
+- 强化 Runtime/Profile 升级流程：
+  - 升级时自动对齐 Profile 依赖。
+  - Profile 链接采用原子替换和并发保护。
+  - 支持修复所有 Profile，并完善失败恢复。
+  - Runtime 族谱可跨启动保持，并支持 Registry 临时失败重试。
+- 改进插件管理：
+  - 插件页面支持原地恢复。
+  - 插件卸载前增加确认，并明确说明删除与保留内容。
+  - 修复插件版本查询的竞态和过期结果污染。
+  - 区分 Runtime 缺失、原生模块缺失、动态库缺失等错误。
+  - 恢复记录不可读取时 fail-closed，避免误操作。
+- 修复运行环境和诊断：
+  - 不再继承启动 shell 的工具链环境。
+  - 日志中明确说明 Runtime/Profile 被保留的原因。
+  - 改进进程生命周期、依赖诊断和恢复提示。
+]]></description>
+            <enclosure url="https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.2.6/DSH-Desktop-1.2.6-arm64.dmg" length="51114906" type="application/octet-stream" sparkle:edSignature="+su4Epve5xW+3+09US8/uCWlv0L+8Ox0+qYQQt1+S/RLr8fNrE+wo3+UPNVXPxw/IW5KO0+y5e8/4aXzVL44Aw=="/>
+        </item>
+        <item>
             <title>1.2.5</title>
             <pubDate>Tue, 15 Sep 2026 21:15:13 +0800</pubDate>
             <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.5</link>
