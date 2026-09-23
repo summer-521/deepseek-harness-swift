@@ -50,7 +50,7 @@ if [ ! -s "${DSH_FAMILY_MANIFEST_SOURCE}" ]; then
 	echo "DSH family manifest is missing or empty: ${DSH_FAMILY_MANIFEST_SOURCE}" >&2
 	exit 1
 fi
-if [ ! -d "${SWIFT_BRIDGE_SOURCE}" ] || [ ! -s "${SWIFT_BRIDGE_SOURCE}/package.json" ] || [ ! -s "${SWIFT_BRIDGE_SOURCE}/index.js" ] || [ ! -s "${SWIFT_BRIDGE_SOURCE}/client.js" ] || [ ! -s "${SWIFT_BRIDGE_SOURCE}/cordis.patch.yml" ]; then
+if [ ! -d "${SWIFT_BRIDGE_SOURCE}" ] || [ ! -s "${SWIFT_BRIDGE_SOURCE}/package.json" ] || [ ! -s "${SWIFT_BRIDGE_SOURCE}/index.js" ] || [ ! -s "${SWIFT_BRIDGE_SOURCE}/client.js" ] || [ ! -s "${SWIFT_BRIDGE_SOURCE}/cordis.patch.yml" ] || [ ! -s "${SWIFT_BRIDGE_SOURCE}/speech-worker-compat.mjs" ] || [ ! -s "${SWIFT_BRIDGE_SOURCE}/speech-worker-argv.cjs" ]; then
 	echo "Swift bridge plugin is incomplete: ${SWIFT_BRIDGE_SOURCE}" >&2
 	exit 1
 fi
@@ -150,6 +150,10 @@ for BUILD_ARCH in "${BUILD_ARCHES[@]}"; do
 	fi
 	if ! cmp -s "${SWIFT_ASSETS_DIR}/dsh-runtime-bootstrap.mjs" "${RESOURCES_DIR}/assets/dsh-runtime-bootstrap.mjs"; then
 		echo "Runtime bootstrap was not copied correctly" >&2
+		exit 1
+	fi
+	if ! cmp -s "${SWIFT_BRIDGE_SOURCE}/speech-worker-compat.mjs" "${RESOURCES_DIR}/assets/dsh-desktop-host/speech-worker-compat.mjs" || ! cmp -s "${SWIFT_BRIDGE_SOURCE}/speech-worker-argv.cjs" "${RESOURCES_DIR}/assets/dsh-desktop-host/speech-worker-argv.cjs"; then
+		echo "Speech worker compatibility files were not copied correctly" >&2
 		exit 1
 	fi
 	validate_thin_architecture "${RESOURCES_DIR}/node/bin/node" "${BUILD_ARCH}"

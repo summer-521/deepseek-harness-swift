@@ -12,6 +12,7 @@ const execFileAsync = promisify(execFile);
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BOOTSTRAP_SOURCE_PATH = path.join(ROOT, "assets", "dsh-runtime-bootstrap.mjs");
 const BOOTSTRAP_SOURCE = readFileSync(BOOTSTRAP_SOURCE_PATH, "utf8");
+const SPEECH_COMPAT_SOURCE = readFileSync(path.join(ROOT, "assets", "dsh-desktop-host", "speech-worker-compat.mjs"), "utf8");
 
 // A runtime entry that gates its CLI behind `import.meta.main` the same way
 // @deepseek-ai/dsh 0.1.3-alpha.2 does: importing it boots nothing by itself,
@@ -56,6 +57,7 @@ async function runBootstrapScenario({ entrySource, entryName }) {
     const entryPath = path.join(home, entryName);
     const bootMarker = path.join(home, "boot-marker.txt");
     await writeFile(path.join(home, "dsh-desktop-host", "control.js"), STUB_CONTROL_SOURCE);
+    await writeFile(path.join(home, "dsh-desktop-host", "speech-worker-compat.mjs"), SPEECH_COMPAT_SOURCE);
     await writeFile(entryPath, entrySource);
     await writeFile(path.join(home, "bootstrap.mjs"), BOOTSTRAP_SOURCE);
     await writeFile(bootMarker, "");

@@ -1,4 +1,5 @@
 import { startDesktopControl, waitForDesktopBootstrap } from "./dsh-desktop-host/control.js";
+import { installSpeechWorkerCompatibility } from "./dsh-desktop-host/speech-worker-compat.mjs";
 
 function fail(error) {
   const detail = error instanceof Error ? error.message : String(error);
@@ -10,6 +11,7 @@ try {
   // The inherited stdin pipe is the only source of the DSH entry path and
   // runtime arguments. No user-controlled equivalent is accepted from argv.
   startDesktopControl();
+  installSpeechWorkerCompatibility();
   const bootstrap = await waitForDesktopBootstrap();
 
   process.title = "DSH Web Runtime";
