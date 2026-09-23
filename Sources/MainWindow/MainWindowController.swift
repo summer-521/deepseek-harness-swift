@@ -3602,6 +3602,16 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             && url.port == origin.port
     }
 
+    private func isCurrentRuntimeWebOrigin(_ origin: WKSecurityOrigin) -> Bool {
+        guard let expected = serviceSession?.originURL,
+              let scheme = expected.scheme,
+              let host = expected.host else { return false }
+        let defaultPort = scheme == "https" ? 443 : 80
+        return origin.protocol.caseInsensitiveCompare(scheme) == .orderedSame
+            && origin.host.caseInsensitiveCompare(host) == .orderedSame
+            && origin.port == (expected.port ?? defaultPort)
+    }
+
     private func isExpectedNavigationInterruption(_ error: Error) -> Bool {
         let error = error as NSError
         if error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled {
@@ -3855,6 +3865,26 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     }
 
     // MARK: - WKUIDelegate
+
+    /// Allow microphone capture only for the active Runtime page. Other
+    /// origins (including pages opened in the built-in Browser tab) and
+    /// camera capture remain denied.
+    public func webView(
+        _ webView: WKWebView,
+        requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+        initiatedByFrame frame: WKFrameInfo,
+        type: WKMediaCaptureType,
+        decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void
+    ) {
+        guard webView === self.webView,
+              frame.isMainFrame,
+              type == .microphone,
+              isCurrentRuntimeWebOrigin(origin) else {
+            decisionHandler(.deny)
+            return
+        }
+        decisionHandler(.prompt)
+    }
 
     /// WebKit deliberately disables file uploads on macOS unless its UI
     /// delegate implements this callback. The DSH attachment button is a

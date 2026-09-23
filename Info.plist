@@ -29,6 +29,8 @@
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>DSH 语音输入需要使用麦克风，将您的语音转换为文本。</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>MIT License</string>
 	<key>NSMainNibFile</key>

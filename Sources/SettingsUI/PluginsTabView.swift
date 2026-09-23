@@ -409,7 +409,11 @@ public struct PluginsTabView: View {
                     Text(formatPluginVersion(plugin))
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.secondary)
-                    if !plugin.isEnabled && !plugin.isManaged {
+                    if plugin.activationMode == .profileManaged {
+                        Text("由 Profile patch 管理")
+                            .font(.system(size: 8.5, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    } else if !plugin.isEnabled && !plugin.isManaged {
                         Text("已禁用")
                             .font(.system(size: 8.5, weight: .semibold))
                             .foregroundStyle(.secondary)
@@ -422,7 +426,9 @@ public struct PluginsTabView: View {
                 }
                 Text(plugin.isLocal
                     ? "本地插件：组合方式由本机路径（file: / link:）决定，不提供启用/禁用。"
-                    : (plugin.description ?? "DSH \(viewModel.appProfile.runtimeProfileName) Profile 扩展插件。"))
+                    : (plugin.activationMode == .profileManaged
+                        ? "由 Profile patch 或 Runtime 组合管理，不提供单独启用/禁用。"
+                        : (plugin.description ?? "DSH \(viewModel.appProfile.runtimeProfileName) Profile 扩展插件。")))
                     .font(.system(size: 9.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -455,7 +461,7 @@ public struct PluginsTabView: View {
                             .help(viewModel.pluginMutationUnavailableReason
                                 ?? ("检查 " + plugin.name + " 在 registry 上是否有更新版本"))
                     }
-                    if !plugin.isLocal {
+                    if plugin.canToggleActivation {
                         Button(plugin.isEnabled ? "禁用" : "启用") {
                             viewModel.togglePluginActivation(
                                 name: plugin.name,

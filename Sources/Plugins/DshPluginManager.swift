@@ -15,6 +15,17 @@ public struct DshInstallCandidate: Equatable, Sendable {
     }
 }
 
+/// How a plugin becomes part of the running Profile composition.
+///
+/// Only packages that declare `dsh.bundle` can be toggled through
+/// `dsh.profile.bundles`. Runtime services such as computer-use are ordinary
+/// packages composed by a Profile patch, so adding their package name to the
+/// bundle list would make the next Runtime launch fail.
+public enum DshPluginActivationMode: String, Equatable, Sendable {
+    case bundle
+    case profileManaged
+}
+
 public struct DshPluginItem: Identifiable, Equatable {
     public var id: String { name }
     public let name: String
@@ -23,9 +34,17 @@ public struct DshPluginItem: Identifiable, Equatable {
     public let description: String?
     public let isManaged: Bool
     public let isLocal: Bool
-    /// Whether the Profile still composes this plugin. Disabling keeps the
-    /// package installed and only removes it from `dsh.profile.bundles`.
+    /// Whether the Profile still composes this plugin when activationMode is
+    /// `.bundle`. Profile-managed packages keep this value true because their
+    /// composition is not represented by `dsh.profile.bundles`.
     public let isEnabled: Bool
+    /// Whether activation is controlled by the Profile's Bundle list or by
+    /// the Runtime/Profile composition itself.
+    public let activationMode: DshPluginActivationMode
+
+    public var canToggleActivation: Bool {
+        activationMode == .bundle && !isManaged && !isLocal
+    }
 
     /// True only when the registry's `latest` is genuinely newer than what is
     /// installed.
@@ -42,7 +61,7 @@ public struct DshPluginItem: Identifiable, Equatable {
         return DshPackageVersion.isNewer(latest, than: installed)
     }
 
-    public init(name: String, version: String? = nil, latestVersion: String? = nil, description: String? = nil, isManaged: Bool = false, isLocal: Bool = false, isEnabled: Bool = true) {
+    public init(name: String, version: String? = nil, latestVersion: String? = nil, description: String? = nil, isManaged: Bool = false, isLocal: Bool = false, isEnabled: Bool = true, activationMode: DshPluginActivationMode = .bundle) {
         self.name = name
         self.version = version
         self.latestVersion = latestVersion
@@ -50,6 +69,7 @@ public struct DshPluginItem: Identifiable, Equatable {
         self.isManaged = isManaged
         self.isLocal = isLocal
         self.isEnabled = isEnabled
+        self.activationMode = activationMode
     }
 }
 
@@ -1748,7 +1768,14 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
             let isManaged = (name == Self.desktopHostPluginName)
             let isLocal = spec.hasPrefix("file:") || spec.hasPrefix("link:")
             let latest = outdatedMap[name]
-            let description = readPluginDescription(name: name, profileDir: profileDir)
+            let manifest = readPluginManifest(name: name, profileDir: profileDir)
+            let description = (manifest?["description"] as? String).flatMap {
+                $0.isEmpty ? nil : $0
+            }
+            let activationMode: DshPluginActivationMode = pluginDeclaresBundle(
+                name: name,
+                profileDir: profileDir
+            ) ? .bundle : .profileManaged
             list.append(DshPluginItem(
                 name: name,
                 version: spec,
@@ -1756,7 +1783,10 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                 description: description,
                 isManaged: isManaged,
                 isLocal: isLocal,
-                isEnabled: isManaged || bundles.map { $0.contains(name) } ?? true
+                isEnabled: activationMode == .bundle
+                    ? (isManaged || bundles.map { $0.contains(name) } ?? true)
+                    : true,
+                activationMode: activationMode
             ))
         }
 
@@ -1767,25 +1797,26 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
         }
     }
 
-    /// Read display metadata from the installed plugin tree.
-    ///
-    /// Keep this aligned with Electron's `enrichPluginMetadata`: descriptions
-    /// are optional metadata from the exact package currently installed in the
-    /// profile, rather than data fetched from the registry. `node_modules`
-    /// entries may be symlinks created by pnpm; Data(contentsOf:) follows them.
-    private func readPluginDescription(name: String, profileDir: URL) -> String? {
+    /// Read the installed package manifest from the exact Profile tree.
+    private func readPluginManifest(name: String, profileDir: URL) -> [String: Any]? {
         let manifestURL = profileDir
             .appendingPathComponent("node_modules", isDirectory: true)
             .appendingPathComponent(name, isDirectory: true)
             .appendingPathComponent("package.json")
 
         guard let data = try? Data(contentsOf: manifestURL),
-              let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let description = manifest["description"] as? String,
-              !description.isEmpty else {
+              let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
-        return description
+        return manifest
+    }
+
+    private func pluginDeclaresBundle(name: String, profileDir: URL) -> Bool {
+        guard let manifest = readPluginManifest(name: name, profileDir: profileDir),
+              let dsh = manifest["dsh"] as? [String: Any] else {
+            return false
+        }
+        return dsh["bundle"] is [String: Any]
     }
 
     /// Match Electron's external-theme detection for the native settings UI.
@@ -1962,6 +1993,7 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
     public func addPlugin(
         spec: String,
         ignoringMinimumReleaseAge: Bool = false,
+        activateProfileBundle: Bool = true,
         profileDirectory: URL? = nil,
         profile: DshAppProfile? = nil,
         registry: String? = nil,
@@ -2014,7 +2046,9 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
             let detail = processOutput(result)
             throw NSError(domain: "DshPluginManager", code: -2, userInfo: [NSLocalizedDescriptionKey: "安装插件 \(spec) 失败（退出码 \(result.status)）\(detail)"])
         }
-        if let packageName = packageName(from: spec) {
+        if activateProfileBundle,
+           let packageName = packageName(from: spec),
+           pluginDeclaresBundle(name: packageName, profileDir: profileDir) {
             try updateProfileBundle(packageName, removing: false, profileDir: profileDir)
         }
     }
@@ -2626,6 +2660,13 @@ func dshRequireNodeAndPnpm(context: String = "") throws -> (node: String, pnpm: 
                 domain: "DshPluginManager",
                 code: -12,
                 userInfo: [NSLocalizedDescriptionKey: "未安装 \(trimmed)，无法切换启用状态"]
+            )
+        }
+        guard pluginDeclaresBundle(name: trimmed, profileDir: profileDir) else {
+            throw NSError(
+                domain: "DshPluginManager",
+                code: -13,
+                userInfo: [NSLocalizedDescriptionKey: "插件 \(trimmed) 不是 Bundle，由 Profile patch/运行时组合管理，不能单独启用或禁用"]
             )
         }
         try updateProfileBundle(trimmed, removing: !enabled, profileDir: profileDir)

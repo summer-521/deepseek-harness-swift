@@ -235,8 +235,11 @@ test('P03 plugin rows can park a plugin without uninstalling it', () => {
   assert.match(manager, /public func setPluginActivation\(/)
   assert.match(manager, /try updateProfileBundle\(trimmed, removing: !enabled, profileDir: profileDir\)/)
   assert.match(manager, /public let isEnabled: Bool/)
-  assert.match(manager, /isEnabled: isManaged \|\| bundles\.map \{ \$0\.contains\(name\) \} \?\? true/)
+  assert.match(manager, /public let activationMode: DshPluginActivationMode/)
+  assert.match(manager, /pluginDeclaresBundle\(\s*name: name,\s*profileDir: profileDir/)
+  assert.match(manager, /guard pluginDeclaresBundle\(name: trimmed, profileDir: profileDir\)/)
   assert.match(manager, /内置桥接插件由 DSH Desktop 维护，不能启用或禁用/)
+  assert.match(manager, /不是 Bundle，由 Profile patch\/运行时组合管理，不能单独启用或禁用/)
 
   // Both directions are durable actions, so a recovered record says which one
   // was requested instead of flipping whatever it finds.
@@ -254,8 +257,23 @@ test('P03 plugin rows can park a plugin without uninstalling it', () => {
   const removeIndex = pluginsView.indexOf('viewModel.requestPluginRemoval(name: plugin.name)')
   assert.ok(updateIndex > 0 && toggleIndex > updateIndex && removeIndex > toggleIndex,
     'enable/disable must sit between update and uninstall')
+  assert.match(pluginsView, /plugin\.activationMode == \.profileManaged/)
+  assert.match(pluginsView, /if plugin\.canToggleActivation/)
   assert.match(pluginsView, /Button\(plugin\.isEnabled \? "禁用" : "启用"\)/)
   assert.match(pluginsView, /Text\("已禁用"\)/)
+})
+
+test('version updates preserve activation and never auto-compose a plugin', () => {
+  const viewModel = fs.readFileSync(viewModelPath, 'utf8')
+  const manager = fs.readFileSync(
+    path.join(repositoryDirectory, 'Sources', 'Plugins', 'DshPluginManager.swift'),
+    'utf8',
+  )
+
+  assert.match(manager, /activateProfileBundle: Bool = true/)
+  assert.match(manager, /if activateProfileBundle,[\s\S]*?pluginDeclaresBundle\(name: packageName, profileDir: profileDir\)/)
+  assert.match(viewModel, /activateProfileBundle: activateInstalledPlugin/)
+  assert.match(viewModel, /activateInstalledPlugin: !asUpdate/)
 })
 
 test('P03 uninstalling asks first and says what is removed and what is kept', () => {

@@ -297,7 +297,9 @@ struct PluginInspectorHarness {
             """)
             try write(realDshPackage, "package.json", #"{"name":"@deepseek-ai/dsh","version":"1.0.0"}"#)
             try write(virtualPackageRoot, "@deepseek-ai/dsh-base/package.json", #"{"name":"@deepseek-ai/dsh-base","dsh":{"bundle":{}}}"#)
-            try write(virtualPackageRoot, "@deepseek-ai/dsh-web-app/package.json", #"{"name":"@deepseek-ai/dsh-web-app","dsh":{"bundle":{}}}"#)
+            try write(virtualPackageRoot, "@deepseek-ai/dsh-web-app/package.json", #"{"name":"@deepseek-ai/dsh-web-app","dsh":{"bundle":{"patch":["./cordis.patch.yml","./presets/standard.patch.yml"]}}}"#)
+            try write(virtualPackageRoot, "@deepseek-ai/dsh-web-app/cordis.patch.yml", "- id: web-layer\n  config: {}\n")
+            try write(virtualPackageRoot, "@deepseek-ai/dsh-web-app/presets/standard.patch.yml", "- id: web-layer-standard\n  config: {}\n")
             let linkedDshPackage = nestedRuntime
                 .appendingPathComponent("node_modules/@deepseek-ai/dsh", isDirectory: true)
             try fileManager.createDirectory(
@@ -324,8 +326,10 @@ struct PluginInspectorHarness {
                     "web Bundle should resolve from managed pnpm virtual store")
             require(item(nestedResult, "dynamic-bundle").status == .healthy,
                     "inert dynamic disabled expression must remain a valid Bundle patch")
-            require(!nestedResult.issues.contains { $0.code == "bundlePackageMissing" || $0.code == "patchInvalid" },
-                    "valid managed Runtime Bundle and !!js patch must not block startup")
+            require(!nestedResult.issues.contains {
+                $0.code == "bundlePackageMissing" || $0.code == "patchInvalid"
+                    || $0.code == "patchInspectionUnavailable"
+            }, "valid managed Runtime Bundle and multi-file patch must not block startup")
 
             // pnpm split virtual stores mirror the managed Runtime regression
             // behind the rc.1 startup block: a Bundle resolved through the

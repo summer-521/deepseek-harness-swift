@@ -1273,6 +1273,16 @@ private func runActivationToggle() async throws {
     let manifest = "{\"dependencies\":{\"plugin\":\"1.0.0\"},"
         + "\"dsh\":{\"profile\":{\"bundles\":[\"@deepseek-ai/dsh-base\",\"plugin\"]}}}"
     try Data(manifest.utf8).write(to: packageURL, options: .atomic)
+    let nodeModules = profileURL().appendingPathComponent("node_modules", isDirectory: true)
+    try fileManager.createDirectory(
+        at: nodeModules.appendingPathComponent("plugin", isDirectory: true),
+        withIntermediateDirectories: true
+    )
+    try Data(#"{"name":"plugin","version":"1.0.0","dsh":{"bundle":{}}}"#.utf8)
+        .write(
+            to: nodeModules.appendingPathComponent("plugin/package.json"),
+            options: .atomic
+        )
 
     func bundles() throws -> [String] {
         let root = try JSONSerialization.jsonObject(with: Data(contentsOf: packageURL)) as? [String: Any]
@@ -1339,7 +1349,30 @@ private func runActivationToggle() async throws {
 
     // Refusals keep the manifest untouched.
     var refused = 0
-    for name in ["plugin-not-installed", "dsh-desktop-host"] {
+    let patchManagedPackage = "patch-managed-plugin"
+    let packageWithPatchManagedDependency = "{\"dependencies\":{\"plugin\":\"1.0.0\",\""
+        + patchManagedPackage
+        + "\":\"1.0.0\"},"
+        + "\"dsh\":{\"profile\":{\"bundles\":[\"@deepseek-ai/dsh-base\",\"plugin\"]}}}"
+    try Data(packageWithPatchManagedDependency.utf8).write(to: packageURL, options: .atomic)
+    try fileManager.createDirectory(
+        at: nodeModules.appendingPathComponent(patchManagedPackage, isDirectory: true),
+        withIntermediateDirectories: true
+    )
+    try Data(#"{"name":"patch-managed-plugin","version":"1.0.0"}"#.utf8)
+        .write(
+            to: nodeModules.appendingPathComponent("patch-managed-plugin/package.json"),
+            options: .atomic
+        )
+    let patchManagedItem = DshPluginManager.shared
+        .listPlugins(at: profileURL(), outdatedMap: [:])
+        .first { $0.name == patchManagedPackage }
+    require(patchManagedItem?.activationMode == .profileManaged,
+            "non-Bundle package must be marked as Profile-managed")
+    require(patchManagedItem?.canToggleActivation == false,
+            "non-Bundle package must not expose activation")
+
+    for name in ["plugin-not-installed", patchManagedPackage, "dsh-desktop-host"] {
         do {
             try DshPluginManager.shared.setPluginActivation(
                 name: name,
@@ -1350,7 +1383,7 @@ private func runActivationToggle() async throws {
             refused += 1
         }
     }
-    require(refused == 2, "unknown and built-in plugins cannot be toggled, got \(refused)")
+    require(refused == 3, "unknown, Profile-managed and built-in plugins cannot be toggled, got \(refused)")
     let dependenciesAfterRefusals = try dependencies()
     require(dependenciesAfterRefusals["plugin"] != nil, "refused toggles leave the manifest alone")
 

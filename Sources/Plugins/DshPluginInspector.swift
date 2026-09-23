@@ -624,23 +624,41 @@ public struct DshPluginInspector: Sendable {
                   let dsh = manifest["dsh"] as? [String: Any],
                   let bundle = dsh["bundle"] as? [String: Any],
                   bundle["patch"] != nil else { continue }
-            guard let patch = bundle["patch"] as? String, let manifestURL = record.manifestURL else {
+            let declaredPatches: [String]
+            if let patch = bundle["patch"] as? String {
+                declaredPatches = [patch]
+            } else if let patches = bundle["patch"] as? [Any],
+                      patches.allSatisfy({ $0 is String }) {
+                // Newer Runtime Bundles may layer several patch files in
+                // order. Keep the order from package.json so the inspection
+                // follows the same composition contract as the Runtime.
+                declaredPatches = patches.compactMap { $0 as? String }
+            } else {
                 state.patchInspectionUnavailable = true
                 state.issues.append(DshPluginInspectionIssue(
                     code: "patchInspectionUnavailable", severity: .error,
-                    detail: "Bundle patch 字段不可读，不能完成检查"))
+                    detail: "Bundle patch 必须是文件路径或路径数组，不能完成检查"))
+                continue
+            }
+            guard let manifestURL = record.manifestURL else {
+                state.patchInspectionUnavailable = true
+                state.issues.append(DshPluginInspectionIssue(
+                    code: "patchInspectionUnavailable", severity: .error,
+                    detail: "Bundle manifest 路径不可读，不能完成 patch 检查"))
                 continue
             }
             let root = manifestURL.deletingLastPathComponent()
-            let url = URL(fileURLWithPath: patch, relativeTo: root).standardizedFileURL
-            guard within(root, url), FileManager.default.fileExists(atPath: url.path) else {
-                state.patchInspectionUnavailable = true
-                state.issues.append(DshPluginInspectionIssue(
-                    code: "patchMissing", severity: .error, file: url.lastPathComponent,
-                    detail: "无法读取 Cordis patch，不能把它当成空配置"))
-                continue
+            for patch in declaredPatches {
+                let url = URL(fileURLWithPath: patch, relativeTo: root).standardizedFileURL
+                guard within(root, url), FileManager.default.fileExists(atPath: url.path) else {
+                    state.patchInspectionUnavailable = true
+                    state.issues.append(DshPluginInspectionIssue(
+                        code: "patchMissing", severity: .error, file: url.lastPathComponent,
+                        detail: "无法读取 Cordis patch，不能把它当成空配置"))
+                    continue
+                }
+                paths.append(url)
             }
-            paths.append(url)
         }
         guard !paths.isEmpty else { return }
         state.patchFiles = paths.map(\.lastPathComponent)
@@ -753,9 +771,13 @@ public struct DshPluginInspector: Sendable {
         guard let object = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
               let kind = object["kind"] as? String else {
             let stderr = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
-            return .unavailable(stderr?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-                                ? "YAML helper 无有效结果：\(stderr!)"
-                                : "YAML helper 无有效结果")
+            let termination = process.terminationReason == .uncaughtSignal
+                ? "信号 \(process.terminationStatus)"
+                : "退出码 \(process.terminationStatus)"
+            let diagnostic = stderr?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return .unavailable(diagnostic.isEmpty
+                                ? "YAML helper 无有效结果（\(termination)）"
+                                : "YAML helper 无有效结果（\(termination)）：\(diagnostic)")
         }
         switch kind {
         case "value":

@@ -510,7 +510,8 @@ public final class SettingsViewModel: ObservableObject {
         action: DshPluginOperationAction,
         targetPackage: String? = nil,
         targetPackages: [String] = [],
-        ignoringMinimumReleaseAge: Bool = false
+        ignoringMinimumReleaseAge: Bool = false,
+        activateInstalledPlugin: Bool = true
     ) async throws -> DshPluginOperationResult {
         // T1: the entry-point gates (`pluginWritesAllowed`) are evaluated
         // before this task queues on the runtime gate, so the state can have
@@ -569,6 +570,7 @@ public final class SettingsViewModel: ObservableObject {
                     try await DshPluginManager.shared.addPlugin(
                         spec: spec,
                         ignoringMinimumReleaseAge: ignoringMinimumReleaseAge,
+                        activateProfileBundle: activateInstalledPlugin,
                         profileDirectory: request.profileDirectory,
                         profile: request.profile,
                         registry: registry,
@@ -2964,7 +2966,12 @@ public final class SettingsViewModel: ObservableObject {
                         context: context,
                         action: .install,
                         targetPackage: trimmedSpec,
-                        ignoringMinimumReleaseAge: ignoringMinimumReleaseAge
+                        ignoringMinimumReleaseAge: ignoringMinimumReleaseAge,
+                        // Selecting a version is an update of an existing
+                        // package. Preserve its current composition; the
+                        // package must not be auto-enabled as a side effect
+                        // of replacing its installed version.
+                        activateInstalledPlugin: !asUpdate
                     )
                 }
                 self.isOperatingPlugin = false

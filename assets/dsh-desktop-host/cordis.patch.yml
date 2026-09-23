@@ -17,3 +17,15 @@
 - insert:
     - id: desktop-host
       name: dsh-desktop-host
+
+# Runtime 0.1.7 adds an account launcher for Desktop hosts, but the current
+# login flow is not ready for the Swift shell yet. Keep the host bridge (and
+# the ordinary Settings launcher) while temporarily disabling only that UI.
+- id: ui-settings-account
+  disabled: true
+
+# The upstream Desktop-only default checks for a Profile literally named
+# `desktop`; this app's isolated manifest is `dsh-profile-swift-desktop`.
+# Keep the built-in Browser enabled so chat links can use the right sidebar.
+- id: ui-sidebar-browser
+  disabled: false

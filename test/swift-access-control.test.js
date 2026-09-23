@@ -475,6 +475,15 @@ test('the upstream webserver is replaced and all request boundaries share the fe
   assert.match(NODE_RUNTIME_SOURCE, /resolveRuntimeBootstrap/)
 })
 
+test('the Swift Desktop host temporarily disables the incomplete account launcher only', () => {
+  assert.match(
+    HOST_PATCH,
+    /id: ui-settings-account\s*\n\s*disabled: true/,
+  )
+  assert.doesNotMatch(HOST_PATCH, /id: account-controller\s*\n\s*disabled: true/)
+  assert.match(HOST_PATCH, /id: desktop-host\s*\n\s*name: dsh-desktop-host/)
+})
+
 test('install preflight surfaces release-age violations before any mutation', () => {
   assert.match(PLUGIN_SOURCE, /public func preflightInstallPluginUpdate\(\s*spec: String,[\s\S]*?\) async throws -> DshPluginUpdatePreflightResult/)
   assert.match(PLUGIN_SOURCE, /isValidPackageSpecifier\(spec\)/)

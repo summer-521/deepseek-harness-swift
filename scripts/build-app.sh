@@ -41,6 +41,7 @@ APP_ICON_NAME="app"
 SWIFT_ASSETS_DIR="${PROJECT_DIR}/assets"
 DSH_FAMILY_MANIFEST_SOURCE="${SWIFT_ASSETS_DIR}/dsh-family.json"
 SWIFT_BRIDGE_SOURCE="${SWIFT_ASSETS_DIR}/dsh-desktop-host"
+NODE_RUNTIME_ENTITLEMENTS="${SCRIPT_DIR}/node-runtime.entitlements.plist"
 
 if [ ! -d "${APP_ICON_SOURCE}" ] || [ ! -s "${APP_ICON_SOURCE}/icon.json" ] || [ ! -s "${APP_ICON_SOURCE}/Assets/icon-1024.png" ]; then
 	echo "Application Icon Composer file is missing or incomplete: ${APP_ICON_SOURCE}" >&2
@@ -58,6 +59,11 @@ if [ ! -s "${SWIFT_ASSETS_DIR}/dsh-runtime-bootstrap.mjs" ]; then
 	echo "Runtime bootstrap is missing: ${SWIFT_ASSETS_DIR}/dsh-runtime-bootstrap.mjs" >&2
 	exit 1
 fi
+if [ ! -s "${NODE_RUNTIME_ENTITLEMENTS}" ]; then
+	echo "Node Runtime entitlements are missing: ${NODE_RUNTIME_ENTITLEMENTS}" >&2
+	exit 1
+fi
+plutil -lint "${NODE_RUNTIME_ENTITLEMENTS}" >/dev/null
 if [ -z "${APP_VERSION}" ]; then
 	echo "Swift application version is missing: ${SWIFT_VERSION_CONFIG}" >&2
 	exit 1
@@ -173,6 +179,14 @@ for BUILD_ARCH in "${BUILD_ARCHES[@]}"; do
 
 	echo "=== ${BUILD_ARCH} 3/3: Codesigning (${CODESIGN_IDENTITY}) ==="
 	codesign --force --deep --sign "${CODESIGN_IDENTITY}" --timestamp=none "${APP_DIR}"
+	# Node loads optional native addons from the Runtime's npm dependency tree.
+	# The downloaded Node executable is hardened, so sign this managed process
+	# with the narrow library-validation exception it needs.
+	codesign --force --sign "${CODESIGN_IDENTITY}" --options runtime \
+		--entitlements "${NODE_RUNTIME_ENTITLEMENTS}" \
+		--timestamp=none "${RESOURCES_DIR}/node/bin/node"
+	# Reseal the outer bundle after re-signing its nonstandard Resources/node path.
+	codesign --force --sign "${CODESIGN_IDENTITY}" --timestamp=none "${APP_DIR}"
 	touch "${APP_DIR}"
 	BUILT_APPS+=("${APP_DIR}")
 	echo "✅ ${BUILD_ARCH} build completed: ${APP_DIR}"
