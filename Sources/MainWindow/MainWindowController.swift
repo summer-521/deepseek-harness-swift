@@ -1147,6 +1147,9 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             try await self.waitForWebUIReady()
         }
         await Task.yield()
+        // The shell layout depends on what the Runtime about to render can do,
+        // so it is decided here, once per launch, before any navigation starts.
+        webShell?.applyRuntimeCapabilities(runtimeVersion: context.runtimeDescriptor.version)
         // The bootstrap URL is a one-shot credential exchange. Never satisfy
         // it from WebKit's document cache, especially after the same loopback
         // authority has belonged to a previous Runtime/Profile generation.
@@ -3499,6 +3502,11 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     private func reloadWebUI(at url: URL) async throws {
         webUIReadinessGeneration &+= 1
         pendingWebUINavigation = nil
+        // A reload renders the session this window is already serving, so the
+        // layout policy comes from that session rather than from a new launch.
+        if let runtimeVersion = (serviceSession?.context ?? launchContext)?.runtimeDescriptor.version {
+            webShell?.applyRuntimeCapabilities(runtimeVersion: runtimeVersion)
+        }
         let webUIReadyTask = Task { @MainActor in
             try await self.waitForWebUIReady()
         }

@@ -12,6 +12,10 @@ public final class DshWebShell {
     public let webView: WKWebView
 
     private let bridgeHandler: DshBridgeHandler
+    private let userContentController: WKUserContentController
+    /// Whether the platform marker is part of the currently installed script
+    /// set. Held so a Runtime switch can tell whether the branch has to move.
+    private var publishesPlatformMarker = false
 
 #if DEBUG
     private static let developerToolsEnabledByDefault = true
@@ -19,44 +23,13 @@ public final class DshWebShell {
     private static let developerToolsEnabledByDefault = false
 #endif
 
-    private static let shellCSS = """
-    :root {
-      --dsh-shell-traffic-light-safe-height: 20px;
-      --dsh-shell-traffic-light-safe-width: 72px;
-      --dsh-shell-sidebar-width: 88px;
-    }
-    [class*="sidebarCol"] {
-      padding-top: var(--dsh-shell-traffic-light-safe-height) !important;
-      min-width: var(--dsh-shell-sidebar-width) !important;
-      background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 70%, transparent) !important;
-    }
-    [data-sidebar-collapsed] {
-      grid-template-columns: var(--dsh-shell-sidebar-width) minmax(0px, 1fr) 0px !important;
-    }
-    [data-sidebar-right-panel="fullscreen"] {
-      left: var(--dsh-shell-traffic-light-safe-width) !important;
-      width: auto !important;
-    }
+    /// The rules every Runtime needs from this shell, whatever layout it draws
+    /// itself: the window's vibrancy has to show through the page, and the
+    /// native drag surface needs its cursor and selection suppressed.
+    private static let shellSharedCSS = """
     html, body { background: transparent !important; }
     [class*="frame"] {
       background: transparent !important;
-    }
-    [class*="frame"]:has(> [class*="sidebarCol"]) {
-      padding-top: 0 !important;
-    }
-    [class*="centerCol"], [class*="detailsCol"] {
-      background: var(--dsw-alias-bg-base) !important;
-      box-sizing: border-box !important;
-    }
-    [class*="centerCol"] {
-      padding-top: 0 !important;
-    }
-    [class*="detailsCol"] {
-      padding-top: 20px !important;
-    }
-    [class*="sidebarCol"] [class*="logoRow"] {
-      position: relative !important;
-      top: 6px !important;
     }
     [class*="sidebarCol"] [class*="_root"],
     [class*="sidebarCol"] [class*="listArea"] { background: transparent !important; }
@@ -64,18 +37,6 @@ public final class DshWebShell {
     [class*="sidebarCol"] [class*="footerActions"],
     [class*="sidebarCol"] [class*="settingsArea"],
     [class*="sidebarCol"] [class*="fade"] { background: transparent !important; }
-    [class*="railIn"] [class*="iconButton"],
-    [class*="railIn"] [class*="newSession"],
-    [class*="railIn"] [class*="searchButton"],
-    [class*="railIn"] [class*="headerActions"],
-    [class*="railIn"] [class*="search"] {
-      margin-left: auto !important;
-      margin-right: auto !important;
-    }
-    /* Keep the Runtime icon centered only when the sidebar is collapsed. */
-    [class*="sidebarCol"] [class*="root"][class*="collapsed"] [class*="panelList"]:has([aria-label="插件"], [aria-label="Plugins"]) [class*="panelRow"] {
-      align-self: center !important;
-    }
     html.dsh-native-window-drag,
     html.dsh-native-window-drag * {
       cursor: default !important;
@@ -86,6 +47,76 @@ public final class DshWebShell {
     .dsh-native-window-drag-hover * {
       cursor: default !important;
     }
+    """
+
+    /// The shell's own macOS layout, for a Runtime that draws none
+    /// (`supportsNativeMacOSShell`): it collapses the sidebar to a 56px rail
+    /// sized for icons, so this shell widens the rail to the traffic-light
+    /// gutter and pads the column down past the window buttons.
+    ///
+    /// Every rule is scoped to the absence of the platform marker, which is
+    /// published only for a Runtime that has its own layout. One stylesheet
+    /// therefore serves both branches, and a Runtime switch flips between them
+    /// through that single attribute — there is no second document to keep in
+    /// sync and no stale rule left behind after a switch.
+    private static let shellLegacyRailCSS = """
+    html:not([data-platform="darwin"]) {
+      --dsh-shell-traffic-light-safe-height: 20px;
+      --dsh-shell-traffic-light-safe-width: 72px;
+      --dsh-shell-sidebar-width: 88px;
+    }
+    html:not([data-platform="darwin"]) [class*="sidebarCol"] {
+      padding-top: var(--dsh-shell-traffic-light-safe-height) !important;
+      min-width: var(--dsh-shell-sidebar-width) !important;
+      background: color-mix(in srgb, var(--dsw-specific-sidebar-fill) 70%, transparent) !important;
+    }
+    html:not([data-platform="darwin"]) [data-sidebar-collapsed] {
+      grid-template-columns: var(--dsh-shell-sidebar-width) minmax(0px, 1fr) 0px !important;
+    }
+    html:not([data-platform="darwin"]) [data-sidebar-right-panel="fullscreen"] {
+      left: var(--dsh-shell-traffic-light-safe-width) !important;
+      width: auto !important;
+    }
+    html:not([data-platform="darwin"]) [class*="frame"]:has(> [class*="sidebarCol"]) {
+      padding-top: 0 !important;
+    }
+    html:not([data-platform="darwin"]) [class*="centerCol"] {
+      background: var(--dsw-alias-bg-base) !important;
+      box-sizing: border-box !important;
+      padding-top: 0 !important;
+    }
+    html:not([data-platform="darwin"]) [class*="sidebarCol"] [class*="logoRow"] {
+      position: relative !important;
+      top: 6px !important;
+    }
+    html:not([data-platform="darwin"]) [class*="railIn"] [class*="iconButton"],
+    html:not([data-platform="darwin"]) [class*="railIn"] [class*="newSession"],
+    html:not([data-platform="darwin"]) [class*="railIn"] [class*="searchButton"],
+    html:not([data-platform="darwin"]) [class*="railIn"] [class*="headerActions"],
+    html:not([data-platform="darwin"]) [class*="railIn"] [class*="search"] {
+      margin-left: auto !important;
+      margin-right: auto !important;
+    }
+    /* Keep the Runtime icon centered only when the sidebar is collapsed. */
+    html:not([data-platform="darwin"]) [class*="sidebarCol"] [class*="root"][class*="collapsed"] [class*="panelList"]:has([aria-label="插件"], [aria-label="Plugins"]) [class*="panelRow"] {
+      align-self: center !important;
+    }
+    """
+
+    /// The official desktop's platform marker. A Runtime that has a macOS
+    /// layout of its own reads it and then owns everything this shell used to
+    /// force: the sidebar collapses to zero width with its reopen and New
+    /// Session controls moved into the frame's leading seat, a 52px top strip
+    /// clears the traffic lights, the sidebar takes its translucent gradient,
+    /// and the center column gets its own background and hairline border.
+    private static let platformMarkerScript = """
+    (() => {
+      const mark = () => {
+        document.documentElement?.setAttribute('data-platform', 'darwin');
+      };
+      if (document.documentElement) mark();
+      else window.addEventListener('DOMContentLoaded', mark, { once: true });
+    })();
     """
 
     private static let loadingCSS = """
@@ -304,8 +335,35 @@ public final class DshWebShell {
         config.preferences.setValue(Self.developerToolsEnabledByDefault, forKey: "developerExtrasEnabled")
 
         let userContent = WKUserContentController()
+        self.userContentController = userContent
         self.bridgeHandler.delegate = delegate
         userContent.add(self.bridgeHandler, name: "dshDesktop")
+        // A Runtime without its own layout still gets the rail, but the marker
+        // is re-derived before every launch, so start from the older branch.
+        Self.installUserScripts(into: userContent, publishesPlatformMarker: false)
+        config.userContentController = userContent
+
+        self.webView = WKWebView(frame: .zero, configuration: config)
+        self.webView.autoresizingMask = [.width, .height]
+        self.webView.setValue(false, forKey: "drawsBackground")
+#if DEBUG
+        self.webView.isInspectable = Self.developerToolsEnabledByDefault
+#endif
+        configureRootView()
+    }
+
+    /// Install the shell's whole script set for one layout branch.
+    ///
+    /// WebKit can drop every user script at once but not a single one, so a
+    /// branch switch rebuilds the set the shell owns instead of adding and
+    /// revoking one script. The marker is registered ahead of the stylesheet
+    /// that selects on it, so the attribute is already on the document element
+    /// when the shell's rules are inserted.
+    private static func installUserScripts(
+        into userContent: WKUserContentController,
+        publishesPlatformMarker: Bool
+    ) {
+        userContent.removeAllUserScripts()
         userContent.addUserScript(WKUserScript(
             source: DshBridgeHandler.scriptSource,
             injectionTime: .atDocumentStart,
@@ -316,11 +374,18 @@ public final class DshWebShell {
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         ))
+        if publishesPlatformMarker {
+            userContent.addUserScript(WKUserScript(
+                source: Self.platformMarkerScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            ))
+        }
         let styleScript = """
         (() => {
           const style = document.createElement('style');
           style.id = 'dsh-shell-styles';
-          style.textContent = `\(Self.shellCSS)\n\(Self.loadingCSS)`;
+          style.textContent = `\(Self.shellSharedCSS)\n\(Self.shellLegacyRailCSS)\n\(Self.loadingCSS)`;
           (document.head || document.documentElement).appendChild(style);
         })();
         """
@@ -334,15 +399,33 @@ public final class DshWebShell {
             injectionTime: .atDocumentStart,
             forMainFrameOnly: false
         ))
-        config.userContentController = userContent
+    }
 
-        self.webView = WKWebView(frame: .zero, configuration: config)
-        self.webView.autoresizingMask = [.width, .height]
-        self.webView.setValue(false, forKey: "drawsBackground")
-#if DEBUG
-        self.webView.isInspectable = Self.developerToolsEnabledByDefault
-#endif
-        configureRootView()
+    /// Match the injected layout to what the Runtime about to render can do.
+    ///
+    /// The shell draws the macOS layout only for a Runtime that draws none:
+    /// the rail width, the traffic-light padding and the titlebar overrides in
+    /// `shellLegacyRailCSS` exist because such a Runtime collapses its sidebar
+    /// to a 56px icon rail. A Runtime that supports a native macOS shell
+    /// collapses it to zero width and moves the reopen and New Session
+    /// controls into the frame's leading seat, so every one of those overrides
+    /// has to be off. That is what the platform marker switches: the marker
+    /// itself disables exactly those rules, so publishing and revoking it is
+    /// the whole decision.
+    ///
+    /// Called before each navigation rather than once at construction. The
+    /// shell keeps one WebView for its lifetime, and the Runtime behind it can
+    /// move in either direction — a rollback has to get its rail back — so the
+    /// policy is derived from every launch, not from the one that built the
+    /// window.
+    public func applyRuntimeCapabilities(runtimeVersion: String) {
+        let publishesMarker = DshSemanticVersion(runtimeVersion)?.supportsNativeMacOSShell ?? false
+        guard publishesMarker != publishesPlatformMarker else { return }
+        publishesPlatformMarker = publishesMarker
+        Self.installUserScripts(
+            into: userContentController,
+            publishesPlatformMarker: publishesMarker
+        )
     }
 
     /// Bind the native bridge to the current WebKit session. The shell keeps

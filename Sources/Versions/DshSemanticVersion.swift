@@ -110,4 +110,21 @@ public struct DshSemanticVersion: Comparable, Sendable {
     }
 
     private static let noOpenMinimum = DshSemanticVersion("0.1.0-rc.8")!
+
+    /// The Runtime lays out the macOS window itself once the page carries
+    /// `data-platform="darwin"`: the sidebar collapses to zero width, its
+    /// reopen and New Session controls move into the frame's leading seat, a
+    /// 52px top strip clears the traffic lights, and the sidebar paints its
+    /// translucent gradient.
+    ///
+    /// Reading the marker is not the same as honoring it. 0.1.6-alpha.2 takes
+    /// the collapsed width from it but mounts no leading seat, so the sidebar
+    /// would disappear with no way back; the floor is the first release that
+    /// mounts the seat. Anything older keeps the shell's own rail, which is
+    /// what `html:not([data-platform="darwin"])` in `DshWebShell` selects on.
+    public var supportsNativeMacOSShell: Bool {
+        self >= DshSemanticVersion.nativeMacOSShellMinimum
+    }
+
+    private static let nativeMacOSShellMinimum = DshSemanticVersion("0.1.7-alpha.1")!
 }
