@@ -10,4 +10,4 @@
 - GitHub Release 标题一律严格使用 `v<版本号>`，例如 `v1.2.2`；不添加产品名称或其他前后缀。
 - 历史执行代理的模型和分工只记录当时安排，不作为后续任务的默认配置或分派授权。
 
-常用入口：本地打包用 `bash scripts/release-local.sh arm64`（仅支持 Apple Silicon arm64）。
+常用入口： 本地打包用 `bash scripts/build-app.sh`。如果用户指定要打包DMG，使用 `bash scripts/release-local.sh arm64`（仅支持 Apple Silicon arm64）。
