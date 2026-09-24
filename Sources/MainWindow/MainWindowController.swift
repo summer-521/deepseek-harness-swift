@@ -3602,6 +3602,21 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             && url.port == origin.port
     }
 
+    /// Blob URLs carry their creator's origin after the `blob:` scheme. Only
+    /// accept downloads created by the active Runtime's main frame; otherwise
+    /// a plugin or foreign frame could use this path to bypass navigation
+    /// policy and hand arbitrary URLs to the native download UI.
+    private func isCurrentRuntimeBlobURL(_ url: URL, sourceFrame: WKFrameInfo) -> Bool {
+        let blobPrefix = "blob:"
+        guard url.scheme?.caseInsensitiveCompare("blob") == .orderedSame,
+              sourceFrame.isMainFrame,
+              isCurrentRuntimeWebOrigin(sourceFrame.securityOrigin),
+              let embeddedURL = URL(string: String(url.absoluteString.dropFirst(blobPrefix.count))) else {
+            return false
+        }
+        return isCurrentRuntimeWebURL(embeddedURL)
+    }
+
     private func isCurrentRuntimeWebOrigin(_ origin: WKSecurityOrigin) -> Bool {
         guard let expected = serviceSession?.originURL,
               let scheme = expected.scheme,
@@ -3643,13 +3658,19 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             return
         }
 
-        if isCurrentRuntimeWebURL(url) && navigationAction.shouldPerformDownload {
+        let isRuntimeURL = isCurrentRuntimeWebURL(url)
+        let isRuntimeBlobURL = isCurrentRuntimeBlobURL(url, sourceFrame: navigationAction.sourceFrame)
+
+        if navigationAction.shouldPerformDownload && (isRuntimeURL || isRuntimeBlobURL) {
             decisionHandler(.download)
-        } else if isCurrentRuntimeWebURL(url) {
+        } else if isRuntimeURL || isRuntimeBlobURL {
             decisionHandler(.allow)
         } else if isLocalWebURL(url) {
             // A loopback URL is not automatically trusted: localhost and a
             // different port are different authorities for BrowserAuth.
+            decisionHandler(.cancel)
+        } else if url.scheme?.caseInsensitiveCompare("blob") == .orderedSame {
+            // Never ask LaunchServices to open an opaque WebKit object URL.
             decisionHandler(.cancel)
         } else {
             if navigationAction.navigationType == .linkActivated {
@@ -3808,8 +3829,8 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             }
 
             let panel = NSSavePanel()
-            panel.title = "保存 Session 导出"
-            panel.message = "选择 Session ZIP 文件的保存位置。"
+            panel.title = "保存下载"
+            panel.message = "选择下载文件的保存位置。"
             panel.prompt = "保存"
             panel.directoryURL = defaults.directory
             panel.nameFieldStringValue = defaults.filename

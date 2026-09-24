@@ -16,11 +16,24 @@ test('Swift shell converts local attachment navigations into WKDownloads', () =>
   assert.equal((MAIN_WINDOW_SOURCE.match(/download\.delegate = self/g) ?? []).length, 2)
 })
 
+test('Swift shell accepts only active-Runtime Blob downloads from its main frame', () => {
+  assert.match(MAIN_WINDOW_SOURCE, /private func isCurrentRuntimeBlobURL\(_ url: URL, sourceFrame: WKFrameInfo\) -> Bool/)
+  assert.match(MAIN_WINDOW_SOURCE, /url\.scheme\?\.caseInsensitiveCompare\("blob"\)/)
+  assert.match(MAIN_WINDOW_SOURCE, /sourceFrame\.isMainFrame/)
+  assert.match(MAIN_WINDOW_SOURCE, /isCurrentRuntimeWebOrigin\(sourceFrame\.securityOrigin\)/)
+  assert.match(MAIN_WINDOW_SOURCE, /URL\(string: String\(url\.absoluteString\.dropFirst\(blobPrefix\.count\)\)\)/)
+  assert.match(MAIN_WINDOW_SOURCE, /navigationAction\.shouldPerformDownload && \(isRuntimeURL \|\| isRuntimeBlobURL\)/)
+  assert.match(MAIN_WINDOW_SOURCE, /else if isRuntimeURL \|\| isRuntimeBlobURL\s*\{\s*decisionHandler\(\.allow\)/)
+  assert.match(MAIN_WINDOW_SOURCE, /else if url\.scheme\?\.caseInsensitiveCompare\("blob"\) == \.orderedSame\s*\{\s*\/\/ Never ask LaunchServices to open an opaque WebKit object URL\.\s*decisionHandler\(\.cancel\)/)
+})
+
 test('Swift downloads open a native save panel with Downloads as the default location', () => {
   assert.match(MAIN_WINDOW_SOURCE, /urls\(for: \.downloadsDirectory, in: \.userDomainMask\)/)
   assert.match(MAIN_WINDOW_SOURCE, /let panel = NSSavePanel\(\)/)
   assert.match(MAIN_WINDOW_SOURCE, /panel\.directoryURL = defaults\.directory/)
   assert.match(MAIN_WINDOW_SOURCE, /panel\.nameFieldStringValue = defaults\.filename/)
+  assert.match(MAIN_WINDOW_SOURCE, /panel\.title = "保存下载"/)
+  assert.match(MAIN_WINDOW_SOURCE, /panel\.message = "选择下载文件的保存位置。"/)
   assert.match(MAIN_WINDOW_SOURCE, /panel\.beginSheetModal\(for: window\)/)
   assert.match(MAIN_WINDOW_SOURCE, /guard response == \.OK, let destination = panel\.url/)
   assert.match(MAIN_WINDOW_SOURCE, /downloadDestinations\[ObjectIdentifier\(download\)\]/)
