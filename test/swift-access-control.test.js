@@ -566,6 +566,49 @@ test('the Platform completion page can return the user to this shell', () => {
   assert.match(bring, /showMainWindow\(\)/)
 })
 
+test('only the Browser panel frame may load a foreign origin', () => {
+  const policy = sliceBetween(
+    WINDOW_SOURCE,
+    'public func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,',
+    '\n    }',
+  )
+  // The panel renders an HTTP(S) page in a sub-frame of this WebView. Denying
+  // that navigation is what leaves it on "正在打开" forever, so the frame is the
+  // one place a foreign origin may load.
+  assert.match(policy, /let isSubframeNavigation = navigationAction\.targetFrame\.map \{ !\$0\.isMainFrame \} \?\? false/)
+  assert.match(policy, /else if isSubframeNavigation, Self\.isExternalWebURL\(url\) \{\s*decisionHandler\(\.allow\)/)
+  assert.match(
+    WINDOW_SOURCE,
+    /private static func isExternalWebURL\(_ url: URL\) -> Bool \{\s*guard let scheme = url\.scheme\?\.lowercased\(\),\s*let host = url\.host,\s*!host\.isEmpty else \{ return false \}\s*return scheme == "http" \|\| scheme == "https"/,
+  )
+
+  // A frame that would replace the top document is not the panel, and loopback
+  // stays refused even inside it — the panel cannot become a way around
+  // BrowserAuth. Both rules must be checked before the panel's.
+  const loopback = policy.indexOf('isLocalWebURL(url)')
+  const panel = policy.indexOf('isSubframeNavigation, Self.isExternalWebURL(url)')
+  assert.ok(loopback > 0 && panel > loopback, 'the loopback refusal must precede the panel rule')
+  assert.match(policy, /if navigationAction\.navigationType == \.linkActivated \{\s*NSWorkspace\.shared\.open\(url\)/)
+
+  // The action policy alone is not enough: the response decision runs for the
+  // same frame a moment later, and cancelling it there leaves the frame with
+  // neither a load nor an error — the panel stuck on "正在打开" again.
+  const response = sliceBetween(
+    WINDOW_SOURCE,
+    'public func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,',
+    '\n    }',
+  )
+  assert.match(
+    response,
+    /guard isCurrentRuntimeWebURL\(url\)\s*\n\s*\|\| \(!navigationResponse\.isForMainFrame && Self\.isExternalWebURL\(url\)\) else \{\s*\n\s*decisionHandler\(\.cancel\)/,
+  )
+  assert.match(response, /decisionHandler\(Self\.isDownloadResponse\(navigationResponse\) \? \.download : \.allow\)/)
+  assert.match(
+    WINDOW_SOURCE,
+    /private static func isDownloadResponse\(_ navigationResponse: WKNavigationResponse\) -> Bool \{\s*let contentDisposition = \(navigationResponse\.response as\? HTTPURLResponse\)\?/,
+  )
+})
+
 test('install preflight surfaces release-age violations before any mutation', () => {
   assert.match(PLUGIN_SOURCE, /public func preflightInstallPluginUpdate\(\s*spec: String,[\s\S]*?\) async throws -> DshPluginUpdatePreflightResult/)
   assert.match(PLUGIN_SOURCE, /isValidPackageSpecifier\(spec\)/)

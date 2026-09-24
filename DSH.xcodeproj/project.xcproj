@@ -123,6 +123,7 @@
             { "path": "DshWebShell.swift", "target-membership": [ "DSH/compile-sources" ] },
             { "path": "DshRendererCookieStore.swift", "target-membership": [ "DSH/compile-sources" ] },
             { "path": "DshUpstreamCookieStore.swift", "target-membership": [ "DSH/compile-sources" ] },
+            { "path": "DshSidebarBrowser.swift", "target-membership": [ "DSH/compile-sources" ] },
           ],
         }, {
           "kind": "group",

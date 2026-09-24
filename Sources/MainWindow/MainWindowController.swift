@@ -177,6 +177,9 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
     private var webView: WKWebView?
     private var vibrancyView: NSVisualEffectView?
     private var webShell: DshWebShell?
+    /// Owns the sidebar Browser's native guests; held for the window's lifetime
+    /// because a guest outlives the element that asked for it.
+    private var sidebarBrowserPane: DshSidebarBrowserPane?
     private var rendererCookieStore: DshRendererCookieStore?
     private var upstreamCookieStore: DshUpstreamCookieStore?
     private var serviceSession: DshServiceSession?
@@ -301,6 +304,15 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             closeButton.action = #selector(hideMainWindow)
         }
         setupContentView(in: win)
+        // The sidebar Browser panel drives a real guest through the injected
+        // shim; this pane owns that web view, its geometry and its navigation
+        // state. Without it the panel falls back to an iframe carrier that
+        // cannot read a cross-origin page's URL or title.
+        if let shell = webShell {
+            let pane = DshSidebarBrowserPane(hostView: shell.rootView, pageWebView: shell.webView)
+            sidebarBrowserPane = pane
+            shell.attachSidebarBrowser(pane)
+        }
         // A sign-in waiting for approval opens its Platform page in the user's
         // browser. The Host names the URL and the shell owns the launch, the
         // same division every external link in the page already follows.
@@ -3627,6 +3639,18 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         url.host == "127.0.0.1" || url.host == "localhost"
     }
 
+    /// Whether the Browser panel's frame may load this address. The panel is
+    /// the only sub-frame that carries foreign content, and what it carries is
+    /// an ordinary HTTP(S) page: another scheme there would be an attempt to
+    /// reach the system rather than the web, and a loopback address was already
+    /// refused above.
+    private static func isExternalWebURL(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(),
+              let host = url.host,
+              !host.isEmpty else { return false }
+        return scheme == "http" || scheme == "https"
+    }
+
     private func isCurrentRuntimeWebURL(_ url: URL) -> Bool {
         guard let origin = serviceSession?.originURL else { return false }
         return url.scheme == origin.scheme
@@ -3692,6 +3716,13 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
 
         let isRuntimeURL = isCurrentRuntimeWebURL(url)
         let isRuntimeBlobURL = isCurrentRuntimeBlobURL(url, sourceFrame: navigationAction.sourceFrame)
+        // The built-in Browser panel renders an HTTP(S) page in a sub-frame of
+        // this WebView, so a sub-frame navigation is the one place a foreign
+        // origin may load. Cancelling it is what leaves that panel on "正在打开"
+        // forever: the frame never finishes a load it was never allowed to
+        // start. A navigation that would replace the top document is not this —
+        // only the Runtime's own origin may own the main frame.
+        let isSubframeNavigation = navigationAction.targetFrame.map { !$0.isMainFrame } ?? false
 
         if navigationAction.shouldPerformDownload && (isRuntimeURL || isRuntimeBlobURL) {
             decisionHandler(.download)
@@ -3699,8 +3730,12 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             decisionHandler(.allow)
         } else if isLocalWebURL(url) {
             // A loopback URL is not automatically trusted: localhost and a
-            // different port are different authorities for BrowserAuth.
+            // different port are different authorities for BrowserAuth. That
+            // holds inside the panel as well, so the panel cannot become a way
+            // around it.
             decisionHandler(.cancel)
+        } else if isSubframeNavigation, Self.isExternalWebURL(url) {
+            decisionHandler(.allow)
         } else if url.scheme?.caseInsensitiveCompare("blob") == .orderedSame {
             // Never ask LaunchServices to open an opaque WebKit object URL.
             decisionHandler(.cancel)
@@ -3712,22 +3747,32 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         }
     }
 
+    /// Whether a response is content to save rather than a page to render.
+    private static func isDownloadResponse(_ navigationResponse: WKNavigationResponse) -> Bool {
+        let contentDisposition = (navigationResponse.response as? HTTPURLResponse)?
+            .value(forHTTPHeaderField: "Content-Disposition")?
+            .lowercased()
+        return contentDisposition?.contains("attachment") == true || !navigationResponse.canShowMIMEType
+    }
+
     public func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
                         decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
-        guard let url = navigationResponse.response.url,
-              isCurrentRuntimeWebURL(url) else {
+        guard let url = navigationResponse.response.url else {
             decisionHandler(.cancel)
             return
         }
 
-        let contentDisposition = (navigationResponse.response as? HTTPURLResponse)?
-            .value(forHTTPHeaderField: "Content-Disposition")?
-            .lowercased()
-        if contentDisposition?.contains("attachment") == true || !navigationResponse.canShowMIMEType {
-            decisionHandler(.download)
-        } else {
-            decisionHandler(.allow)
+        // This decision runs for every frame, so the panel's frame needs the
+        // same allowance its action policy just gave: allowing a navigation and
+        // then cancelling its response leaves the frame with neither a load nor
+        // an error, which is exactly the panel stuck on "正在打开".
+        guard isCurrentRuntimeWebURL(url)
+            || (!navigationResponse.isForMainFrame && Self.isExternalWebURL(url)) else {
+            decisionHandler(.cancel)
+            return
         }
+
+        decisionHandler(Self.isDownloadResponse(navigationResponse) ? .download : .allow)
     }
 
     public func webView(_ webView: WKWebView, navigationAction: WKNavigationAction,

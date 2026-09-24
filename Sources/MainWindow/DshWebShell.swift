@@ -359,6 +359,14 @@ public final class DshWebShell {
     /// revoking one script. The marker is registered ahead of the stylesheet
     /// that selects on it, so the attribute is already on the document element
     /// when the shell's rules are inserted.
+    ///
+    /// Every script is main-frame only. The layout, the bridge and the menu
+    /// policy belong to the DSH document, and the shell's sub-frames are other
+    /// people's pages: the Browser panel's site and the HTML preview's user
+    /// document. Injecting into those would let `[class*="fade"]`-style rules
+    /// and `html, body { background: transparent }` reach a page that never
+    /// agreed to them, and would hand `window.dshDesktop` to a foreign origin
+    /// whose messages the bridge rejects anyway.
     private static func installUserScripts(
         into userContent: WKUserContentController,
         publishesPlatformMarker: Bool
@@ -367,7 +375,15 @@ public final class DshWebShell {
         userContent.addUserScript(WKUserScript(
             source: DshBridgeHandler.scriptSource,
             injectionTime: .atDocumentStart,
-            forMainFrameOnly: false
+            forMainFrameOnly: true
+        ))
+        // The sidebar Browser's native carrier. Without it the panel falls back
+        // to an iframe, which cannot report a cross-origin page's URL or title
+        // and is refused outright by every site that forbids framing.
+        userContent.addUserScript(WKUserScript(
+            source: DshSidebarBrowserScript.source,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
         ))
         userContent.addUserScript(WKUserScript(
             source: Self.windowDragScript,
@@ -392,12 +408,12 @@ public final class DshWebShell {
         userContent.addUserScript(WKUserScript(
             source: styleScript,
             injectionTime: .atDocumentStart,
-            forMainFrameOnly: false
+            forMainFrameOnly: true
         ))
         userContent.addUserScript(WKUserScript(
             source: Self.contextMenuScript,
             injectionTime: .atDocumentStart,
-            forMainFrameOnly: false
+            forMainFrameOnly: true
         ))
     }
 
@@ -426,6 +442,12 @@ public final class DshWebShell {
             into: userContentController,
             publishesPlatformMarker: publishesMarker
         )
+    }
+
+    /// Host the sidebar Browser's native guest. The shim that drives it is part
+    /// of the injected script set; this registers the handler it posts to.
+    public func attachSidebarBrowser(_ pane: DshSidebarBrowserPane) {
+        userContentController.add(pane, name: DshSidebarBrowserPane.messageHandlerName)
     }
 
     /// Bind the native bridge to the current WebKit session. The shell keeps
