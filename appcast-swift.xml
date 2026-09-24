@@ -6,6 +6,63 @@
         <description>Updates for the native Swift shell of DSH Desktop.</description>
         <language>zh-CN</language>
         <item>
+            <title>1.3.0</title>
+            <pubDate>Thu, 24 Sep 2026 10:12:11 +0800</pubDate>
+            <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.3.0</link>
+            <sparkle:version>18</sparkle:version>
+            <sparkle:shortVersionString>1.3.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[
+## 新增
+
+### 账号登录
+
+- 侧边栏左下角改为账号入口（与官方桌面端一致）：未登录时点「登录」即可，登录后显示头像与用户名，设置入口收进同一个菜单。
+- 登录在系统浏览器中完成：点登录后自动打开 DeepSeek 平台授权页，授权成功即回到 App，不需要手动复制链接；若浏览器没有自动打开，对话框仍提供「复制登录链接」作为兜底。
+- 凭证保存在 DSH 的凭证存储中（默认 `~/.dsh/.credentials.yaml`），与终端 `dsh` 共用同一份——在 App 里登录后，命令行同样是登录状态。
+- 平台完成页的「打开应用」现在会回到本 App：应用声明了官方桌面端使用的 `dsh://` 协议。
+
+### 侧边栏与 macOS 外观
+
+- 侧边栏改用 Runtime 自带的 macOS 布局：折叠时完全收起而不是保留一条图标栏，「重新打开侧栏 / 新会话」移到会话头部，侧栏背景使用 Runtime 的半透明渐变。
+- 该布局按 Runtime 能力自动分流：0.1.7-alpha.1 及以上使用新布局；`latest` 通道当前指向的 0.1.5-rc.3 继续使用原来的固定宽度侧栏，外观不变。
+- 修复窗口缩放后交通灯（红黄绿）位置错位的问题。
+
+## 修复
+
+### 语音输入
+
+- 修复安装路径较长时语音输入（SenseVoice）无法启动的问题：长路径配置改为通过管道传递，不再作为启动参数。
+
+### 麦克风权限
+
+- 只有当前 Runtime 页面可以申请麦克风；其他来源（含内置浏览器标签页）和摄像头一律拒绝。
+- 补齐麦克风用途说明，系统权限弹窗可以正常出现。
+
+### 下载
+
+- 收紧下载来源校验：只有当前 Runtime 主页面创建的 Blob 才会进入下载流程；插件页或其他页面构造的 Blob 会被取消，不再交给系统打开。
+- 保存面板文案改为通用的「保存下载」（此前写的是「保存 Session 导出」）。
+
+### 插件管理
+
+- 由 Profile patch / Runtime 组合管理的插件（如 computer-use）不再提供「启用 / 禁用」，改为标注「由 Profile patch 管理」——此前的误操作会导致下次启动失败。
+- Bundle 的 `patch` 字段支持路径数组（新版 Runtime 的写法），插件检查不再误报。
+- 插件检查失败时给出退出码或信号等可诊断信息，而不是笼统的「无有效结果」。
+
+### 运行环境
+
+- 内置 Node 使用独立签名授权（允许 JIT 与第三方原生库加载），减少原生模块加载失败。
+
+## 已知限制
+
+- `dsh://` 与官方桌面端同名。机器上只装本 App 时它专属于本 App；将来若同时安装官方桌面端，两者会争同一个默认处理程序（以最近启动/注册的为准）。这只影响完成页那一跳——凭证在浏览器跳到完成页之前就已保存，登录本身不受影响。
+- 侧边栏新布局需要 Runtime 0.1.7-alpha.1 及以上；npm `latest` 仍指向 0.1.5-rc.3。
+]]></description>
+            <enclosure url="https://github.com/summer-521/deepseek-harness-swift/releases/download/v1.3.0/DSH-Desktop-1.3.0-arm64.dmg" length="50479986" type="application/octet-stream" sparkle:edSignature="73/W/L6q7+uPFEM6+PyfUXchMLyKNxs3szDn9uEhSyC7dAT8C71S0sUdC1em19txA+vCAtymCvQfkrrkxpTYAA=="/>
+        </item>
+        <item>
             <title>1.2.6</title>
             <pubDate>Fri, 18 Sep 2026 12:40:29 +0800</pubDate>
             <link>https://github.com/summer-521/deepseek-harness-swift/releases/tag/v1.2.6</link>
