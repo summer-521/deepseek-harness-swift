@@ -15,7 +15,10 @@ import {
   hasValidLanCredential,
   hasReservedDesktopParameter,
   hasValidRendererCookie,
+  isAccountCallbackRequest,
+  isAdmittedAccountCallback,
   NETWORK_EXPOSURES,
+  requestBindsLoopbackAuthority,
   requestPassesLoopbackFence,
 } from '../assets/dsh-desktop-host/access-state.js'
 import { createBrowserURLRoute } from '../assets/dsh-desktop-host/browser-url-route.js'
@@ -107,6 +110,56 @@ test('managed launches fail closed until the matching renderer cookie is present
       state,
     ),
     CLASSIFICATIONS.denied,
+  )
+})
+
+test('the Platform sign-in callback is the one anonymous request the gate admits', () => {
+  const state = managedState({ ordinaryBrowserEnabled: true })
+  const callback = request({ url: '/oauth/callback?code=fixture-code&state=fixture-state' })
+
+  // The browser reaches this route as a top-level redirect from the configured
+  // Platform origin: no renderer cookie, and no Origin a CORS request would
+  // carry. The provider authenticates the attempt with `state` and the PKCE
+  // verifier, which never leave the Host, so the gate admits the shape only.
+  assert.equal(decideRequest(callback, state), CLASSIFICATIONS.denied)
+  assert.equal(isAccountCallbackRequest(callback), true)
+  assert.equal(isAdmittedAccountCallback(callback, state), true)
+
+  for (const refused of [
+    request({ url: '/oauth/callback?code=fixture-code&state=fixture-state', method: 'POST' }),
+    request({ url: '/oauth/callback?code=fixture-code' }),
+    request({ url: '/oauth/callback?state=fixture-state' }),
+    request({ url: '/oauth/callback?code=one&code=two&state=fixture-state' }),
+    request({ url: '/oauth/callback?code=one&state=first&state=second' }),
+    request({ url: '/oauth/other?code=fixture-code&state=fixture-state' }),
+    request({ url: '/oauth/callback/nested?code=fixture-code&state=fixture-state' }),
+    request({ url: '/?code=fixture-code&state=fixture-state' }),
+  ]) {
+    assert.equal(
+      isAdmittedAccountCallback(refused, state),
+      false,
+      `the gate must refuse ${refused.method} ${refused.url}`,
+    )
+  }
+
+  // DNS rebinding stays out of it: the exception still has to address this
+  // Host's loopback authority, and a foreign Origin is refused for every
+  // request that carries a credential.
+  assert.equal(
+    requestBindsLoopbackAuthority(
+      request({ url: '/oauth/callback?code=a&state=b', host: 'rebound.test:3187' }),
+      state,
+    ),
+    false,
+  )
+  assert.equal(
+    isAdmittedAccountCallback(request({ url: '/oauth/callback?code=a&state=b', host: 'rebound.test:3187' }), state),
+    false,
+  )
+  assert.equal(hasReservedDesktopParameter('/oauth/callback?code=a&state=b&dsh-swift-debug=1'), true)
+  assert.equal(
+    isAdmittedAccountCallback(request({ url: '/oauth/callback?code=a&state=b&dsh-swift-debug=1' }), state),
+    false,
   )
 })
 

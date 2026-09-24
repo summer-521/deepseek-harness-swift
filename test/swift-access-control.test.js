@@ -31,6 +31,8 @@ const HOST_WEB_SERVER = read('../assets/dsh-desktop-host/webserver.js')
 const HOST_CONTROL = read('../assets/dsh-desktop-host/control.js')
 const HOST_ROUTE = read('../assets/dsh-desktop-host/browser-url-route.js')
 const HOST_ACCESS = read('../assets/dsh-desktop-host/access-state.js')
+const HOST_INDEX = read('../assets/dsh-desktop-host/index.js')
+const INFO_PLIST = read('../Info.plist')
 const HOST_BROKER = read('../assets/dsh-desktop-host/upstream-session-broker.js')
 const LAN_ROUTE = read('../assets/dsh-desktop-host/lan-url-route.js')
 const LAN_INGRESS = read('../assets/dsh-desktop-host/lan-http-ingress.js')
@@ -475,13 +477,93 @@ test('the upstream webserver is replaced and all request boundaries share the fe
   assert.match(NODE_RUNTIME_SOURCE, /resolveRuntimeBootstrap/)
 })
 
-test('the Swift Desktop host temporarily disables the incomplete account launcher only', () => {
-  assert.match(
-    HOST_PATCH,
-    /id: ui-settings-account\s*\n\s*disabled: true/,
-  )
+test('the Swift Desktop host mounts the account launcher its own bridge enables', () => {
+  // The launcher replaces the Settings button in the sidebar footer, and its
+  // client half registers only where `window.dshDesktop` exists — the shell
+  // injects that, so the Profile must not keep suppressing the row.
+  assert.match(HOST_PATCH, /id: ui-settings-account\s*\n\s*disabled: false/)
+  assert.doesNotMatch(HOST_PATCH, /id: ui-settings-account\s*\n\s*disabled: true/)
   assert.doesNotMatch(HOST_PATCH, /id: account-controller\s*\n\s*disabled: true/)
+  assert.match(HOST_PATCH, /id: deepseek-account\s*\n\s*config:\s*\n\s*desktopPlatform: !!js/)
   assert.match(HOST_PATCH, /id: desktop-host\s*\n\s*name: dsh-desktop-host/)
+  // Upstream only reports the desktop client identity for a Profile literally
+  // named `desktop`; this App's manifest is `dsh-profile-swift-desktop`, so the
+  // platform has to come from this patch.
+  assert.match(HOST_PATCH, /desktopPlatform: !!js ".*includes\(process\.platform\).*"/)
+})
+
+test('the Platform sign-in callback is the only anonymous route the gate admits', () => {
+  // One exact path, one method, one code/state pair — and the request still has
+  // to be addressed to this Host's loopback authority.
+  assert.match(HOST_ACCESS, /const ACCOUNT_CALLBACK_PATH = "\/oauth\/callback"/)
+  assert.match(HOST_ACCESS, /export function isAccountCallbackRequest\(request\)/)
+  assert.match(HOST_ACCESS, /if \(request\?\.method !== "GET"\) return false/)
+  assert.match(HOST_ACCESS, /url\.searchParams\.getAll\("code"\)\.length === 1/)
+  assert.match(HOST_ACCESS, /url\.searchParams\.getAll\("state"\)\.length === 1/)
+  assert.match(HOST_ACCESS, /export function isAdmittedAccountCallback\(request, state\)/)
+  assert.match(HOST_ACCESS, /&& requestBindsLoopbackAuthority\(request, state\)/)
+  assert.match(HOST_ACCESS, /&& !hasReservedDesktopParameter\(request\.url\)/)
+
+  // The wrapper consults that single decision and nothing else: a denied
+  // request never reaches an upstream handler on any other ground.
+  const gate = sliceBetween(HOST_WEB_SERVER, 'function requestAllowed(request, classification, state) {', '\n}')
+  assert.match(
+    gate,
+    /if \(classification === CLASSIFICATIONS\.denied\) \{[\s\S]*?return isAdmittedAccountCallback\(request, state\);/,
+  )
+  assert.match(HOST_WEB_SERVER, /import \{\s*CLASSIFICATIONS,\s*accessState,\s*decideRequest,\s*hasReservedDesktopParameter,\s*isAdmittedAccountCallback,\s*requestPassesLoopbackFence,\s*\} from "\.\/access-state\.js"/)
+  assert.equal(countCalls(gate, 'isAdmittedAccountCallback'), 1)
+
+  // An upgrade is never that callback, so the socket boundary keeps the strict
+  // rule rather than inheriting the exception.
+  const upgrade = sliceBetween(HOST_WEB_SERVER, 'registerUpgrade(route) {', '\n  async [Service.init]()')
+  assert.match(upgrade, /if \(classification === CLASSIFICATIONS\.denied\s*\n\s*\|\| !requestAllowed\(request, classification, accessState\)\)/)
+})
+
+test('a sign-in waiting for the browser is handed to the shell, not launched by the host', () => {
+  // The Electron desktop opens the authorization page from its main process;
+  // here the Host only reports the URL and the shell owns the launch.
+  assert.match(HOST_INDEX, /const OPEN_EXTERNAL_PREFIX = "dsh desktop open external: "/)
+  assert.match(HOST_INDEX, /if \(attempt\?\.phase !== "waiting-browser"\) return/)
+  assert.match(HOST_INDEX, /if \(announcedAttemptId === attempt\.id\) return/)
+  assert.match(HOST_INDEX, /if \(\/\[\\u0000-\\u0020\\u007f\]\/\.test\(authorizeUrl\)\) return/)
+  assert.match(HOST_INDEX, /process\.stdout\.write\(`\$\{OPEN_EXTERNAL_PREFIX\}\$\{authorizeUrl\}\\n`\)/)
+  // The account provider is optional: a Profile without it must still bring the
+  // bridge up, so this is an injection rather than a declared dependency.
+  assert.match(HOST_INDEX, /ctx\.inject\(\["deepseekAccount"\]/)
+  assert.match(HOST_INDEX, /scope\.deepseekAccount\.watch\(lifetime\.signal\)/)
+
+  // The shell opens it itself, through the same validation every external link
+  // passes, and keeps the URL out of the diagnostic log.
+  assert.match(PROCESS_IO_SOURCE, /pattern: #"\^dsh desktop open external:\\s\+\(\\S\+\)\\s\*\$"#/)
+  assert.match(PROCESS_IO_SOURCE, /static func isOpenableExternalURL\(_ url: URL\) -> Bool/)
+  assert.match(PROCESS_IO_SOURCE, /url\.scheme\?\.caseInsensitiveCompare\("https"\) == \.orderedSame/)
+  assert.match(PROCESS_IO_SOURCE, /for line in lines where !\(isStdout && Self\.isOpenExternalLine\(line\)\)/)
+  assert.match(SERVICE_SOURCE, /processIO\.setExternalURLHandler \{ \[weak self\] url in/)
+  assert.match(WINDOW_SOURCE, /DshService\.shared\.setExternalURLHandler \{ url in\s*\n\s*Task \{ @MainActor in\s*\n\s*NSWorkspace\.shared\.open\(url\)/)
+})
+
+test('the Platform completion page can return the user to this shell', () => {
+  // The completion page opens `dsh://open`; without a bundle claiming the
+  // scheme the browser can only report an invalid address, which is what the
+  // official Desktop's own registration exists to prevent. Launch Services
+  // keeps one handler per scheme, and the URL is an opener only.
+  assert.match(INFO_PLIST, /<key>CFBundleURLTypes<\/key>\s*\n\s*<array>\s*\n\s*<dict>/)
+  assert.match(INFO_PLIST, /<key>CFBundleURLName<\/key>\s*\n\s*<string>\$\(PRODUCT_BUNDLE_IDENTIFIER\)\.dsh<\/string>/)
+  assert.match(INFO_PLIST, /<key>CFBundleURLSchemes<\/key>\s*\n\s*<array>\s*\n\s*<string>dsh<\/string>/)
+
+  assert.match(APP_SOURCE, /public func application\(_ application: NSApplication, open urls: \[URL\]\)/)
+  assert.match(APP_SOURCE, /static func isDesktopOpenURL\(_ url: URL\) -> Bool/)
+  assert.match(APP_SOURCE, /url\.scheme\?\.caseInsensitiveCompare\("dsh"\) == \.orderedSame/)
+  assert.match(APP_SOURCE, /url\.host\?\.caseInsensitiveCompare\("open"\) == \.orderedSame/)
+  assert.match(APP_SOURCE, /MainWindowController\.shared\.bringForward\(\)/)
+
+  // A return from the browser must never expose an unready WebView: while the
+  // launch is still preparing, the startup card is the surface that comes back.
+  const bring = sliceBetween(WINDOW_SOURCE, 'public func bringForward() {', '\n    }')
+  assert.match(bring, /DshStartupWindowController\.shared\.window\?\.isVisible == true/)
+  assert.match(bring, /DshStartupWindowController\.shared\.show\(status: startupStatusModel\)/)
+  assert.match(bring, /showMainWindow\(\)/)
 })
 
 test('install preflight surfaces release-age violations before any mutation', () => {

@@ -7,6 +7,24 @@ func require(_ condition: @autoclosure () -> Bool, _ message: String) {
     }
 }
 
+/// Collects handoffs from the reading queue, which is not the harness's thread.
+final class OpenedURLBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var urls: [URL] = []
+
+    func append(_ url: URL) {
+        lock.lock()
+        urls.append(url)
+        lock.unlock()
+    }
+
+    var contents: [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+        return urls
+    }
+}
+
 @main
 struct ProcessIOHarness {
     static func main() async {
@@ -21,6 +39,38 @@ struct ProcessIOHarness {
         let lateWait = CommandLine.arguments.contains("--late-wait")
         let bootstrapFailure = CommandLine.arguments.contains("--bootstrap-failure")
         let nativeModuleFailure = CommandLine.arguments.contains("--native-module-failure")
+        let openExternal = CommandLine.arguments.contains("--open-external")
+
+        // The browser handoff: what the shell refuses matters as much as what it
+        // opens, so the decision is checked without a process in the way.
+        require(
+            DshProcessIO.isOpenableExternalURL(
+                URL(string: "https://platform.deepseek.com/dsh/authorize?authorize_id=fixture&theme=light")!
+            ),
+            "an https Platform authorization page may be opened"
+        )
+        for refused in [
+            "http://platform.deepseek.com/dsh/authorize?authorize_id=fixture",
+            "https://user:secret@platform.deepseek.com/dsh/authorize?authorize_id=fixture",
+            "https://platform.deepseek.com/dsh/authorize?authorize_id=fixture#fragment",
+        ] {
+            require(
+                !DshProcessIO.isOpenableExternalURL(URL(string: refused)!),
+                "the shell must refuse \(refused)"
+            )
+        }
+        require(
+            DshProcessIO.isOpenExternalLine(
+                "dsh desktop open external: https://platform.deepseek.com/dsh/authorize?authorize_id=fixture"
+            ),
+            "the handoff line must be recognized"
+        )
+        require(
+            !DshProcessIO.isOpenExternalLine(
+                "log: dsh desktop open external: https://platform.deepseek.com/dsh/authorize?authorize_id=fixture"
+            ),
+            "a log line that only quotes the prefix is not a handoff"
+        )
 
         let legacy = try? DshWebEndpoint.parse(
             URL(string: "http://127.0.0.1:3187/")!,
@@ -181,18 +231,33 @@ struct ProcessIOHarness {
             "the dependency remedy must not promise a reinstall fixes it"
         )
 
-        let script = bootstrapFailure ? bootstrapScript : (nativeModuleFailure ? nativeModuleScript : """
-        printf 'dsh web: http://127.0.0.1:3187/?token=\(launchToken)';
-        printf '\\033[32m\\n';
-        printf 'Cookie: dsh_swift_renderer=\(rendererToken); dsh-auth-fixture=\(cookieSecret)\\n' >&2;
-        printf 'Authorization: Bearer \(authorizationSecret)\\n' >&2;
-        printf 'URL: http://127.0.0.1:3187/?token=percent%%2Bsecret%%2F%%3D\\n' >&2;
-        printf '%s\\n' '\(shortJSONSamples)' >&2;
-        printf 'path: \(homePath)/diagnostics\\n' >&2;
-        \(secondReady)
+        // One valid handoff on stdout, one the shell must refuse on stdout, and
+        // the same line on stderr — where it is output, never an instruction.
+        let openExternalScript = """
+        printf '%s\\n' 'dsh desktop open external: https://platform.deepseek.com/dsh/authorize?authorize_id=opened&theme=light';
+        printf '%s\\n' 'dsh desktop open external: http://platform.deepseek.com/dsh/authorize?authorize_id=refused';
+        printf '%s\\n' 'dsh desktop open external: https://platform.deepseek.com/dsh/authorize?authorize_id=stderr-copy' >&2;
+        printf 'dsh web: http://127.0.0.1:3187/?token=\(launchToken)\\n';
         printf 'dsh desktop control ready: \(generation.uuidString)\\n';
         sleep 1
-        """)
+        """
+
+        let script = bootstrapFailure
+            ? bootstrapScript
+            : (nativeModuleFailure
+                ? nativeModuleScript
+                : (openExternal ? openExternalScript : """
+                printf 'dsh web: http://127.0.0.1:3187/?token=\(launchToken)';
+                printf '\\033[32m\\n';
+                printf 'Cookie: dsh_swift_renderer=\(rendererToken); dsh-auth-fixture=\(cookieSecret)\\n' >&2;
+                printf 'Authorization: Bearer \(authorizationSecret)\\n' >&2;
+                printf 'URL: http://127.0.0.1:3187/?token=percent%%2Bsecret%%2F%%3D\\n' >&2;
+                printf '%s\\n' '\(shortJSONSamples)' >&2;
+                printf 'path: \(homePath)/diagnostics\\n' >&2;
+                \(secondReady)
+                printf 'dsh desktop control ready: \(generation.uuidString)\\n';
+                sleep 1
+                """))
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -209,6 +274,8 @@ struct ProcessIOHarness {
             expectedPort: 3187,
             secrets: [rendererToken, cookieSecret, authorizationSecret, "percent+secret/="]
         )
+        let opened = OpenedURLBox()
+        io.setExternalURLHandler { url in opened.append(url) }
         io.start()
 
         do {
@@ -252,6 +319,33 @@ struct ProcessIOHarness {
             } catch {
                 require(false, "unexpected bootstrap error: \(error)")
             }
+            process.terminate()
+            while process.isRunning { usleep(10_000) }
+            print("swift process IO endpoint and redaction harness passed")
+            return
+        }
+
+        if openExternal {
+            do {
+                _ = try await io.waitForReady(timeout: 8)
+            } catch {
+                require(false, "the handoff fixture must still complete the handshake: \(error)")
+            }
+            let urls = opened.contents
+            require(urls.count == 1, "exactly one handoff may open, saw \(urls.count)")
+            require(
+                urls.first?.absoluteString.contains("authorize_id=opened") == true,
+                "the opened URL must be the one the Host named"
+            )
+            let diagnostics = io.diagnosticOutput()
+            require(
+                !diagnostics.contains("authorize_id=opened"),
+                "a handoff the shell acts on must stay out of the diagnostic log"
+            )
+            require(
+                diagnostics.contains("authorize_id=stderr-copy"),
+                "a stderr line is output, never an instruction to open a browser"
+            )
             process.terminate()
             while process.isRunning { usleep(10_000) }
             print("swift process IO endpoint and redaction harness passed")

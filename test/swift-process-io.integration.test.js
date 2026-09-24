@@ -86,6 +86,26 @@ test("Swift ProcessIO names a native-module bootstrap failure instead of a missi
   }
 });
 
+test("Swift ProcessIO opens only the browser handoff the shell is willing to open", () => {
+  const binaryPath = path.join(os.tmpdir(), `dsh-process-io-handoff-${process.pid}`);
+  try {
+    const compile = spawnSync("xcrun", ["swiftc", ...sources, "-o", binaryPath], {
+      encoding: "utf8",
+      timeout: 120000,
+    });
+    assert.equal(compile.status, 0, compile.stderr || compile.stdout);
+
+    // A sign-in waiting for approval is the one place the Host asks the shell to
+    // move the user's browser: the valid page opens, an http URL does not, and
+    // the same line on stderr stays output rather than an instruction.
+    const run = spawnSync(binaryPath, ["--open-external"], { encoding: "utf8", timeout: 20000 });
+    assert.equal(run.status, 0, run.stderr || run.stdout);
+    assert.match(run.stdout, /endpoint and redaction harness passed/);
+  } finally {
+    try { fs.unlinkSync(binaryPath); } catch { /* no binary after failed compile */ }
+  }
+});
+
 test("DshWebEndpoint applies the strict origin and query contract", () => {
   const endpointSource = fs.readFileSync(path.join(testDirectory, "..", "Sources", "Service", "DshWebEndpoint.swift"), "utf8");
   assert.match(endpointSource, /expectedPort/);

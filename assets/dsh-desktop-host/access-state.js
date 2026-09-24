@@ -195,6 +195,47 @@ export function hasReservedDesktopParameter(rawUrl) {
   return false;
 }
 
+const ACCOUNT_CALLBACK_PATH = "/oauth/callback";
+
+/**
+ * Whether this request has the shape of the Platform sign-in callback.
+ *
+ * The authorization provider registers exactly this path on the Host web
+ * server, and the browser reaches it as a top-level redirect from the
+ * configured Platform origin. That request can never carry the renderer
+ * cookie, so the credential gate would reject the one request the whole
+ * sign-in depends on. What is admitted here is only a shape — the path, the
+ * method, and exactly one `code` with exactly one `state` — and the provider
+ * still answers 400 to anything that does not match a live attempt, because
+ * the attempt's `state` and PKCE verifier never leave the Host.
+ */
+export function isAccountCallbackRequest(request) {
+  if (request?.method !== "GET") return false;
+  if (typeof request.url !== "string") return false;
+  let url;
+  try {
+    url = new URL(request.url, "http://127.0.0.1");
+  } catch {
+    return false;
+  }
+  if (url.pathname !== ACCOUNT_CALLBACK_PATH) return false;
+  if (url.username || url.password) return false;
+  return url.searchParams.getAll("code").length === 1
+    && url.searchParams.getAll("state").length === 1;
+}
+
+/**
+ * The complete exception the request gate may apply to a denied request: the
+ * Platform sign-in callback, addressed to this Host's loopback authority, with
+ * no shell-reserved parameter smuggled onto it. Everything else that fails the
+ * credential classification stays rejected.
+ */
+export function isAdmittedAccountCallback(request, state) {
+  return isAccountCallbackRequest(request)
+    && requestBindsLoopbackAuthority(request, state)
+    && !hasReservedDesktopParameter(request.url);
+}
+
 function readHeader(headers, name) {
   if (!headers) return undefined;
   const value = headers[name] ?? headers[name.toLowerCase()];
@@ -219,10 +260,24 @@ export function decideRequest(request, state) {
   return CLASSIFICATIONS.denied;
 }
 
-export function requestPassesLoopbackFence(request, state) {
+/**
+ * Whether the request addressed this loopback authority. This is the part of
+ * the fence that answers DNS rebinding: a foreign page can reach the port, but
+ * it cannot make the browser send our `Host`.
+ */
+export function requestBindsLoopbackAuthority(request, state) {
   if (!state.managedLaunch) return true;
-  const host = readHeader(request?.headers, "host");
-  if (host !== expectedAuthority(state.port)) return false;
+  return readHeader(request?.headers, "host") === expectedAuthority(state.port);
+}
+
+/**
+ * The full fence: the loopback authority plus an `Origin` that is either absent
+ * or our own. A credentialed request is a CORS-shaped one, so a foreign page
+ * driving it is a case this must keep rejecting.
+ */
+export function requestPassesLoopbackFence(request, state) {
+  if (!requestBindsLoopbackAuthority(request, state)) return false;
+  if (!state.managedLaunch) return true;
   const origin = readHeader(request?.headers, "origin");
   return origin === undefined || origin === "" || origin === `http://127.0.0.1:${String(state.port)}`;
 }

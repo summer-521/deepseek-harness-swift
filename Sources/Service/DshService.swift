@@ -27,6 +27,7 @@ public final class DshService: @unchecked Sendable {
     private var process: ManagedDshProcess?
     private let lock = NSLock()
     private let startOperationGate = DshAsyncOperationGate()
+    private var externalURLHandler: (@Sendable (URL) -> Void)?
     private var processRecordURL: URL {
         DshStateManager.appSupportDirectory.appendingPathComponent("dsh-service-process.json")
     }
@@ -58,6 +59,23 @@ public final class DshService: @unchecked Sendable {
     }
 
     private init() {}
+
+    /// Install the browser-handoff callback. The Host names a URL it needs the
+    /// user's browser to open — the Platform authorization page of a sign-in
+    /// waiting for approval; the shell decides whether it may be opened and owns
+    /// the launch, so this only forwards what the Host reported.
+    public func setExternalURLHandler(_ handler: (@Sendable (URL) -> Void)?) {
+        lock.lock()
+        externalURLHandler = handler
+        lock.unlock()
+    }
+
+    private func deliverExternalURL(_ url: URL) {
+        lock.lock()
+        let handler = externalURLHandler
+        lock.unlock()
+        handler?(url)
+    }
 
     /// Check if a local TCP port is available to bind.
     public func isPortAvailable(_ port: Int) -> Bool {
@@ -207,6 +225,9 @@ public final class DshService: @unchecked Sendable {
             expectedPort: actualPort,
             secrets: [access.generation.rendererToken]
         )
+        processIO.setExternalURLHandler { [weak self] url in
+            self?.deliverExternalURL(url)
+        }
         processIO.start()
 
         do {

@@ -56,6 +56,12 @@ public final class DshProcessIO: @unchecked Sendable {
     private static let policyRegex = try! NSRegularExpression(
         pattern: #"dsh desktop policy applied: ([0-9A-Fa-f-]{36}) (\d+) (true|false) (loopback|lan)\b"#
     )
+    /// The Host asks the shell to open the Platform authorization page of a
+    /// sign-in that is waiting for approval. Matching the whole line keeps a
+    /// Runtime log line that merely quotes the prefix out of the exemption.
+    private static let openExternalRegex = try! NSRegularExpression(
+        pattern: #"^dsh desktop open external:\s+(\S+)\s*$"#
+    )
     private static let maxLogBytes = 256 * 1024
 
     private let proc: Process
@@ -80,6 +86,7 @@ public final class DshProcessIO: @unchecked Sendable {
     private var policyTimeoutTasks: [Int: DispatchWorkItem] = [:]
     private var terminalError: Error?
     private var started = false
+    private var externalURLHandler: (@Sendable (URL) -> Void)?
 
     public init(
         proc: Process,
@@ -98,6 +105,14 @@ public final class DshProcessIO: @unchecked Sendable {
     }
 
     private let expectedPort: Int
+
+    /// Install the browser-handoff callback. Set before `start()`; the reading
+    /// queue takes it under the same lock that guards the rest of the state.
+    public func setExternalURLHandler(_ handler: (@Sendable (URL) -> Void)?) {
+        lock.lock()
+        externalURLHandler = handler
+        lock.unlock()
+    }
 
     public func start() {
         lock.lock()
@@ -346,7 +361,10 @@ public final class DshProcessIO: @unchecked Sendable {
                 stderrPartial.removeSubrange(...newline)
             }
         }
-        for line in lines {
+        for line in lines where !(isStdout && Self.isOpenExternalLine(line)) {
+            // The browser handoff is an instruction to the shell, not output to
+            // keep: an authorization URL in the diagnostic bundle would outlive
+            // the attempt it belongs to.
             let redacted = redactor.redactDiagnostic(line)
             ringBuffer.append(contentsOf: Data((redacted + "\n").utf8))
         }
@@ -356,8 +374,43 @@ public final class DshProcessIO: @unchecked Sendable {
         lock.unlock()
 
         for line in lines {
-            inspect(line)
+            inspect(line, isStdout: isStdout)
         }
+    }
+
+    /// Whether this stdout line is the browser handoff rather than output.
+    static func isOpenExternalLine(_ line: String) -> Bool {
+        let normalizedLine = DshSecretRedactor.stripANSI(line)
+        let range = NSRange(normalizedLine.startIndex..., in: normalizedLine)
+        return Self.openExternalRegex.firstMatch(in: normalizedLine, range: range) != nil
+    }
+
+    /// Whether the shell may hand this URL to the user's browser: HTTPS, a real
+    /// host, and no credentials or fragment embedded in it — the same bar the
+    /// shell applies to any external link. A deployment that points the account
+    /// provider at a loopback HTTP origin can still sign in through the
+    /// copy-link action its UI offers, but the shell never launches a browser at
+    /// an `http` URL on its own.
+    static func isOpenableExternalURL(_ url: URL) -> Bool {
+        guard url.scheme?.caseInsensitiveCompare("https") == .orderedSame,
+              let host = url.host,
+              !host.isEmpty,
+              url.user == nil,
+              url.password == nil,
+              url.fragment == nil else { return false }
+        return true
+    }
+
+    /// Hand one Host-named URL to the shell, but only in the shape the shell is
+    /// willing to open. The Host validated the URL against the configured
+    /// Platform origin before it named it; this is the shell's own check, and a
+    /// URL that fails it is dropped rather than reported.
+    private func deliverExternalURL(_ raw: String) {
+        guard let url = URL(string: raw), Self.isOpenableExternalURL(url) else { return }
+        lock.lock()
+        let handler = externalURLHandler
+        lock.unlock()
+        handler?(url)
     }
 
     /// Whether this process already completed the handshake, either through a
@@ -370,9 +423,18 @@ public final class DshProcessIO: @unchecked Sendable {
         return readySettled || (webEndpoint != nil && controlReadyGeneration == expectedGeneration)
     }
 
-    private func inspect(_ line: String) {
+    private func inspect(_ line: String, isStdout: Bool) {
         let normalizedLine = DshSecretRedactor.stripANSI(line)
         let range = NSRange(normalizedLine.startIndex..., in: normalizedLine)
+        // Only stdout can carry the Host's browser handoff. Stderr is where the
+        // Runtime reports failures, and a line there must never move the user's
+        // browser.
+        if isStdout,
+           let match = Self.openExternalRegex.firstMatch(in: normalizedLine, range: range),
+           let urlRange = Range(match.range(at: 1), in: normalizedLine) {
+            deliverExternalURL(String(normalizedLine[urlRange]))
+            return
+        }
         if let match = Self.bootstrapFailedRegex.firstMatch(in: normalizedLine, range: range),
            let detailRange = Range(match.range(at: 1), in: normalizedLine),
            !hasCompletedHandshake {
@@ -538,13 +600,17 @@ public final class DshProcessIO: @unchecked Sendable {
             stderrPartial = ""
         }
         if let line {
-            let redacted = redactor.redactDiagnostic(line)
-            ringBuffer.append(contentsOf: Data((redacted + "\n").utf8))
+            // A trailing partial line reaches the same routing and the same
+            // exemption: the handoff may be the last thing the Host writes.
+            if !(isStdout && Self.isOpenExternalLine(line)) {
+                let redacted = redactor.redactDiagnostic(line)
+                ringBuffer.append(contentsOf: Data((redacted + "\n").utf8))
+            }
             if ringBuffer.count > Self.maxLogBytes {
                 ringBuffer.removeFirst(ringBuffer.count - Self.maxLogBytes)
             }
         }
         lock.unlock()
-        if let line { inspect(line) }
+        if let line { inspect(line, isStdout: isStdout) }
     }
 }

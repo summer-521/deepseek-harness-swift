@@ -301,6 +301,14 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
             closeButton.action = #selector(hideMainWindow)
         }
         setupContentView(in: win)
+        // A sign-in waiting for approval opens its Platform page in the user's
+        // browser. The Host names the URL and the shell owns the launch, the
+        // same division every external link in the page already follows.
+        DshService.shared.setExternalURLHandler { url in
+            Task { @MainActor in
+                NSWorkspace.shared.open(url)
+            }
+        }
         adjustTrafficLights(in: win)
         // NSWindow can become visible as soon as the application activates.
         // Keep the main window explicitly hidden until the DSH page has
@@ -3402,6 +3410,22 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate, W
         revealWindow()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Bring the surface that currently owns this launch to the front.
+    ///
+    /// The Platform sign-in completion page returns the user by opening
+    /// `dsh://open`, and a Dock reopen asks for the same thing. While the launch
+    /// is still preparing, the startup card is the only surface allowed to
+    /// appear — the main window stays hidden until the page is ready, exactly as
+    /// it does at launch, so a return from the browser cannot expose an unready
+    /// WebView.
+    public func bringForward() {
+        if DshStartupWindowController.shared.window?.isVisible == true {
+            DshStartupWindowController.shared.show(status: startupStatusModel)
+            return
+        }
+        showMainWindow()
     }
 
     /// Whether the main DSH window is the window the user is currently using.

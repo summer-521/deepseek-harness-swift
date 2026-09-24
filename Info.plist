@@ -20,6 +20,22 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<!-- The Platform sign-in completion page returns the user to the desktop
+	     shell by opening `dsh://open`, so the shell has to claim the scheme the
+	     official Desktop also registers. Launch Services keeps one handler per
+	     scheme: whichever bundle it saw last wins, and the URL is only an
+	     opener — it carries no credential and none is read from it. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER).dsh</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>dsh</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<!-- One instance per user session: LaunchServices stops a same-bundle second

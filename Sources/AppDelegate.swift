@@ -284,6 +284,22 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    /// Whether an incoming URL is the Platform sign-in completion handoff.
+    ///
+    /// The completion page returns the user to the desktop shell by opening
+    /// `dsh://open`; the official Desktop registers the same scheme, and the
+    /// URL is an opener only — it carries no credential and none is read here.
+    /// Any other `dsh:` URL is something this shell does not act on.
+    static func isDesktopOpenURL(_ url: URL) -> Bool {
+        guard url.scheme?.caseInsensitiveCompare("dsh") == .orderedSame else { return false }
+        return url.host?.caseInsensitiveCompare("open") == .orderedSame
+    }
+
+    public func application(_ application: NSApplication, open urls: [URL]) {
+        guard urls.contains(where: Self.isDesktopOpenURL) else { return }
+        MainWindowController.shared.bringForward()
+    }
+
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }

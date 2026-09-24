@@ -18,14 +18,25 @@
     - id: desktop-host
       name: dsh-desktop-host
 
-# Runtime 0.1.7 adds an account launcher for Desktop hosts, but the current
-# login flow is not ready for the Swift shell yet. Keep the host bridge (and
-# the ordinary Settings launcher) while temporarily disabling only that UI.
+# Runtime 0.1.7 adds the account launcher for Desktop hosts, and this shell can
+# now serve the whole flow: the client half registers only where
+# `window.dshDesktop` exists (the shell injects it), the authorization provider
+# registers `/oauth/callback` on the host web server we wrap, and the access
+# fence admits exactly that callback shape so the browser can come back from
+# the Platform. The launcher replaces the ordinary Settings button in the
+# sidebar footer, which is the upstream Desktop arrangement.
 - id: ui-settings-account
-  disabled: true
+  disabled: false
 
 # The upstream Desktop-only default checks for a Profile literally named
-# `desktop`; this app's isolated manifest is `dsh-profile-swift-desktop`.
-# Keep the built-in Browser enabled so chat links can use the right sidebar.
+# `desktop`; this app's isolated manifest is `dsh-profile-swift-desktop`, so the
+# provider would otherwise report `x-client-platform: web`. This bundle is
+# installed only in the App's own Profile, so the platform is the whole
+# condition here. Keep the built-in Browser enabled as well, so chat links can
+# use the right sidebar.
 - id: ui-sidebar-browser
   disabled: false
+
+- id: deepseek-account
+  config:
+    desktopPlatform: !!js "['darwin', 'win32'].includes(process.platform) ? process.platform : null"

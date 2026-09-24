@@ -5,6 +5,7 @@ import {
   accessState,
   decideRequest,
   hasReservedDesktopParameter,
+  isAdmittedAccountCallback,
   requestPassesLoopbackFence,
 } from "./access-state.js";
 import { markDesktopServerReady, startDesktopControl } from "./control.js";
@@ -51,7 +52,15 @@ function rejectUpgrade(socket) {
 }
 
 function requestAllowed(request, classification, state) {
-  if (classification === CLASSIFICATIONS.denied) return false;
+  if (classification === CLASSIFICATIONS.denied) {
+    // Exactly one route may pass without a credential: the Platform sign-in
+    // callback. It arrives as a top-level redirect from the configured Platform
+    // origin, so it can never carry the renderer cookie, and the provider
+    // authenticates the attempt itself with `state` plus the PKCE verifier.
+    // The caller is trusted for nothing — the path, the method and the
+    // parameter shape are the whole exception.
+    return isAdmittedAccountCallback(request, state);
+  }
   if (!requestPassesLoopbackFence(request, state)) return false;
   if (classification !== CLASSIFICATIONS.renderer && hasReservedDesktopParameter(request.url)) return false;
   return true;
@@ -119,7 +128,11 @@ export default class DesktopWebServer extends UpstreamWebServer {
       ...route,
       handler: (request, socket, head) => {
         const classification = decideRequest(request, accessState);
-        if (!requestAllowed(request, classification, accessState)) {
+        // An upgrade is never the sign-in callback: the one exception the gate
+        // carries is for a single HTTP GET, so this boundary keeps the strict
+        // rule and an unclassified socket is still refused.
+        if (classification === CLASSIFICATIONS.denied
+            || !requestAllowed(request, classification, accessState)) {
           rejectUpgrade(socket);
           return;
         }
